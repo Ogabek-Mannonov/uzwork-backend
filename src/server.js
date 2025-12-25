@@ -5,7 +5,8 @@ const morgan = require('morgan');
 const helmet = require('helmet');
 require('dotenv').config();
 
-const pool = require('./db/pool.js'); 
+const pool = require('./db/pool');
+const authRoutes = require('./routes/authRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -16,7 +17,10 @@ app.use(express.json());
 app.use(morgan('dev'));
 app.use(helmet());
 
-// Test route – database ulanishini tekshirish
+// Routes
+app.use('/auth', authRoutes); // <--- YANGI QO‘SHILDI
+
+// Test route
 app.get('/', async (req, res) => {
   try {
     const result = await pool.query('SELECT NOW()');
