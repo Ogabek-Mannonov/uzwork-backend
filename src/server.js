@@ -5,7 +5,7 @@ const morgan = require('morgan');
 const helmet = require('helmet');
 require('dotenv').config();
 
-const pool = require('./src/db/pool.js'); 
+const pool = require('./db/pool.js'); 
 
 const app = express();
 const PORT = process.env.PORT || 3000;
