@@ -1,0 +1,17 @@
+// src/routes/notificationRoutes.js
+const express = require('express');
+const router = express.Router();
+const {
+  getMyNotifications,
+  markAsRead,
+  markAllAsRead
+} = require('../controllers/notificationController');
+const { authenticate } = require('../middlewares/authMiddleware');
+
+// Protected routes
+router.get('/me', authenticate, getMyNotifications);
+router.post('/:id/mark-as-read', authenticate, markAsRead);
+router.post('/mark-all-read', authenticate, markAllAsRead);
+
+module.exports = router;
+
