@@ -21,3 +21,4 @@ router.post('/:id/buy', authenticate, buyProduct);
 
 module.exports = router;
 
+

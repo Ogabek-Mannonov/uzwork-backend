@@ -31,18 +31,18 @@ const createProject = async (req, res) => {
       attachments
     } = req.body;
 
-    // Validation
+    // Validation (using new schema: job_type instead of budget_type)
     if (!title || !description || !budget_type) {
       return res.status(400).json({
         success: false,
-        message: 'Title, description va budget_type majburiy maydonlar.'
+        message: 'Title, description va budget_type (job_type) majburiy maydonlar.'
       });
     }
 
     if (!['fixed', 'hourly'].includes(budget_type)) {
       return res.status(400).json({
         success: false,
-        message: 'Budget_type "fixed" yoki "hourly" bo\'lishi kerak.'
+        message: 'Budget_type (job_type) "fixed" yoki "hourly" bo\'lishi kerak.'
       });
     }
 
@@ -53,33 +53,32 @@ const createProject = async (req, res) => {
       });
     }
 
-    if (budget_type === 'hourly' && !hourly_rate) {
+    // Hourly jobs don't need hourly_rate in new schema - just budget_min/max
+    if (budget_type === 'hourly' && (!budget_min || !budget_max)) {
       return res.status(400).json({
         success: false,
-        message: 'Hourly budget uchun hourly_rate kerak.'
+        message: 'Hourly budget uchun budget_min va budget_max kerak.'
       });
     }
 
-    // Insert project
+    // Insert job (using new schema: jobs table with job_type instead of budget_type)
     const result = await pool.query(
-      `INSERT INTO projects (
-        client_id, title, description, category, skills, budget_type,
-        budget_min, budget_max, hourly_rate, duration, experience_level, attachments
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+      `INSERT INTO jobs (
+        client_id, title, description, job_type,
+        budget_min, budget_max, currency, required_skills, attachments, deadline
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
       RETURNING *`,
       [
         userId,
         title,
         description,
-        category || null,
-        skills || [],
-        budget_type,
+        budget_type, // job_type in new schema
         budget_min || null,
         budget_max || null,
-        hourly_rate || null,
-        duration || null,
-        experience_level || null,
-        attachments || []
+        'UZS', // default currency
+        skills || [], // required_skills in new schema
+        attachments || [],
+        duration ? new Date(Date.now() + duration * 24 * 60 * 60 * 1000) : null // convert duration days to deadline
       ]
     );
 
@@ -169,33 +168,33 @@ const getProjects = async (req, res) => {
     const whereClause = whereConditions.join(' AND ');
 
     // Get total count
-    const countQuery = `SELECT COUNT(*) FROM projects WHERE ${whereClause}`;
+    const countQuery = `SELECT COUNT(*) FROM jobs WHERE ${whereClause}`;
     const countResult = await pool.query(countQuery, queryParams);
     const total = parseInt(countResult.rows[0].count);
 
-    // Get projects with client info
-    const projectsQuery = `
+    // Get jobs with client info
+    const jobsQuery = `
       SELECT 
-        p.*,
+        j.*,
         u.id as client_id,
         u.first_name as client_first_name,
         u.last_name as client_last_name,
         u.email as client_email,
-        (SELECT COUNT(*) FROM proposals WHERE project_id = p.id) as proposals_count
-      FROM projects p
-      JOIN users u ON p.client_id = u.id
+        (SELECT COUNT(*) FROM proposals WHERE job_id = j.id) as proposals_count
+      FROM jobs j
+      JOIN users u ON j.client_id = u.id
       WHERE ${whereClause}
-      ORDER BY p.${sortColumn} ${sortOrder}
+      ORDER BY j.${sortColumn} ${sortOrder}
       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
     `;
     queryParams.push(parseInt(limit), offset);
 
-    const projectsResult = await pool.query(projectsQuery, queryParams);
+    const jobsResult = await pool.query(jobsQuery, queryParams);
 
     res.json({
       success: true,
       data: {
-        projects: projectsResult.rows,
+        projects: jobsResult.rows,
         pagination: {
           page: parseInt(page),
           limit: parseInt(limit),
@@ -224,15 +223,15 @@ const getProjectById = async (req, res) => {
 
     const result = await pool.query(
       `SELECT 
-        p.*,
+        j.*,
         u.id as client_id,
         u.first_name as client_first_name,
         u.last_name as client_last_name,
         u.email as client_email,
-        (SELECT COUNT(*) FROM proposals WHERE project_id = p.id) as proposals_count
-      FROM projects p
-      JOIN users u ON p.client_id = u.id
-      WHERE p.id = $1`,
+        (SELECT COUNT(*) FROM proposals WHERE job_id = j.id) as proposals_count
+      FROM jobs j
+      JOIN users u ON j.client_id = u.id
+      WHERE j.id = $1`,
       [id]
     );
 
@@ -278,7 +277,7 @@ const updateProject = async (req, res) => {
 
     // Check if project exists and user is owner
     const projectCheck = await pool.query(
-      'SELECT client_id, status FROM projects WHERE id = $1',
+      'SELECT client_id, status FROM jobs WHERE id = $1',
       [id]
     );
 
@@ -422,7 +421,7 @@ const deleteProject = async (req, res) => {
 
     // Check if project exists and user is owner
     const projectCheck = await pool.query(
-      'SELECT client_id, status FROM projects WHERE id = $1',
+      'SELECT client_id, status FROM jobs WHERE id = $1',
       [id]
     );
 
@@ -441,7 +440,7 @@ const deleteProject = async (req, res) => {
     }
 
     // Delete project (CASCADE will handle related records)
-    await pool.query('DELETE FROM projects WHERE id = $1', [id]);
+    await pool.query('UPDATE jobs SET deleted_at = NOW() WHERE id = $1', [id]);
 
     res.json({
       success: true,
@@ -476,22 +475,22 @@ const getMyProjects = async (req, res) => {
       if (status) {
         query = `
           SELECT 
-            p.*,
-            (SELECT COUNT(*) FROM proposals WHERE project_id = p.id) as proposals_count
-          FROM projects p
-          WHERE p.client_id = $1 AND p.status = $2
-          ORDER BY p.created_at DESC
+            j.*,
+            (SELECT COUNT(*) FROM proposals WHERE job_id = j.id) as proposals_count
+          FROM jobs j
+          WHERE j.client_id = $1 AND j.status = $2
+          ORDER BY j.created_at DESC
           LIMIT $3 OFFSET $4
         `;
         params = [userId, status, parseInt(limit), offset];
       } else {
         query = `
           SELECT 
-            p.*,
-            (SELECT COUNT(*) FROM proposals WHERE project_id = p.id) as proposals_count
-          FROM projects p
-          WHERE p.client_id = $1
-          ORDER BY p.created_at DESC
+            j.*,
+            (SELECT COUNT(*) FROM proposals WHERE job_id = j.id) as proposals_count
+          FROM jobs j
+          WHERE j.client_id = $1
+          ORDER BY j.created_at DESC
           LIMIT $2 OFFSET $3
         `;
         params = [userId, parseInt(limit), offset];
@@ -501,26 +500,26 @@ const getMyProjects = async (req, res) => {
       if (status) {
         query = `
           SELECT DISTINCT
-            p.*,
+            j.*,
             pr.status as proposal_status,
-            (SELECT COUNT(*) FROM proposals WHERE project_id = p.id) as proposals_count
-          FROM projects p
-          JOIN proposals pr ON p.id = pr.project_id
-          WHERE pr.freelancer_id = $1 AND p.status = $2
-          ORDER BY p.created_at DESC
+            (SELECT COUNT(*) FROM proposals WHERE job_id = j.id) as proposals_count
+          FROM jobs j
+          JOIN proposals pr ON j.id = pr.job_id
+          WHERE pr.freelancer_id = $1 AND j.status = $2
+          ORDER BY j.created_at DESC
           LIMIT $3 OFFSET $4
         `;
         params = [userId, status, parseInt(limit), offset];
       } else {
         query = `
           SELECT DISTINCT
-            p.*,
+            j.*,
             pr.status as proposal_status,
-            (SELECT COUNT(*) FROM proposals WHERE project_id = p.id) as proposals_count
-          FROM projects p
-          JOIN proposals pr ON p.id = pr.project_id
+            (SELECT COUNT(*) FROM proposals WHERE job_id = j.id) as proposals_count
+          FROM jobs j
+          JOIN proposals pr ON j.id = pr.job_id
           WHERE pr.freelancer_id = $1
-          ORDER BY p.created_at DESC
+          ORDER BY j.created_at DESC
           LIMIT $2 OFFSET $3
         `;
         params = [userId, parseInt(limit), offset];
@@ -534,26 +533,26 @@ const getMyProjects = async (req, res) => {
     let countParams;
     if (userRole === 'client') {
       if (status) {
-        countQuery = 'SELECT COUNT(*) FROM projects WHERE client_id = $1 AND status = $2';
+        countQuery = 'SELECT COUNT(*) FROM jobs WHERE client_id = $1 AND status = $2';
         countParams = [userId, status];
       } else {
-        countQuery = 'SELECT COUNT(*) FROM projects WHERE client_id = $1';
+        countQuery = 'SELECT COUNT(*) FROM jobs WHERE client_id = $1';
         countParams = [userId];
       }
     } else {
       if (status) {
         countQuery = `
-          SELECT COUNT(DISTINCT p.id) 
-          FROM projects p
-          JOIN proposals pr ON p.id = pr.project_id
+          SELECT COUNT(DISTINCT j.id) 
+          FROM jobs j
+          JOIN proposals pr ON j.id = pr.job_id
           WHERE pr.freelancer_id = $1 AND p.status = $2
         `;
         countParams = [userId, status];
       } else {
         countQuery = `
-          SELECT COUNT(DISTINCT p.id) 
-          FROM projects p
-          JOIN proposals pr ON p.id = pr.project_id
+          SELECT COUNT(DISTINCT j.id) 
+          FROM jobs j
+          JOIN proposals pr ON j.id = pr.job_id
           WHERE pr.freelancer_id = $1
         `;
         countParams = [userId];
@@ -612,16 +611,16 @@ const getRecommendedProjects = async (req, res) => {
     // Get recommended projects based on skills match
     const projectsQuery = `
       SELECT 
-        p.*,
+        j.*,
         u.first_name as client_first_name,
         u.last_name as client_last_name,
-        (SELECT COUNT(*) FROM proposals WHERE project_id = p.id) as proposals_count,
+        (SELECT COUNT(*) FROM proposals WHERE job_id = j.id) as proposals_count,
         CASE 
           WHEN p.skills && $1::text[] THEN 1
           ELSE 0
         END as skill_match
-      FROM projects p
-      JOIN users u ON p.client_id = u.id
+      FROM jobs j
+      JOIN users u ON j.client_id = u.id
       WHERE p.status = 'open'
         AND ($1::text[] IS NULL OR p.skills && $1::text[])
       ORDER BY skill_match DESC, p.created_at DESC
@@ -666,7 +665,7 @@ const boostProject = async (req, res) => {
 
     // Check if project exists and user is owner
     const projectCheck = await pool.query(
-      'SELECT client_id, status FROM projects WHERE id = $1',
+      'SELECT client_id, status FROM jobs WHERE id = $1',
       [id]
     );
 
@@ -719,7 +718,7 @@ const aiTranslate = async (req, res) => {
     const { to_lang = 'ru' } = req.query;
 
     const projectResult = await pool.query(
-      'SELECT title, description FROM projects WHERE id = $1',
+      'SELECT title, description FROM jobs WHERE id = $1',
       [id]
     );
 
@@ -769,12 +768,12 @@ const getSavedProjects = async (req, res) => {
 
     const result = await pool.query(
       `SELECT 
-        p.*,
+        j.*,
         u.first_name as client_first_name,
         u.last_name as client_last_name
       FROM saved_items s
-      JOIN projects p ON s.item_id = p.id
-      JOIN users u ON p.client_id = u.id
+      JOIN jobs j ON s.item_id = j.id
+      JOIN users u ON j.client_id = u.id
       WHERE s.user_id = $1 AND s.item_type = 'project'
       ORDER BY s.created_at DESC
       LIMIT $2 OFFSET $3`,

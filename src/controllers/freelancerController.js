@@ -31,34 +31,30 @@ const getFreelancers = async (req, res) => {
     }
 
     if (location) {
-      whereConditions.push(`up.location ILIKE $${paramIndex}`);
+      whereConditions.push(`fp.location ILIKE $${paramIndex}`);
       queryParams.push(`%${location}%`);
       paramIndex++;
     }
 
     if (availability) {
-      whereConditions.push(`up.availability = $${paramIndex}`);
+      whereConditions.push(`fp.availability_status = $${paramIndex}`);
       queryParams.push(availability);
       paramIndex++;
     }
 
     const whereClause = whereConditions.join(' AND ');
 
-    // Get average rating subquery
+    // Get rating from freelancer_profiles (new schema)
     const ratingSubquery = `
-      (SELECT AVG(rating)::numeric(10,2) 
-       FROM reviews 
-       WHERE reviewee_id = u.id) as average_rating,
-      (SELECT COUNT(*) 
-       FROM reviews 
-       WHERE reviewee_id = u.id) as total_reviews
+      fp.rating as average_rating,
+      0 as total_reviews
     `;
 
     // Get total count
     const countQuery = `
       SELECT COUNT(DISTINCT u.id)
       FROM users u
-      LEFT JOIN user_profiles up ON u.id = up.user_id
+      LEFT JOIN freelancer_profiles fp ON u.id = fp.user_id
       WHERE ${whereClause}
     `;
     const countResult = await pool.query(countQuery, queryParams);
@@ -78,17 +74,17 @@ const getFreelancers = async (req, res) => {
         u.last_name,
         u.email,
         u.is_kyc_verified,
-        up.bio,
-        up.avatar_url,
-        up.location,
-        up.hourly_rate,
-        up.skills,
-        up.availability,
+        fp.bio,
+        fp.avatar_url,
+        fp.location,
+        fp.hourly_rate,
+        fp.skills,
+        fp.availability_status as availability,
         ${ratingSubquery}
       FROM users u
-      LEFT JOIN user_profiles up ON u.id = up.user_id
+      LEFT JOIN freelancer_profiles fp ON u.id = fp.user_id
       WHERE ${whereClause}
-      GROUP BY u.id, up.id
+      GROUP BY u.id, fp.user_id
       ${havingClause}
       ORDER BY average_rating DESC NULLS LAST, u.created_at DESC
       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
@@ -162,14 +158,14 @@ const getRecommendedFreelancers = async (req, res) => {
         up.location,
         up.hourly_rate,
         up.skills,
-        (SELECT AVG(rating)::numeric(10,2) FROM reviews WHERE reviewee_id = u.id) as average_rating,
-        (SELECT COUNT(*) FROM reviews WHERE reviewee_id = u.id) as total_reviews,
+        fp.rating as average_rating,
+        0 as total_reviews,
         (SELECT COUNT(*) FROM contracts WHERE freelancer_id = u.id AND status = 'completed') as completed_projects
       FROM users u
-      LEFT JOIN user_profiles up ON u.id = up.user_id
+      LEFT JOIN freelancer_profiles fp ON u.id = fp.user_id
       WHERE u.role = 'freelancer'
-        AND up.availability = 'available'
-        AND ($1::text[] IS NULL OR up.skills && $1::text[])
+        AND fp.availability_status = 'available'
+        AND ($1::text[] IS NULL OR fp.skills && $1::text[])
       ORDER BY 
         average_rating DESC NULLS LAST,
         completed_projects DESC,
@@ -210,14 +206,14 @@ const getFreelancerById = async (req, res) => {
         u.first_name,
         u.last_name,
         u.email,
-        u.is_kyc_verified,
-        up.*,
-        (SELECT AVG(rating)::numeric(10,2) FROM reviews WHERE reviewee_id = u.id) as average_rating,
-        (SELECT COUNT(*) FROM reviews WHERE reviewee_id = u.id) as total_reviews,
+        u.is_verified,
+        fp.*,
+        fp.rating as average_rating,
+        0 as total_reviews,
         (SELECT COUNT(*) FROM contracts WHERE freelancer_id = u.id AND status = 'completed') as completed_projects,
         (SELECT COUNT(*) FROM contracts WHERE freelancer_id = u.id) as total_projects
       FROM users u
-      LEFT JOIN user_profiles up ON u.id = up.user_id
+      LEFT JOIN freelancer_profiles fp ON u.id = fp.user_id
       WHERE u.id = $1 AND u.role = 'freelancer'`,
       [id]
     );
@@ -262,7 +258,7 @@ const activatePremium = async (req, res) => {
     }
 
     // TODO: Check payment/balance (200,000 UZS/month)
-    // TODO: Add premium_expires_at field to user_profiles table
+    // Premium info is in users table (is_premium, premium_until)
     // For now, just return success
 
     res.json({
@@ -330,10 +326,10 @@ const getSavedFreelancers = async (req, res) => {
         up.avatar_url,
         up.location,
         up.skills,
-        (SELECT AVG(rating) FROM reviews WHERE reviewee_id = u.id) as average_rating
+        fp.rating as average_rating
       FROM saved_items s
       JOIN users u ON s.item_id = u.id
-      LEFT JOIN user_profiles up ON u.id = up.user_id
+      LEFT JOIN freelancer_profiles fp ON u.id = fp.user_id
       WHERE s.user_id = $1 AND s.item_type = 'freelancer' AND u.role = 'freelancer'
       ORDER BY s.created_at DESC
       LIMIT $2 OFFSET $3`,

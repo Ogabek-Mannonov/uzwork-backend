@@ -18,7 +18,7 @@ const createProposal = async (req, res) => {
     }
 
     const {
-      project_id,
+      job_id,
       cover_letter,
       proposed_rate,
       proposed_amount,
@@ -27,17 +27,17 @@ const createProposal = async (req, res) => {
     } = req.body;
 
     // Validation
-    if (!project_id || !cover_letter) {
+    if (!job_id || !cover_letter) {
       return res.status(400).json({
         success: false,
-        message: 'Project_id va cover_letter majburiy maydonlar.'
+        message: 'Job_id va cover_letter majburiy maydonlar.'
       });
     }
 
     // Check if project exists and is open
     const projectCheck = await pool.query(
-      'SELECT id, client_id, budget_type, status FROM projects WHERE id = $1',
-      [project_id]
+      'SELECT id, client_id, job_type, status FROM jobs WHERE id = $1',
+      [job_id]
     );
 
     if (projectCheck.rows.length === 0) {
@@ -58,8 +58,8 @@ const createProposal = async (req, res) => {
 
     // Check if freelancer already submitted proposal
     const existingProposal = await pool.query(
-      'SELECT id FROM proposals WHERE project_id = $1 AND freelancer_id = $2',
-      [project_id, userId]
+      'SELECT id FROM proposals WHERE job_id = $1 AND freelancer_id = $2',
+      [job_id, userId]
     );
 
     if (existingProposal.rows.length > 0) {
@@ -89,12 +89,12 @@ const createProposal = async (req, res) => {
     // Insert proposal
     const result = await pool.query(
       `INSERT INTO proposals (
-        project_id, freelancer_id, cover_letter,
+        job_id, freelancer_id, cover_letter,
         proposed_rate, proposed_amount, estimated_hours, estimated_days
       ) VALUES ($1, $2, $3, $4, $5, $6, $7)
       RETURNING *`,
       [
-        project_id,
+        job_id,
         userId,
         cover_letter,
         proposed_rate || null,
@@ -128,7 +128,7 @@ const createProposal = async (req, res) => {
 const getProposals = async (req, res) => {
   try {
     const {
-      project_id,
+      job_id,
       freelancer_id,
       status,
       page = 1,
@@ -142,9 +142,9 @@ const getProposals = async (req, res) => {
     let queryParams = [];
     let paramIndex = 1;
 
-    if (project_id) {
-      whereConditions.push(`p.project_id = $${paramIndex++}`);
-      queryParams.push(project_id);
+    if (job_id) {
+      whereConditions.push(`p.job_id = $${paramIndex++}`);
+      queryParams.push(job_id);
     }
 
     if (freelancer_id) {
@@ -174,12 +174,12 @@ const getProposals = async (req, res) => {
         u.first_name as freelancer_first_name,
         u.last_name as freelancer_last_name,
         u.email as freelancer_email,
-        pr.id as project_id,
+        j.id as job_id,
         pr.title as project_title,
         pr.client_id as project_client_id
       FROM proposals p
       JOIN users u ON p.freelancer_id = u.id
-      JOIN projects pr ON p.project_id = pr.id
+      JOIN jobs j ON p.job_id = j.id
       ${whereClause}
       ORDER BY p.created_at DESC
       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
@@ -225,13 +225,13 @@ const getProposalById = async (req, res) => {
         u.first_name as freelancer_first_name,
         u.last_name as freelancer_last_name,
         u.email as freelancer_email,
-        pr.id as project_id,
+        j.id as job_id,
         pr.title as project_title,
         pr.description as project_description,
         pr.client_id as project_client_id
       FROM proposals p
       JOIN users u ON p.freelancer_id = u.id
-      JOIN projects pr ON p.project_id = pr.id
+      JOIN jobs j ON p.job_id = j.id
       WHERE p.id = $1`,
       [id]
     );
@@ -288,12 +288,12 @@ const getMyProposals = async (req, res) => {
     const proposalsQuery = `
       SELECT 
         p.*,
-        pr.id as project_id,
+        j.id as job_id,
         pr.title as project_title,
         pr.status as project_status,
         pr.client_id as project_client_id
       FROM proposals p
-      JOIN projects pr ON p.project_id = pr.id
+      JOIN jobs j ON p.job_id = j.id
       ${whereClause}
       ORDER BY p.created_at DESC
       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
@@ -336,7 +336,7 @@ const getProjectProposals = async (req, res) => {
 
     // Check if user is project owner
     const projectCheck = await pool.query(
-      'SELECT client_id FROM projects WHERE id = $1',
+      'SELECT client_id FROM jobs WHERE id = $1',
       [projectId]
     );
 
@@ -357,7 +357,7 @@ const getProjectProposals = async (req, res) => {
     const { status, page = 1, limit = 20 } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
 
-    let whereClause = 'WHERE p.project_id = $1';
+    let whereClause = 'WHERE p.job_id = $1';
     let queryParams = [projectId];
     let paramIndex = 2;
 
@@ -430,7 +430,7 @@ const updateProposal = async (req, res) => {
 
     // Check if proposal exists and user is author
     const proposalCheck = await pool.query(
-      'SELECT freelancer_id, status, project_id FROM proposals WHERE id = $1',
+      'SELECT freelancer_id, status, job_id FROM proposals WHERE id = $1',
       [id]
     );
 
@@ -606,7 +606,7 @@ const acceptProposal = async (req, res) => {
         pr.client_id,
         pr.status as project_status
       FROM proposals p
-      JOIN projects pr ON p.project_id = pr.id
+      JOIN jobs j ON p.job_id = j.id
       WHERE p.id = $1`,
       [id]
     );
@@ -653,14 +653,14 @@ const acceptProposal = async (req, res) => {
 
       // Reject all other proposals for this project
       await pool.query(
-        'UPDATE proposals SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE project_id = $2 AND id != $3',
-        ['rejected', proposal.project_id, id]
+        'UPDATE proposals SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE job_id = $2 AND id != $3',
+        ['rejected', proposal.job_id, id]
       );
 
       // Update project status
       await pool.query(
         'UPDATE projects SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-        ['in_progress', proposal.project_id]
+        ['in_progress', proposal.job_id]
       );
 
       await pool.query('COMMIT');
@@ -706,7 +706,7 @@ const rejectProposal = async (req, res) => {
         p.*,
         pr.client_id
       FROM proposals p
-      JOIN projects pr ON p.project_id = pr.id
+      JOIN jobs j ON p.job_id = j.id
       WHERE p.id = $1`,
       [id]
     );
@@ -765,7 +765,7 @@ const aiWriter = async (req, res) => {
 
     // Check if proposal exists and user is author
     const proposalResult = await pool.query(
-      'SELECT project_id, freelancer_id FROM proposals WHERE id = $1',
+      'SELECT job_id, freelancer_id FROM proposals WHERE id = $1',
       [id]
     );
 
@@ -785,8 +785,8 @@ const aiWriter = async (req, res) => {
 
     // Get project details
     const projectResult = await pool.query(
-      'SELECT title, description, skills FROM projects WHERE id = $1',
-      [proposalResult.rows[0].project_id]
+      'SELECT title, description, required_skills as skills FROM jobs WHERE id = $1',
+      [proposalResult.rows[0].job_id]
     );
 
     // TODO: Integrate with AI service

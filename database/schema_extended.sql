@@ -238,3 +238,4 @@ CREATE TABLE IF NOT EXISTS file_uploads (
 CREATE INDEX IF NOT EXISTS idx_file_uploads_user_id ON file_uploads(user_id);
 CREATE INDEX IF NOT EXISTS idx_file_uploads_related ON file_uploads(related_type, related_id);
 
+

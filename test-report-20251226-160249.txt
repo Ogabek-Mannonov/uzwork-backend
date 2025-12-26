@@ -1,0 +1,103 @@
+﻿UzWork Backend API Test Report
+Generated: 2025-12-26 16:02:49
+
+SUMMARY:
+Total Tests: 13
+Passed: 3
+Partial: 0
+Failed: 10
+Success Rate: 23.08%
+
+DETAILS:
+PASSED - Health Check
+   Method: GET
+   URL: http://localhost:3000/
+   Status Code: 200
+   Message: True
+   Time: 2360.08ms
+
+FAILED - Signup Client
+   Method: POST
+   URL: http://localhost:3000/auth/signup
+   Status Code: 409
+   Message: True
+   Time: 
+
+PASSED - Signup Freelancer
+   Method: POST
+   URL: http://localhost:3000/auth/signup
+   Status Code: 200
+   Message: True
+   Time: 665.43ms
+
+FAILED - Get Projects
+   Method: GET
+   URL: http://localhost:3000/projects
+   Status Code: 500
+   Message: True
+   Time: 
+
+FAILED - Get Freelancers
+   Method: GET
+   URL: http://localhost:3000/freelancers
+   Status Code: 500
+   Message: True
+   Time: 
+
+FAILED - Get My Proposals
+   Method: GET
+   URL: http://localhost:3000/proposals/me
+   Status Code: 500
+   Message: True
+   Time: 
+
+FAILED - Get Marketplace
+   Method: GET
+   URL: http://localhost:3000/marketplace
+   Status Code: 500
+   Message: True
+   Time: 
+
+FAILED - Get Marketplace Categories
+   Method: GET
+   URL: http://localhost:3000/marketplace/categories
+   Status Code: 500
+   Message: True
+   Time: 
+
+FAILED - Global Search
+   Method: GET
+   URL: http://localhost:3000/search?q=javascript
+   Status Code: 500
+   Message: True
+   Time: 
+
+PASSED - AI Translate
+   Method: POST
+   URL: http://localhost:3000/ai/translate
+   Status Code: 200
+   Message: True
+   Time: 56.22ms
+
+FAILED - Get Currency Rates
+   Method: GET
+   URL: http://localhost:3000/currencies/rates?from=UZS
+   Status Code: 500
+   Message: True
+   Time: 
+
+FAILED - Recommended Projects
+   Method: GET
+   URL: http://localhost:3000/projects/recommended
+   Status Code: 401
+   Message: True
+   Time: 
+
+FAILED - AI Job Match
+   Method: POST
+   URL: http://localhost:3000/ai/job-match
+   Status Code: 401
+   Message: True
+   Time: 
+
+

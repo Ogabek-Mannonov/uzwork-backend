@@ -88,12 +88,16 @@ Write-Host ""
 # 2. Signup Client
 Write-Host "[2] Signup Client..." -ForegroundColor Yellow
 $randomEmail = "client_$(Get-Random -Minimum 1000 -Maximum 9999)@test.com"
+$randomUsername = "client_$(Get-Random -Minimum 1000 -Maximum 9999)"
 $signupClient = Test-Endpoint -Name "Signup Client" -Method "POST" -Url "$baseUrl/auth/signup" `
     -Body @{
         email = $randomEmail
         phone = "+998901234567"
         password = "password123"
         role = "client"
+        username = $randomUsername
+        first_name = "Test"
+        last_name = "Client"
     } -ExpectedStatus 201
 
 $results += $signupClient.Result
@@ -109,12 +113,16 @@ Write-Host ""
 # 3. Signup Freelancer
 Write-Host "[3] Signup Freelancer..." -ForegroundColor Yellow
 $randomEmailFreelancer = "freelancer_$(Get-Random -Minimum 1000 -Maximum 9999)@test.com"
+$randomUsernameFreelancer = "freelancer_$(Get-Random -Minimum 1000 -Maximum 9999)"
 $signupFreelancer = Test-Endpoint -Name "Signup Freelancer" -Method "POST" -Url "$baseUrl/auth/signup" `
     -Body @{
         email = $randomEmailFreelancer
         phone = "+998901234568"
         password = "password123"
         role = "freelancer"
+        username = $randomUsernameFreelancer
+        first_name = "Test"
+        last_name = "Freelancer"
     } -ExpectedStatus 201
 
 $results += $signupFreelancer.Result
