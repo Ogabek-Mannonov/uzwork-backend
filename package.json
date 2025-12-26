@@ -9,6 +9,7 @@
     "check-db": "node scripts/check-db.js",
     "setup-db": "node scripts/setup-database.js",
     "setup-extended-db": "node scripts/setup-extended-db.js",
+    "setup-new-schema": "node scripts/setup-new-schema.js",
     "check-missing-tables": "node scripts/check-missing-tables.js",
     "show-tables": "node scripts/show-tables.js",
     "test-all": "powershell -ExecutionPolicy Bypass -File ./test-all-apis.ps1",
