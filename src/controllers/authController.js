@@ -56,10 +56,10 @@ const signup = async (req, res) => {
 
     // Insert user
     const result = await pool.query(
-      `INSERT INTO users (username, email, phone, password_hash, role, first_name, last_name, display_name, is_verified)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       RETURNING id, username, email, phone, role, first_name, last_name, display_name, created_at`,
-      [username, email, phone, passwordHash, role, first_name, last_name, display_name || null, false]
+      `INSERT INTO users (username, email, phone, password_hash, role, first_name, last_name, display_name, is_verified, avatar_url)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       RETURNING id, username, email, phone, role, first_name, last_name, display_name, is_verified, avatar_url, created_at`,
+      [username, email, phone, passwordHash, role, first_name, last_name, display_name || null, false, null]
     );
 
     const user = result.rows[0];
@@ -80,7 +80,9 @@ const signup = async (req, res) => {
           role: user.role,
           first_name: user.first_name,
           last_name: user.last_name,
-          display_name: user.display_name
+          display_name: user.display_name || user.username,  // <--- qo‘shildi
+          is_verified: user.is_verified,                    // <--- qo‘shildi
+          avatar_url: user.avatar_url                        // <--- qo‘shildi
         },
         accessToken,
         refreshToken
@@ -124,7 +126,7 @@ const login = async (req, res) => {
 
       // Find user
       const result = await pool.query(
-        'SELECT id, username, email, phone, password_hash, role, first_name, last_name, display_name, is_verified FROM users WHERE email = $1 OR phone = $2',
+        'SELECT id, username, email, phone, password_hash, role, first_name, last_name, display_name, is_verified, avatar_url FROM users WHERE email = $1 OR phone = $2',
         [email || phone, email || phone]
       );
 
@@ -162,8 +164,9 @@ const login = async (req, res) => {
             role: user.role,
             first_name: user.first_name,
             last_name: user.last_name,
-            display_name: user.display_name,
-            is_verified: user.is_verified
+            display_name: user.display_name || user.username,  // <--- qo‘shildi
+            is_verified: user.is_verified,                    // <--- qo‘shildi
+            avatar_url: user.avatar_url                        // <--- qo‘shildi
           },
           accessToken,
           refreshToken
@@ -329,10 +332,29 @@ const getMe = async (req, res) => {
       });
     }
 
+    const user = result.rows[0];
+
     res.json({
       success: true,
       data: {
-        user: result.rows[0]
+        user: {
+          id: user.id,
+          username: user.username,
+          email: user.email,
+          phone: user.phone,
+          role: user.role,
+          first_name: user.first_name,
+          last_name: user.last_name,
+          display_name: user.display_name || user.username,  // <--- qo‘shildi
+          is_verified: user.is_verified,                    // <--- qo‘shildi
+          is_premium: user.is_premium,
+          premium_until: user.premium_until,
+          balance_uzs: user.balance_uzs,
+          balance_usd: user.balance_usd,
+          avatar_url: user.avatar_url,                      // <--- qo‘shildi
+          created_at: user.created_at,
+          updated_at: user.updated_at
+        }
       }
     });
   } catch (error) {
