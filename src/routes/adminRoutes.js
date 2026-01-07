@@ -14,7 +14,7 @@ const {
 
 // Barcha admin route lar authenticate va isAdmin dan o‘tadi
 router.use(authenticate);
-// router.use(isAdmin);
+router.use(isAdmin);
 
 // Dashboard statistikasi
 router.get('/dashboard', getDashboardStats);
