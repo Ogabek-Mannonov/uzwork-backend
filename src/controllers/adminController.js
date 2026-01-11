@@ -48,7 +48,7 @@ const getDashboardStats = async (req, res) => {
       pool.query('SELECT COUNT(*) FROM users WHERE role = $1', ['freelancer']),
       pool.query('SELECT COUNT(*) FROM users WHERE role = $1', ['client']),
       pool.query('SELECT COUNT(*) FROM projects WHERE status IN ($1, $2)', ['open', 'in_progress']),
-      pool.query('SELECT COALESCE(SUM(amount), 0) FROM transactions WHERE type = $1 AND status = $2', ['platform_fee', 'completed']),
+      pool.query('SELECT COALESCE(SUM(amount), 0) as total_fee FROM transactions WHERE type = $1 AND status = $2', ['platform_fee', 'completed']), // <--- alias qo'shildi: as total_fee
       pool.query('SELECT COUNT(*) FROM disputes WHERE status = $1', ['open'])
     ]);
 
@@ -60,8 +60,8 @@ const getDashboardStats = async (req, res) => {
           totalFreelancers: parseInt(freelancersCount.rows[0].count),
           totalClients: parseInt(clientsCount.rows[0].count),
           activeJobs: parseInt(activeJobs.rows[0].count),
-          totalRevenue: `${parseInt(totalRevenue.rows[0].coalesce).toLocaleString()} so‘m`,
-          platformFee: `${parseInt(totalRevenue.rows[0].coalesce).toLocaleString()} so‘m`,
+          totalRevenue: `${parseInt(totalRevenue.rows[0].total_fee).toLocaleString()} so‘m`, // <--- total_fee deb o'zgartirildi
+          platformFee: `${parseInt(totalRevenue.rows[0].total_fee).toLocaleString()} so‘m`,
           usersGrowth: "+12.5%",
           jobsGrowth: "+8.3%",
           revenueGrowth: "+23.1%",
@@ -80,7 +80,7 @@ const getDashboardStats = async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Dashboard stats error:', error);
+    console.error('Dashboard stats xatosi:', error.message); // <--- BU QATORNI QO‘SHING (xato aniq log bo‘ladi)
     res.status(500).json({
       success: false,
       message: 'Dashboard ma\'lumotlarini olishda xato yuz berdi.'
