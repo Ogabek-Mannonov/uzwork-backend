@@ -15,6 +15,7 @@ const {
   saveProject,
   reportProject
 } = require('../controllers/projectController');
+
 const { authenticate, authorize } = require('../middlewares/authMiddleware');
 
 // Public routes

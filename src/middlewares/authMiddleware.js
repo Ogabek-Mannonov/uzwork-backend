@@ -21,9 +21,9 @@ const authenticate = async (req, res, next) => {
     try {
       const decoded = verifyAccessToken(token);
       
-      // Get user from database
+      // Get user from database - sizning tableingizga mos (mavjud maydonlar bilan)
       const result = await pool.query(
-        'SELECT id, email, phone, role, first_name, last_name, is_email_verified, is_phone_verified, is_kyc_verified FROM users WHERE id = $1',
+        'SELECT id, username, email, phone, role, first_name, last_name, is_verified FROM users WHERE id = $1',
         [decoded.id]
       );
 
