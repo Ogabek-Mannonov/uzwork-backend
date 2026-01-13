@@ -98,7 +98,7 @@ const getUsers = async (req, res) => {
     const result = await pool.query(`
       SELECT 
         id, username, email, phone, role, first_name, last_name, display_name,
-        is_verified, balance_uzs, balance_usd, created_at, updated_at
+        is_verified, balance_uzs, balance_usd, created_at, updated_at, status
       FROM users 
       ORDER BY created_at DESC
     `);
