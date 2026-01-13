@@ -48,7 +48,7 @@ const getDashboardStats = async (req, res) => {
       pool.query('SELECT COUNT(*) FROM users'),
       pool.query('SELECT COUNT(*) FROM users WHERE role = $1', ['freelancer']),
       pool.query('SELECT COUNT(*) FROM users WHERE role = $1', ['client']),
-      pool.query('SELECT COUNT(*) FROM projects WHERE status IN ($1, $2)', ['open', 'in_progress']),
+      pool.query('SELECT COUNT(*) FROM jobs WHERE status IN ($1, $2)', ['open', 'in_progress']),
       pool.query('SELECT COALESCE(SUM(amount), 0) as total_fee FROM transactions WHERE type = $1 AND status = $2', ['platform_fee', 'completed']), // alias qo'shildi: as total_fee
       pool.query('SELECT COUNT(*) FROM disputes WHERE status = $1', ['open'])
     ]);
