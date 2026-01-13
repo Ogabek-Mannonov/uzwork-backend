@@ -10,6 +10,7 @@ const {
   getPayments,
   getChats,
   getJobById,
+  getUserById,
   // qolgan funksiyalar keyin qo‘shiladi
 } = require('../controllers/adminController');
 
@@ -22,6 +23,7 @@ router.get('/dashboard', getDashboardStats);
 
 // Foydalanuvchilar
 router.get('/users', getUsers);
+router.get('/users/:id', getUserById);
 
 // Loyihalar
 router.get('/jobs', getJobs);

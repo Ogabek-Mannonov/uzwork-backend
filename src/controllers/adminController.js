@@ -118,6 +118,32 @@ const getUsers = async (req, res) => {
   }
 };
 
+
+const getUserById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(`
+      SELECT 
+        id, username, first_name, last_name, email, phone, role, is_verified, is_premium,
+        balance_uzs, balance_usd, created_at
+      FROM users
+      WHERE id = $1
+    `, [id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Foydalanuvchi topilmadi.' });
+    }
+
+    res.json({
+      success: true,
+      data: { user: result.rows[0] }
+    });
+  } catch (error) {
+    console.error('Get user by ID error:', error);
+    res.status(500).json({ success: false, message: 'Foydalanuvchi tafsilotlarini olishda xato.' });
+  }
+};
+
 /**
  * GET /admin/jobs
  * Barcha loyihalar ro‘yxati (jobs table dan)
@@ -244,6 +270,7 @@ module.exports = {
   isAdmin,
   getDashboardStats,
   getUsers,
+  getUserById,
   getJobs,
   getPayments,
   getChats,
