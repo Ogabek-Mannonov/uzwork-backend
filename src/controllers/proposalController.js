@@ -20,17 +20,15 @@ const createProposal = async (req, res) => {
     const {
       job_id,
       cover_letter,
-      proposed_rate,
-      proposed_amount,
-      estimated_hours,
-      estimated_days
+      proposed_price,       // sizning table da bor
+      proposed_duration     // sizning table da bor
     } = req.body;
 
     // Validation
-    if (!job_id || !cover_letter) {
+    if (!job_id || !cover_letter || !proposed_price || !proposed_duration) {
       return res.status(400).json({
         success: false,
-        message: 'Job_id va cover_letter majburiy maydonlar.'
+        message: 'job_id, cover_letter, proposed_price va proposed_duration majburiy maydonlar.'
       });
     }
 
@@ -69,38 +67,19 @@ const createProposal = async (req, res) => {
       });
     }
 
-    // Validate proposal data based on project budget type
-    if (project.budget_type === 'hourly') {
-      if (!proposed_rate || !estimated_hours) {
-        return res.status(400).json({
-          success: false,
-          message: 'Hourly loyihalar uchun proposed_rate va estimated_hours kerak.'
-        });
-      }
-    } else if (project.budget_type === 'fixed') {
-      if (!proposed_amount || !estimated_days) {
-        return res.status(400).json({
-          success: false,
-          message: 'Fixed loyihalar uchun proposed_amount va estimated_days kerak.'
-        });
-      }
-    }
-
-    // Insert proposal
+    // Insert proposal (sizning table ga mos)
     const result = await pool.query(
       `INSERT INTO proposals (
         job_id, freelancer_id, cover_letter,
-        proposed_rate, proposed_amount, estimated_hours, estimated_days
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7)
+        proposed_price, proposed_duration
+      ) VALUES ($1, $2, $3, $4, $5)
       RETURNING *`,
       [
         job_id,
         userId,
         cover_letter,
-        proposed_rate || null,
-        proposed_amount || null,
-        estimated_hours || null,
-        estimated_days || null
+        proposed_price,
+        proposed_duration
       ]
     );
 
