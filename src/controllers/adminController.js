@@ -154,6 +154,34 @@ const getJobs = async (req, res) => {
     });
   }
 };
+
+const getJobById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(`
+      SELECT 
+        p.id, p.title, p.description, p.budget_min, p.budget_max, p.currency,
+        p.status, p.is_boosted, p.created_at, p.deadline, p.required_skills,
+        u.first_name || ' ' || u.last_name AS client_name,
+        u.username AS client_username
+      FROM jobs p
+      JOIN users u ON p.client_id = u.id
+      WHERE p.id = $1
+    `, [id]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Loyiha topilmadi.' });
+    }
+
+    res.json({
+      success: true,
+      data: { job: result.rows[0] }
+    });
+  } catch (error) {
+    console.error('Get job by ID error:', error);
+    res.status(500).json({ success: false, message: 'Loyiha tafsilotlarini olishda xato.' });
+  }
+};
 /**
  * GET /admin/payments
  * Barcha tranzaksiyalar
@@ -219,4 +247,5 @@ module.exports = {
   getJobs,
   getPayments,
   getChats,
+  getJobById,
 };

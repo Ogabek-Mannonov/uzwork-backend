@@ -9,6 +9,7 @@ const {
   getJobs,
   getPayments,
   getChats,
+  getJobById,
   // qolgan funksiyalar keyin qo‘shiladi
 } = require('../controllers/adminController');
 
@@ -24,6 +25,8 @@ router.get('/users', getUsers);
 
 // Loyihalar
 router.get('/jobs', getJobs);
+
+router.get('/jobs/:id', getJobById);
 
 // To‘lovlar
 router.get('/payments', getPayments);
