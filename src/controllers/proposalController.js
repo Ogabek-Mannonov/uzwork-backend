@@ -326,7 +326,7 @@ const getProjectProposals = async (req, res) => {
       });
     }
 
-    if (userRole !== 'client' || projectCheck.rows[0].client_id !== userId) {
+    if (userRole !== 'admin' || projectCheck.rows[0].client_id !== userId) {
       return res.status(403).json({
         success: false,
         message: 'Siz bu loyihaning egasi emassiz.'
