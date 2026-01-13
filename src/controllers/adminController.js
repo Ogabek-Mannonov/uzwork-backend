@@ -129,7 +129,7 @@ const getJobs = async (req, res) => {
         p.id, p.title, p.description, p.budget, p.status, p.boosted, p.created_at,
         u.first_name || ' ' || u.last_name AS client_name,
         u.username AS client_username
-      FROM projects p
+      FROM jobs p
       JOIN users u ON p.client_id = u.id
       ORDER BY p.created_at DESC
     `);
