@@ -328,7 +328,6 @@ const getProjectProposals = async (req, res) => {
 
     const project = projectCheck.rows[0];
 
-    // Admin uchun ruxsat beramiz, client uchun esa faqat o‘z loyihasi bo‘lsa
     if (userRole !== 'admin' && project.client_id !== userId) {
       return res.status(403).json({
         success: false,
@@ -349,12 +348,10 @@ const getProjectProposals = async (req, res) => {
       queryParams.push(status);
     }
 
-    // Get total count
     const countQuery = `SELECT COUNT(*) FROM proposals p ${whereClause}`;
     const countResult = await pool.query(countQuery, queryParams);
     const total = parseInt(countResult.rows[0].count);
 
-    // Get proposals
     const proposalsQuery = `
       SELECT 
         p.*,
