@@ -120,13 +120,19 @@ const getUsers = async (req, res) => {
 
 /**
  * GET /admin/jobs
- * Barcha loyihalar ro‘yxati
+ * Barcha loyihalar ro‘yxati (jobs table dan)
  */
 const getJobs = async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT 
-        p.id, p.title, p.description, p.budget, p.status, p.boosted, p.created_at,
+        p.id, 
+        p.title, 
+        p.description, 
+        p.budget_min || ' - ' || p.budget_max || ' ' || p.currency AS budget,
+        p.status, 
+        p.is_boosted AS boosted, 
+        p.created_at,
         u.first_name || ' ' || u.last_name AS client_name,
         u.username AS client_username
       FROM jobs p
@@ -141,14 +147,13 @@ const getJobs = async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Get jobs error:', error);
+    console.error('Get jobs error:', error.message);
     res.status(500).json({
       success: false,
       message: 'Loyihalarni olishda xato yuz berdi.'
     });
   }
 };
-
 /**
  * GET /admin/payments
  * Barcha tranzaksiyalar
