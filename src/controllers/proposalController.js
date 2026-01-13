@@ -313,7 +313,7 @@ const getProjectProposals = async (req, res) => {
     const userId = req.user.id;
     const userRole = req.user.role;
 
-    // Check if user is project owner
+    // Check if project exists
     const projectCheck = await pool.query(
       'SELECT client_id FROM jobs WHERE id = $1',
       [projectId]
@@ -326,13 +326,17 @@ const getProjectProposals = async (req, res) => {
       });
     }
 
-    if (userRole !== 'admin' || projectCheck.rows[0].client_id !== userId) {
+    const project = projectCheck.rows[0];
+
+    // Admin uchun ruxsat beramiz, client uchun esa faqat o‘z loyihasi bo‘lsa
+    if (userRole !== 'admin' && project.client_id !== userId) {
       return res.status(403).json({
         success: false,
         message: 'Siz bu loyihaning egasi emassiz.'
       });
     }
 
+    // Qolgan kod o‘zgarmaydi (pagination, query va h.k.)
     const { status, page = 1, limit = 20 } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
 
@@ -389,7 +393,6 @@ const getProjectProposals = async (req, res) => {
     });
   }
 };
-
 /**
  * PUT /proposals/:id
  * Update proposal (only author can update)
