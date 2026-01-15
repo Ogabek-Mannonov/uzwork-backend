@@ -68,7 +68,7 @@ const getDashboardStats = async (req, res) => {
     // 5. Umumiy daromad va platforma haqi
     try {
       const totalRevenue = await pool.query('SELECT COALESCE(SUM(amount), 0) as total_fee FROM transactions WHERE type = $1 AND status = $2', ['platform_fee', 'completed']);
-      const fee = parseInt(totalRevenue.rows[0].total_fee || 0);
+      const fee = parseInt(totalRevenue.rows[0].total_fee);
       stats.totalRevenue = `${fee.toLocaleString()} so‘m`;
       stats.platformFee = `${fee.toLocaleString()} so‘m`;
     } catch (e) { console.error('XATO: Total revenue:', e.message); stats.totalRevenue = "0 so‘m"; stats.platformFee = "0 so‘m"; }
@@ -105,8 +105,8 @@ const getDashboardStats = async (req, res) => {
       time
     FROM (
       SELECT 
-        'Yangi loyiha joylashtirdi' as action,
-        COALESCE(u.first_name || ' ' || u.last_name, 'Noma''lum') as name,
+        "Yangi loyiha joylashtirdi" as action,
+        COALESCE(u.first_name || ' ' || u.last_name, "Noma'lum") as name,
         j.created_at as time
       FROM jobs j
       LEFT JOIN users u ON j.client_id = u.id
@@ -117,7 +117,7 @@ const getDashboardStats = async (req, res) => {
 
       SELECT 
         'Taklif yubordi' as action,
-        COALESCE(u.first_name || ' ' || u.last_name, 'Noma''lum') as name,
+        COALESCE(u.first_name || ' ' || u.last_name, "Noma'lum") as name,
         p.created_at as time
       FROM proposals p
       LEFT JOIN users u ON p.freelancer_id = u.id
@@ -127,12 +127,12 @@ const getDashboardStats = async (req, res) => {
       UNION ALL
 
       SELECT 
-        'To''lov amalga oshirdi' as action,
-        COALESCE(u.first_name || ' ' || u.last_name, 'Noma''lum') as name,
+        "To'lov amalga oshirdi" as action,  -- BU YERDA TO'lov (ikkita apostrof)
+        COALESCE(u.first_name || ' ' || u.last_name, "Noma'lum") as name,
         t.created_at as time
       FROM transactions t
       LEFT JOIN users u ON t.user_id = u.id
-      WHERE t.status = 'completed'
+      WHERE t.status = "completed"
       ORDER BY t.created_at DESC
       LIMIT 1
     ) AS combined
@@ -169,7 +169,7 @@ const getDashboardStats = async (req, res) => {
           activeJobs: stats.activeJobs || 0,
           totalRevenue: stats.totalRevenue || "0 so‘m",
           platformFee: stats.platformFee || "0 so‘m",
-          usersGrowth: "+12.5%", // keyin real hisoblaymiz
+          usersGrowth: "+12.5%",
           jobsGrowth: "+8.3%",
           revenueGrowth: "+23.1%",
           feeGrowth: "+18.7%",
@@ -190,7 +190,6 @@ const getDashboardStats = async (req, res) => {
     });
   }
 };
-
 /**
  * GET /admin/users
  * Barcha foydalanuvchilar ro‘yxati
