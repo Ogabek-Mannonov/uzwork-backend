@@ -7,7 +7,7 @@ const pool = require('../db/pool');
 const isAdmin = async (req, res, next) => {
   try {
     const userId = req.user.id;
-    
+
     const result = await pool.query(
       'SELECT role FROM users WHERE id = $1',
       [userId]
@@ -37,103 +37,153 @@ const isAdmin = async (req, res, next) => {
 // src/controllers/adminController.js
 const getDashboardStats = async (req, res) => {
   try {
-    const [
-      usersCount,
-      freelancersCount,
-      clientsCount,
-      activeJobs,
-      totalRevenue,
-      openDisputes,
-      pendingMilestones,
-      completedThisMonth,
-      recentActivity
-    ] = await Promise.all([
-      // Asosiy statistika (sizda allaqachon bor)
-      pool.query('SELECT COUNT(*) FROM users'),
-      pool.query('SELECT COUNT(*) FROM users WHERE role = $1', ['freelancer']),
-      pool.query('SELECT COUNT(*) FROM users WHERE role = $1', ['client']),
-      pool.query('SELECT COUNT(*) FROM jobs WHERE status IN ($1, $2)', ['open', 'in_progress']),
-      pool.query('SELECT COALESCE(SUM(amount), 0) as total_fee FROM transactions WHERE type = $1 AND status = $2', ['platform_fee', 'completed']),
-      pool.query('SELECT COUNT(*) FROM disputes WHERE status = $1', ['open']),
+    const stats = {};
+    const quickStats = {};
+    let recentActivity = [];
 
-      // Tezkor statistika - real
-      pool.query('SELECT COUNT(*) FROM milestones WHERE status = $1', ['pending']),
-      pool.query(`
+    // 1. Jami foydalanuvchilar
+    try {
+      const usersCount = await pool.query('SELECT COUNT(*) FROM users');
+      stats.totalUsers = parseInt(usersCount.rows[0].count);
+    } catch (e) { console.error('XATO: Jami users count:', e.message); stats.totalUsers = 0; }
+
+    // 2. Freelancerlar soni
+    try {
+      const freelancersCount = await pool.query('SELECT COUNT(*) FROM users WHERE role = $1', ['freelancer']);
+      stats.totalFreelancers = parseInt(freelancersCount.rows[0].count);
+    } catch (e) { console.error('XATO: Freelancers count:', e.message); stats.totalFreelancers = 0; }
+
+    // 3. Clientlar soni
+    try {
+      const clientsCount = await pool.query('SELECT COUNT(*) FROM users WHERE role = $1', ['client']);
+      stats.totalClients = parseInt(clientsCount.rows[0].count);
+    } catch (e) { console.error('XATO: Clients count:', e.message); stats.totalClients = 0; }
+
+    // 4. Faol loyihalar
+    try {
+      const activeJobs = await pool.query('SELECT COUNT(*) FROM jobs WHERE status IN ($1, $2)', ['open', 'in_progress']);
+      stats.activeJobs = parseInt(activeJobs.rows[0].count);
+    } catch (e) { console.error('XATO: Active jobs count:', e.message); stats.activeJobs = 0; }
+
+    // 5. Umumiy daromad va platforma haqi
+    try {
+      const totalRevenue = await pool.query('SELECT COALESCE(SUM(amount), 0) as total_fee FROM transactions WHERE type = $1 AND status = $2', ['platform_fee', 'completed']);
+      const fee = parseInt(totalRevenue.rows[0].total_fee || 0);
+      stats.totalRevenue = `${fee.toLocaleString()} so‘m`;
+      stats.platformFee = `${fee.toLocaleString()} so‘m`;
+    } catch (e) { console.error('XATO: Total revenue:', e.message); stats.totalRevenue = "0 so‘m"; stats.platformFee = "0 so‘m"; }
+
+    // 6. Ochiq nizolar
+    try {
+      const openDisputes = await pool.query('SELECT COUNT(*) FROM disputes WHERE status = $1', ['open']);
+      quickStats.openDisputes = parseInt(openDisputes.rows[0].count);
+    } catch (e) { console.error('XATO: Open disputes:', e.message); quickStats.openDisputes = 0; }
+
+    // 7. Kutilayotgan milestone lar
+    try {
+      const pending = await pool.query('SELECT COUNT(*) FROM milestones WHERE status = $1', ['pending']);
+      quickStats.pendingMilestones = parseInt(pending.rows[0].count);
+    } catch (e) { console.error('XATO: Pending milestones:', e.message); quickStats.pendingMilestones = 0; }
+
+    // 8. Bu oyda tugallangan milestone lar
+    try {
+      const completed = await pool.query(`
         SELECT COUNT(*) 
         FROM milestones 
         WHERE status = 'approved' 
         AND approved_at >= date_trunc('month', CURRENT_DATE)
-      `),
+      `);
+      quickStats.completedThisMonth = parseInt(completed.rows[0].count);
+    } catch (e) { console.error('XATO: Completed this month:', e.message); quickStats.completedThisMonth = 0; }
 
-      // So‘nggi faollik - real (oxirgi 5 ta harakat)
-      pool.query(`
-        SELECT 
-          CASE 
-            WHEN j.id IS NOT NULL THEN 'Yangi loyiha joylashtirdi'
-            WHEN p.id IS NOT NULL THEN 'Taklif yubordi'
-            WHEN t.id IS NOT NULL THEN 'To\'lov amalga oshirdi'
-            ELSE 'Boshqa harakat'
-          END as action,
-          COALESCE(u.first_name || ' ' || u.last_name, 'Noma\'lum') as name,
-          COALESCE(j.created_at, p.created_at, t.created_at) as time
-        FROM (
-          SELECT 'job' as type, id, client_id as user_id, created_at FROM jobs ORDER BY created_at DESC LIMIT 2
-          UNION ALL
-          SELECT 'proposal' as type, id, freelancer_id as user_id, created_at FROM proposals ORDER BY created_at DESC LIMIT 2
-          UNION ALL
-          SELECT 'transaction' as type, id, user_id, created_at FROM transactions WHERE status = 'completed' ORDER BY created_at DESC LIMIT 1
-        ) AS actions
-        LEFT JOIN users u ON actions.user_id = u.id
-        LEFT JOIN jobs j ON actions.type = 'job' AND actions.id = j.id
-        LEFT JOIN proposals p ON actions.type = 'proposal' AND actions.id = p.id
-        LEFT JOIN transactions t ON actions.type = 'transaction' AND actions.id = t.id
-        ORDER BY time DESC
-        LIMIT 5
-      `)
-    ]);
+    // 9. So‘nggi faollik (eng muhim qism – xato shu yerda bo‘lishi mumkin)
+    try {
+      const activityResult = await pool.query(`
+    SELECT 
+      action,
+      name,
+      time
+    FROM (
+      SELECT 
+        'Yangi loyiha joylashtirdi' as action,
+        COALESCE(u.first_name || ' ' || u.last_name, 'Noma''lum') as name,
+        j.created_at as time
+      FROM jobs j
+      LEFT JOIN users u ON j.client_id = u.id
+      ORDER BY j.created_at DESC
+      LIMIT 2
 
-    // Vaqtni formatlash (masalan "5 daqiqa oldin")
-    const formatTime = (date) => {
-      const diff = Math.floor((new Date() - new Date(date)) / 1000);
-      if (diff < 60) return `${diff} soniya oldin`;
-      if (diff < 3600) return `${Math.floor(diff / 60)} daqiqa oldin`;
-      if (diff < 86400) return `${Math.floor(diff / 3600)} soat oldin`;
-      return `${Math.floor(diff / 86400)} kun oldin`;
-    };
+      UNION ALL
 
-    const formattedRecentActivity = recentActivity.rows.map(row => ({
-      name: row.name,
-      action: row.action,
-      time: formatTime(row.time)
-    }));
+      SELECT 
+        'Taklif yubordi' as action,
+        COALESCE(u.first_name || ' ' || u.last_name, 'Noma''lum') as name,
+        p.created_at as time
+      FROM proposals p
+      LEFT JOIN users u ON p.freelancer_id = u.id
+      ORDER BY p.created_at DESC
+      LIMIT 2
+
+      UNION ALL
+
+      SELECT 
+        'To''lov amalga oshirdi' as action,
+        COALESCE(u.first_name || ' ' || u.last_name, 'Noma''lum') as name,
+        t.created_at as time
+      FROM transactions t
+      LEFT JOIN users u ON t.user_id = u.id
+      WHERE t.status = 'completed'
+      ORDER BY t.created_at DESC
+      LIMIT 1
+    ) AS combined
+    ORDER BY time DESC
+    LIMIT 5
+  `);
+
+      const formatTime = (date) => {
+        if (!date) return "Noma'lum vaqt oldin";
+        const diff = Math.floor((new Date() - new Date(date)) / 1000);
+        if (diff < 60) return `${diff} soniya oldin`;
+        if (diff < 3600) return `${Math.floor(diff / 60)} daqiqa oldin`;
+        if (diff < 86400) return `${Math.floor(diff / 3600)} soat oldin`;
+        return `${Math.floor(diff / 86400)} kun oldin`;
+      };
+
+      recentActivity = activityResult.rows.map(row => ({
+        name: row.name,
+        action: row.action,
+        time: formatTime(row.time)
+      }));
+    } catch (e) {
+      console.error('XATO: So‘nggi faollik query:', e.message);
+      recentActivity = [];
+    }
 
     res.json({
       success: true,
       data: {
         stats: {
-          totalUsers: parseInt(usersCount.rows[0].count),
-          totalFreelancers: parseInt(freelancersCount.rows[0].count),
-          totalClients: parseInt(clientsCount.rows[0].count),
-          activeJobs: parseInt(activeJobs.rows[0].count),
-          totalRevenue: `${parseInt(totalRevenue.rows[0].total_fee).toLocaleString()} so‘m`,
-          platformFee: `${parseInt(totalRevenue.rows[0].total_fee).toLocaleString()} so‘m`,
-          usersGrowth: "+12.5%", // keyin real hisoblab qo‘shiladi
+          totalUsers: stats.totalUsers || 0,
+          totalFreelancers: stats.totalFreelancers || 0,
+          totalClients: stats.totalClients || 0,
+          activeJobs: stats.activeJobs || 0,
+          totalRevenue: stats.totalRevenue || "0 so‘m",
+          platformFee: stats.platformFee || "0 so‘m",
+          usersGrowth: "+12.5%", // keyin real hisoblaymiz
           jobsGrowth: "+8.3%",
           revenueGrowth: "+23.1%",
           feeGrowth: "+18.7%",
         },
-        recentActivity: formattedRecentActivity.length > 0 ? formattedRecentActivity : [
-          { name: "Ogabek Dev", action: "Yangi loyiha joylashtirdi", time: "5 daqiqa oldin" }
-        ],
+        recentActivity,
         quickStats: {
-          pendingMilestones: parseInt(pendingMilestones.rows[0].count),
-          completedThisMonth: parseInt(completedThisMonth.rows[0].count),
-          openDisputes: parseInt(openDisputes.rows[0].count),
+          pendingMilestones: quickStats.pendingMilestones || 0,
+          completedThisMonth: quickStats.completedThisMonth || 0,
+          openDisputes: quickStats.openDisputes || 0,
         }
       }
     });
   } catch (error) {
-    console.error('Dashboard stats xatosi:', error.message);
+    console.error('Dashboard umumiy xatosi:', error.message);
     res.status(500).json({
       success: false,
       message: 'Dashboard ma\'lumotlarini olishda xato yuz berdi.'
