@@ -98,12 +98,12 @@ const getDashboardStats = async (req, res) => {
 
     // 9. So‘nggi faollik (eng muhim qism – xato shu yerda bo‘lishi mumkin)
     try {
-      const activityResult = await pool.query(`
+  const result = await pool.query(`
     SELECT 
       'Yangi loyiha joylashtirdi' AS action,
-      COALESCE(u.first_name || ' ' || u.last_name, 'Noma\'lum mijoz') AS name,
-      j.created_at AS time,
-      j.title AS extra_info
+      COALESCE(u.first_name || ' ' || u.last_name, 'Nomalum mijoz') AS name,
+      j.title AS project_title,
+      j.created_at AS time
     FROM jobs j
     LEFT JOIN users u ON j.client_id = u.id
     WHERE j.created_at IS NOT NULL
@@ -111,29 +111,31 @@ const getDashboardStats = async (req, res) => {
     LIMIT 5
   `);
 
-      const now = new Date();
-      recentActivity = activityResult.rows.map(row => {
-        const diffMs = now - new Date(row.time);
-        const diffSec = Math.floor(diffMs / 1000);
-
-        let timeAgo = 'hozirgina';
-        if (diffSec > 60) timeAgo = `${Math.floor(diffSec / 60)} daqiqa oldin`;
-        if (diffSec > 3600) timeAgo = `${Math.floor(diffSec / 3600)} soat oldin`;
-        if (diffSec > 86400) timeAgo = `${Math.floor(diffSec / 86400)} kun oldin`;
-
-        return {
-          name: row.name,
-          action: `${row.action} (${row.extra_info || 'loyihasi'})`,
-          time: timeAgo
-        };
-      });
-
-      console.log("Recent activity natijasi:", recentActivity); // ← server konsolida ko'rasiz
-    } catch (e) {
-      console.error("So'nggi faollik xatosi:", e.message);
-      recentActivity = [];
+  const now = new Date();
+  recentActivity = result.rows.map(row => {
+    let timeAgo = 'hozirgina';
+    if (row.time) {
+      const diffMs = now - new Date(row.time);
+      const diffSec = Math.floor(diffMs / 1000);
+      if (diffSec > 60) timeAgo = `${Math.floor(diffSec / 60)} daqiqa oldin`;
+      if (diffSec > 3600) timeAgo = `${Math.floor(diffSec / 3600)} soat oldin`;
+      if (diffSec > 86400) timeAgo = `${Math.floor(diffSec / 86400)} kun oldin`;
     }
 
+    return {
+      name: row.name,
+      action: row.project_title 
+        ? `${row.action} (${row.project_title})` 
+        : row.action,
+      time: timeAgo
+    };
+  });
+
+  console.log('Songgi faollik natijasi (jobsdan):', recentActivity);
+} catch (err) {
+  console.error('Songgi faollik xatosi:', err.message);
+  recentActivity = [];
+}
     res.json({
       success: true,
       data: {
