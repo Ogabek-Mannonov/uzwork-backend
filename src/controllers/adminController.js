@@ -99,61 +99,38 @@ const getDashboardStats = async (req, res) => {
     // 9. So‘nggi faollik (eng muhim qism – xato shu yerda bo‘lishi mumkin)
     try {
       const activityResult = await pool.query(`
-   SELECT 
-  action,
-  name,
-  time
-FROM (
-  -- Yangi loyiha
-  SELECT 
-    'Yangi loyiha joylashtirdi' AS action,
-    COALESCE(u.first_name || ' ' || u.last_name, "Noma'lum") AS name,
-    j.created_at AS time
-  FROM jobs j
-  LEFT JOIN users u ON j.client_id = u.id
-
-  UNION ALL
-
-  -- Taklif
-  SELECT 
-    'Taklif yubordi' AS action,
-    COALESCE(u.first_name || ' ' || u.last_name, "Noma'lum") AS name,
-    p.created_at AS time
-  FROM proposals p
-  LEFT JOIN users u ON p.freelancer_id = u.id
-
-  UNION ALL
-
-  -- To'lov
-  SELECT 
-    "To'lov amalga oshirdi" AS action,
-    COALESCE(u.first_name || ' ' || u.last_name, "Noma'lum") AS name,
-    t.created_at AS time
-  FROM transactions t
-  LEFT JOIN users u ON t.user_id = u.id
-  WHERE t.status = 'completed'
-) AS combined
-WHERE time IS NOT NULL
-ORDER BY time DESC
-LIMIT 5;
+    SELECT 
+      'Yangi loyiha joylashtirdi' AS action,
+      COALESCE(u.first_name || ' ' || u.last_name, 'Noma\'lum mijoz') AS name,
+      j.created_at AS time,
+      j.title AS extra_info
+    FROM jobs j
+    LEFT JOIN users u ON j.client_id = u.id
+    WHERE j.created_at IS NOT NULL
+    ORDER BY j.created_at DESC
+    LIMIT 5
   `);
 
-      const formatTime = (date) => {
-        if (!date) return "Noma'lum vaqt oldin";
-        const diff = Math.floor((new Date() - new Date(date)) / 1000);
-        if (diff < 60) return `${diff} soniya oldin`;
-        if (diff < 3600) return `${Math.floor(diff / 60)} daqiqa oldin`;
-        if (diff < 86400) return `${Math.floor(diff / 3600)} soat oldin`;
-        return `${Math.floor(diff / 86400)} kun oldin`;
-      };
+      const now = new Date();
+      recentActivity = activityResult.rows.map(row => {
+        const diffMs = now - new Date(row.time);
+        const diffSec = Math.floor(diffMs / 1000);
 
-      recentActivity = activityResult.rows.map(row => ({
-        name: row.name,
-        action: row.action,
-        time: formatTime(row.time)
-      }));
+        let timeAgo = 'hozirgina';
+        if (diffSec > 60) timeAgo = `${Math.floor(diffSec / 60)} daqiqa oldin`;
+        if (diffSec > 3600) timeAgo = `${Math.floor(diffSec / 3600)} soat oldin`;
+        if (diffSec > 86400) timeAgo = `${Math.floor(diffSec / 86400)} kun oldin`;
+
+        return {
+          name: row.name,
+          action: `${row.action} (${row.extra_info || 'loyihasi'})`,
+          time: timeAgo
+        };
+      });
+
+      console.log("Recent activity natijasi:", recentActivity); // ← server konsolida ko'rasiz
     } catch (e) {
-      console.error('XATO: So‘nggi faollik query:', e.message);
+      console.error("So'nggi faollik xatosi:", e.message);
       recentActivity = [];
     }
 
