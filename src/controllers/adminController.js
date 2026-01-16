@@ -99,45 +99,43 @@ const getDashboardStats = async (req, res) => {
     // 9. So‘nggi faollik (eng muhim qism – xato shu yerda bo‘lishi mumkin)
     try {
       const activityResult = await pool.query(`
-    SELECT 
-      action,
-      name,
-      time
-    FROM (
-      SELECT 
-        "Yangi loyiha joylashtirdi" as action,
-        COALESCE(u.first_name || ' ' || u.last_name, "Noma'lum") as name,
-        j.created_at as time
-      FROM jobs j
-      LEFT JOIN users u ON j.client_id = u.id
-      ORDER BY j.created_at DESC
-      LIMIT 2
+   SELECT 
+  action,
+  name,
+  time
+FROM (
+  -- Yangi loyiha
+  SELECT 
+    'Yangi loyiha joylashtirdi' AS action,
+    COALESCE(u.first_name || ' ' || u.last_name, "Noma'lum") AS name,
+    j.created_at AS time
+  FROM jobs j
+  LEFT JOIN users u ON j.client_id = u.id
 
-      UNION ALL
+  UNION ALL
 
-      SELECT 
-        'Taklif yubordi' as action,
-        COALESCE(u.first_name || ' ' || u.last_name, "Noma'lum") as name,
-        p.created_at as time
-      FROM proposals p
-      LEFT JOIN users u ON p.freelancer_id = u.id
-      ORDER BY p.created_at DESC
-      LIMIT 2
+  -- Taklif
+  SELECT 
+    'Taklif yubordi' AS action,
+    COALESCE(u.first_name || ' ' || u.last_name, "Noma'lum") AS name,
+    p.created_at AS time
+  FROM proposals p
+  LEFT JOIN users u ON p.freelancer_id = u.id
 
-      UNION ALL
+  UNION ALL
 
-      SELECT 
-        "To'lov amalga oshirdi" as action,  -- BU YERDA TO'lov (ikkita apostrof)
-        COALESCE(u.first_name || ' ' || u.last_name, "Noma'lum") as name,
-        t.created_at as time
-      FROM transactions t
-      LEFT JOIN users u ON t.user_id = u.id
-      WHERE t.status = "completed"
-      ORDER BY t.created_at DESC
-      LIMIT 1
-    ) AS combined
-    ORDER BY time DESC
-    LIMIT 5
+  -- To'lov
+  SELECT 
+    "To'lov amalga oshirdi" AS action,
+    COALESCE(u.first_name || ' ' || u.last_name, "Noma'lum") AS name,
+    t.created_at AS time
+  FROM transactions t
+  LEFT JOIN users u ON t.user_id = u.id
+  WHERE t.status = 'completed'
+) AS combined
+WHERE time IS NOT NULL
+ORDER BY time DESC
+LIMIT 5;
   `);
 
       const formatTime = (date) => {
