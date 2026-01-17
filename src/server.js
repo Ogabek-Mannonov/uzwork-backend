@@ -46,6 +46,19 @@ const io = new Server(server, {
   pingInterval: 25000
 });
 
+
+// ... app yaratilgandan keyin qo‘shing
+app.use(cors({
+  origin: [
+    'https://uzwork-admin-panel.vercel.app',    // sizning frontend Vercel domeni
+    'http://localhost:3000',                    // local development uchun
+  ],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true,   // agar cookie/token ishlatayotgan bo‘lsangiz muhim
+  optionsSuccessStatus: 200
+}));
+
 // Socket.io ulanishlarini boshqarish
 io.on('connection', (socket) => {
   console.log('Yangi foydalanuvchi ulandi:', socket.id);
