@@ -95,22 +95,39 @@ const getChats = async (req, res) => {
   }
 };
 /**
+ /**
  * GET /messages/:chatId
- * Get chat history
+ * Get chat history for a specific chat
  */
 const getChatHistory = async (req, res) => {
   try {
     const { chatId } = req.params;
     const userId = req.user.id;
-    const isAdmin = req.user.role === 'admin'; // ← role bo‘yicha tekshirish
+    const isAdmin = req.user.role === 'admin'; // Adminligini tekshirish
 
-    // Xabarlar tarixini olish
+    // chatId ni UUID sifatida tekshirish (majburiy emas, lekin xavfsiz)
+    if (!chatId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(chatId)) {
+      return res.status(400).json({
+        success: false,
+        message: "Noto'g'ri chat ID formati (UUID bo‘lishi kerak)"
+      });
+    }
+
+    // Xabarlar tarixini olish (ASC tartibda, eski xabarlardan boshlab)
     const messagesQuery = `
       SELECT 
-        m.*,
-        u_sender.first_name as sender_first_name,
-        u_sender.last_name as sender_last_name,
-        u_sender.role as sender_role
+        m.id,
+        m.chat_id,
+        m.sender_id,
+        m.content,
+        m.type,
+        m.file_url,
+        m.is_read,
+        m.created_at,
+        u_sender.first_name AS sender_first_name,
+        u_sender.last_name AS sender_last_name,
+        u_sender.role AS sender_role,
+        u_sender.username AS sender_username
       FROM messages m
       JOIN users u_sender ON m.sender_id = u_sender.id
       WHERE m.chat_id = $1
@@ -119,16 +136,16 @@ const getChatHistory = async (req, res) => {
 
     const messagesResult = await pool.query(messagesQuery, [chatId]);
 
-    // Har bir xabarga sender_is_admin flag qo‘shish
+    // Har bir xabarga sender_is_admin flag qo‘shish (frontend uchun)
     const messagesWithInfo = messagesResult.rows.map((msg) => ({
       ...msg,
-      sender_is_admin: msg.sender_role === 'admin', // ← bu flag frontendda ishlatiladi
+      sender_is_admin: msg.sender_role === 'admin', // Bu flag frontendda o‘ng/ chap tarafni belgilaydi
     }));
 
-    // Xabarlarni o‘qilgan deb belgilash (agar admin bo‘lsa)
+    // Agar foydalanuvchi admin bo‘lsa, barcha o‘qilmagan xabarlarni o‘qilgan deb belgilash
     if (isAdmin) {
       await pool.query(
-        'UPDATE messages SET is_read = TRUE WHERE chat_id = $1 AND sender_id != $2',
+        'UPDATE messages SET is_read = TRUE WHERE chat_id = $1 AND sender_id != $2 AND is_read = FALSE',
         [chatId, userId]
       );
     }
@@ -137,11 +154,11 @@ const getChatHistory = async (req, res) => {
       success: true,
       data: {
         messages: messagesWithInfo,
-        is_admin: isAdmin // qo‘shimcha flag (ixtiyoriy)
+        is_admin: isAdmin // Qo‘shimcha flag (ixtiyoriy, frontendda foydalanilishi mumkin)
       }
     });
   } catch (error) {
-    console.error('Get chat history error:', error.stack);
+    console.error('Get chat history FULL ERROR:', error.stack);
     res.status(500).json({
       success: false,
       message: 'Chat tarixini olishda xato yuz berdi.',
