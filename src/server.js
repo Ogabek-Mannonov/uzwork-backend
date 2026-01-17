@@ -3,6 +3,8 @@ const express = require('express');
 const cors = require('cors');
 const morgan = require('morgan');
 const helmet = require('helmet');
+const http = require('http');
+const { Server } = require('socket.io');
 require('dotenv').config();
 
 const pool = require('./db/pool');
@@ -30,15 +32,83 @@ const fileRoutes = require('./routes/fileRoutes');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// HTTP server yaratish (Socket.io uchun kerak)
+const server = http.createServer(app);
+
+// Socket.io sozlamalari (real-time chat uchun)
+const io = new Server(server, {
+  cors: {
+    origin: ["http://localhost:3000", "https://uzwork.uz"], // frontend URL lari
+    methods: ["GET", "POST"],
+    credentials: true
+  },
+  pingTimeout: 60000,
+  pingInterval: 25000
+});
+
+// Socket.io ulanishlarini boshqarish
+io.on('connection', (socket) => {
+  console.log('Yangi foydalanuvchi ulandi:', socket.id);
+
+  // Foydalanuvchi o‘z roomiga qo‘shiladi
+  socket.on('joinUser', (userId) => {
+    if (userId) {
+      socket.join(`user_${userId}`);
+      console.log(`User ${userId} o‘z roomiga qo‘shildi`);
+    }
+  });
+
+  // Suhbat roomiga qo‘shilish (chatId bo‘yicha)
+  socket.on('joinChat', (chatId) => {
+    if (chatId) {
+      socket.join(`chat_${chatId}`);
+      console.log(`Socket ${socket.id} chat_${chatId} roomiga qo‘shildi`);
+    }
+  });
+
+  // Yangi xabar yuborish
+  socket.on('sendMessage', (data) => {
+    const { chatId, receiverId, message } = data;
+    
+    // Suhbatdagi barcha qatnashuvchilarga yuborish
+    io.to(`chat_${chatId}`).emit('newMessage', message);
+    
+    // Yangi xabar bildirishnomasi (o‘qilmagan soni)
+    io.to(`user_${receiverId}`).emit('unreadUpdate', {
+      chatId,
+      unreadCount: 1 // real sonini backenddan hisoblash mumkin
+    });
+  });
+
+  // Xabar o‘qilganini bildirish
+  socket.on('markAsRead', ({ chatId, userId }) => {
+    io.to(`user_${userId}`).emit('messagesRead', { chatId });
+  });
+
+  // Online status
+  socket.on('userOnline', (userId) => {
+    io.emit('userStatus', { userId, online: true });
+  });
+
+  socket.on('disconnect', () => {
+    console.log('Foydalanuvchi uzildi:', socket.id);
+  });
+});
+
 // Middlewares
-app.use(cors());
+app.use(cors({
+  origin: ["http://localhost:3000", "https://uzwork.uz"],
+  credentials: true
+}));
 app.use(express.json());
 app.use(morgan('dev'));
 app.use(helmet());
+
+// Locale middleware (agar kerak bo‘lsa)
 const localeMiddleware = require('./middlewares/localeMiddleware');
 app.use(localeMiddleware);
 
-// Test route – database ulanishini tekshirish
+// Test route
 app.get('/', async (req, res) => {
   try {
     const result = await pool.query('SELECT NOW()');
@@ -92,6 +162,7 @@ app.use((err, req, res, next) => {
   });
 });
 
-app.listen(PORT, () => {
-  console.log(`Server ${PORT} portda ishlayapti`);
+// Serverni ishga tushirish (Socket.io bilan)
+server.listen(PORT, () => {
+  console.log(`UzWork server ${PORT} portda ishlayapti (Socket.io bilan) 🚀`);
 });
