@@ -9,45 +9,84 @@ const getChats = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // Get unique chat partners
+    if (!userId) {
+      return res.status(401).json({ success: false, message: "Foydalanuvchi topilmadi" });
+    }
+
     const chatsQuery = `
-      SELECT DISTINCT
-        CASE 
-          WHEN sender_id = $1 THEN receiver_id
-          ELSE sender_id
-        END as partner_id,
-        MAX(created_at) as last_message_at,
-        COUNT(*) FILTER (WHERE receiver_id = $1 AND is_read = FALSE) as unread_count
-      FROM messages
-      WHERE sender_id = $1 OR receiver_id = $1
-      GROUP BY partner_id
-      ORDER BY last_message_at DESC
+      SELECT 
+        c.id AS chat_id,
+        c.job_id,
+        c.contract_id,
+        c.created_at AS chat_created_at,
+        MAX(m.created_at) AS last_message_at,
+        -- Oxirgi xabar matni (optional)
+        (SELECT content FROM messages m2 
+         WHERE m2.chat_id = c.id 
+         ORDER BY m2.created_at DESC LIMIT 1) AS last_message_content,
+        -- O‘qilmagan xabarlar soni (sender_id != $1 bo‘lsa hisoblaymiz)
+        COUNT(m.id) FILTER (WHERE m.sender_id != $1 AND m.is_read = FALSE) AS unread_count
+      FROM chats c
+      LEFT JOIN messages m ON m.chat_id = c.id
+      WHERE c.id IN (
+        SELECT m3.chat_id FROM messages m3 
+        WHERE m3.sender_id = $1 OR m3.chat_id IN (
+          SELECT c2.id FROM chats c2 
+          WHERE c2.job_id IN (SELECT id FROM jobs WHERE client_id = $1)
+          OR c2.contract_id IN (SELECT id FROM contracts WHERE freelancer_id = $1 OR client_id = $1)
+        )
+      )
+      GROUP BY c.id
+      ORDER BY COALESCE(MAX(m.created_at), c.created_at) DESC
     `;
 
     const chatsResult = await pool.query(chatsQuery, [userId]);
 
-    // Get partner info
+    // Partner ma'lumotlarini olish (job yoki contract orqali)
     const chatsWithInfo = await Promise.all(
       chatsResult.rows.map(async (chat) => {
-        const partnerResult = await pool.query(
-          'SELECT id, first_name, last_name, email, role FROM users WHERE id = $1',
-          [chat.partner_id]
-        );
+        let partnerId = null;
+        let partnerQuery = '';
+
+        if (chat.job_id) {
+          // Job bo‘lsa client yoki freelancer ni aniqlash
+          const jobResult = await pool.query(
+            'SELECT client_id, freelancer_id FROM proposals p JOIN jobs j ON p.job_id = j.id WHERE j.id = $1 LIMIT 1',
+            [chat.job_id]
+          );
+          partnerId = jobResult.rows[0]?.client_id === userId ? jobResult.rows[0]?.freelancer_id : jobResult.rows[0]?.client_id;
+        } else if (chat.contract_id) {
+          // Contract bo‘lsa
+          const contractResult = await pool.query(
+            'SELECT client_id, freelancer_id FROM contracts WHERE id = $1',
+            [chat.contract_id]
+          );
+          partnerId = contractResult.rows[0]?.client_id === userId ? contractResult.rows[0]?.freelancer_id : contractResult.rows[0]?.client_id;
+        }
+
+        if (partnerId) {
+          const partnerResult = await pool.query(
+            'SELECT id, first_name, last_name, role, username FROM users WHERE id = $1',
+            [partnerId]
+          );
+          partnerQuery = partnerResult.rows[0];
+        }
+
         return {
           ...chat,
-          partner: partnerResult.rows[0]
+          partner: partnerQuery || { first_name: "Noma'lum" }
         };
       })
     );
 
+    console.log("Chatlar natijasi (admin):", chatsResult.rows.length, "ta");
+
     res.json({
       success: true,
-      data: {
-        chats: chatsWithInfo
-      }
+      data: { chats: chatsWithInfo }
     });
   } catch (error) {
-    console.error('Get chats error:', error);
+    console.error('Get chats FULL ERROR:', error.stack);
     res.status(500).json({
       success: false,
       message: 'Chatlarni olishda xato yuz berdi.',
@@ -55,7 +94,6 @@ const getChats = async (req, res) => {
     });
   }
 };
-
 /**
  * GET /messages/:chatId
  * Get chat history
@@ -146,67 +184,53 @@ const sendMessage = async (req, res) => {
   try {
     const userId = req.user.id;
     const {
-      receiver_id,
-      project_id,
+      chat_id,          // majburiy
       message_text,
-      message_type = 'text',
-      file_url,
-      voice_url,
-      video_call_link
+      type = 'text',
+      file_url
     } = req.body;
 
-    if (!receiver_id && !project_id) {
+    // Majburiy maydonlarni tekshirish
+    if (!chat_id) {
       return res.status(400).json({
         success: false,
-        message: 'Receiver_id yoki project_id kerak.'
+        message: 'chat_id majburiy (chat ochilgan bo‘lishi kerak).'
       });
     }
 
-    if (!message_text && !file_url && !voice_url && !video_call_link) {
+    if (!message_text && !file_url) {
       return res.status(400).json({
         success: false,
-        message: 'Xabar matni yoki fayl kerak.'
+        message: 'Xabar matni yoki file_url kerak.'
       });
     }
 
-    // Generate chat_id
-    let chatId;
-    if (project_id) {
-      chatId = `project_${project_id}`;
-    } else {
-      const ids = [userId, receiver_id].sort((a, b) => a - b);
-      chatId = `${ids[0]}-${ids[1]}`;
-    }
-
-    // Insert message
+    // Xabar qo‘shish — faqat mavjud maydonlarni ishlatamiz
     const result = await pool.query(
       `INSERT INTO messages (
-        chat_id, sender_id, receiver_id, project_id,
-        message_text, message_type, file_url, voice_url, video_call_link
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        chat_id, sender_id,
+        content, type, file_url,
+        created_at
+      ) VALUES ($1, $2, $3, $4, $5, NOW())
       RETURNING *`,
       [
-        chatId,
+        chat_id,
         userId,
-        receiver_id || null,
-        project_id || null,
         message_text || null,
-        message_type,
-        file_url || null,
-        voice_url || null,
-        video_call_link || null
+        type,
+        file_url || null
       ]
     );
+
+    const newMessage = result.rows[0];
 
     res.status(201).json({
       success: true,
       message: 'Xabar yuborildi!',
-      data: {
-        message: result.rows[0]
-      }
+      data: { message: newMessage }
     });
   } catch (error) {
-    console.error('Send message error:', error);
+    console.error('Send message FULL ERROR:', error.stack);
     res.status(500).json({
       success: false,
       message: 'Xabar yuborishda xato yuz berdi.',
