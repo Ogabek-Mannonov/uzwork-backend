@@ -102,72 +102,46 @@ const getChatHistory = async (req, res) => {
   try {
     const { chatId } = req.params;
     const userId = req.user.id;
-    const { page = 1, limit = 50 } = req.query;
-    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const isAdmin = req.user.role === 'admin'; // ← role bo‘yicha tekshirish
 
-    // Parse chatId (format: "user1-user2" or "project_id")
-    let partnerId;
-    let projectId = null;
-
-    if (chatId.includes('-')) {
-      const [id1, id2] = chatId.split('-').map(Number);
-      partnerId = id1 === userId ? id2 : id1;
-    } else {
-      projectId = parseInt(chatId);
-    }
-
-    let whereClause = '';
-    let queryParams = [userId];
-    let paramIndex = 2;
-
-    if (projectId) {
-      whereClause = 'WHERE project_id = $' + paramIndex++;
-      queryParams.push(projectId);
-    } else if (partnerId) {
-      whereClause = `WHERE ((sender_id = $1 AND receiver_id = $${paramIndex}) OR (sender_id = $${paramIndex} AND receiver_id = $1))`;
-      queryParams.push(partnerId);
-    } else {
-      return res.status(400).json({
-        success: false,
-        message: 'Noto\'g\'ri chat ID.'
-      });
-    }
-
-    // Get messages
+    // Xabarlar tarixini olish
     const messagesQuery = `
       SELECT 
         m.*,
         u_sender.first_name as sender_first_name,
         u_sender.last_name as sender_last_name,
-        u_receiver.first_name as receiver_first_name,
-        u_receiver.last_name as receiver_last_name
+        u_sender.role as sender_role
       FROM messages m
       JOIN users u_sender ON m.sender_id = u_sender.id
-      JOIN users u_receiver ON m.receiver_id = u_receiver.id
-      ${whereClause}
-      ORDER BY m.created_at DESC
-      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
+      WHERE m.chat_id = $1
+      ORDER BY m.created_at ASC
     `;
-    queryParams.push(parseInt(limit), offset);
 
-    const messagesResult = await pool.query(messagesQuery, queryParams);
+    const messagesResult = await pool.query(messagesQuery, [chatId]);
 
-    // Mark messages as read
-    if (partnerId) {
+    // Har bir xabarga sender_is_admin flag qo‘shish
+    const messagesWithInfo = messagesResult.rows.map((msg) => ({
+      ...msg,
+      sender_is_admin: msg.sender_role === 'admin', // ← bu flag frontendda ishlatiladi
+    }));
+
+    // Xabarlarni o‘qilgan deb belgilash (agar admin bo‘lsa)
+    if (isAdmin) {
       await pool.query(
-        'UPDATE messages SET is_read = TRUE WHERE receiver_id = $1 AND sender_id = $2',
-        [userId, partnerId]
+        'UPDATE messages SET is_read = TRUE WHERE chat_id = $1 AND sender_id != $2',
+        [chatId, userId]
       );
     }
 
     res.json({
       success: true,
       data: {
-        messages: messagesResult.rows.reverse() // Reverse to show oldest first
+        messages: messagesWithInfo,
+        is_admin: isAdmin // qo‘shimcha flag (ixtiyoriy)
       }
     });
   } catch (error) {
-    console.error('Get chat history error:', error);
+    console.error('Get chat history error:', error.stack);
     res.status(500).json({
       success: false,
       message: 'Chat tarixini olishda xato yuz berdi.',
