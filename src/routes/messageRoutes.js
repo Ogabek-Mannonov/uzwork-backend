@@ -6,7 +6,8 @@ const {
   getChatHistory,
   sendMessage,
   sendVoiceMessage,
-  startVideoCall
+  startVideoCall,
+  markMessagesAsRead
 } = require('../controllers/messageController');
 const { authenticate } = require('../middlewares/authMiddleware');
 
@@ -14,6 +15,7 @@ const { authenticate } = require('../middlewares/authMiddleware');
 router.get('/', authenticate, getChats);
 router.get('/:chatId', authenticate, getChatHistory);
 router.post('/', authenticate, sendMessage);
+router.post('/:chatId/mark-read', authenticate, markMessagesAsRead);
 router.post('/:chatId/voice', authenticate, sendVoiceMessage);
 router.post('/:chatId/video-call', authenticate, startVideoCall);
 

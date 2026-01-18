@@ -215,57 +215,124 @@ const getChatHistory = async (req, res) => {
 const sendMessage = async (req, res) => {
   try {
     const userId = req.user.id;
+    const userRole = req.user.role; // 'client', 'freelancer', 'admin'
+    
     const {
-      chat_id,          // majburiy
+      chat_id,
       message_text,
       type = 'text',
       file_url
     } = req.body;
 
-    // Majburiy maydonlarni tekshirish
+    // Validatsiya
     if (!chat_id) {
       return res.status(400).json({
         success: false,
-        message: 'chat_id majburiy (chat ochilgan bo‘lishi kerak).'
+        message: 'chat_id majburiy'
       });
     }
 
     if (!message_text && !file_url) {
       return res.status(400).json({
         success: false,
-        message: 'Xabar matni yoki file_url kerak.'
+        message: 'Xabar matni yoki file_url kerak'
       });
     }
 
-    // Xabar qo‘shish — faqat mavjud maydonlarni ishlatamiz
+    // Xabar qo'shish
     const result = await pool.query(
       `INSERT INTO messages (
-        chat_id, sender_id,
-        content, type, file_url,
+        chat_id, 
+        sender_id,
+        content, 
+        type, 
+        file_url,
+        is_read,
         created_at
-      ) VALUES ($1, $2, $3, $4, $5, NOW())
+      ) VALUES ($1, $2, $3, $4, $5, $6, NOW())
       RETURNING *`,
       [
         chat_id,
         userId,
         message_text || null,
         type,
-        file_url || null
+        file_url || null,
+        false
       ]
     );
 
     const newMessage = result.rows[0];
 
+    // Sender ma'lumotlarini qo'shish (Socket.io uchun)
+    const userResult = await pool.query(
+      `SELECT role, first_name, last_name, username, avatar_url 
+       FROM users WHERE id = $1`,
+      [userId]
+    );
+    
+    const enrichedMessage = {
+      ...newMessage,
+      sender_role: userRole,
+      sender_first_name: userResult.rows[0]?.first_name,
+      sender_last_name: userResult.rows[0]?.last_name,
+      sender_username: userResult.rows[0]?.username,
+      sender_avatar: userResult.rows[0]?.avatar_url
+    };
+
+    // Socket.io orqali real-time yuborish
+    const io = req.app.get('io');
+    if (io) {
+      io.to(chat_id).emit('newMessage', enrichedMessage);
+    }
+
     res.status(201).json({
       success: true,
       message: 'Xabar yuborildi!',
-      data: { message: newMessage }
+      data: { message: enrichedMessage }
     });
   } catch (error) {
-    console.error('Send message FULL ERROR:', error.stack);
+    console.error('Send message error:', error);
     res.status(500).json({
       success: false,
-      message: 'Xabar yuborishda xato yuz berdi.',
+      message: 'Xabar yuborishda xato',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * PUT /messages/:chatId/read
+ * Xabarlarni o'qilgan deb belgilash
+ */
+const markMessagesAsRead = async (req, res) => {
+  try {
+    const { chatId } = req.params;
+    const userId = req.user.id;
+
+    await pool.query(
+      `UPDATE messages 
+       SET is_read = true 
+       WHERE chat_id = $1 
+       AND sender_id != $2 
+       AND is_read = false`,
+      [chatId, userId]
+    );
+
+    // Socket.io orqali xabar yuborish
+    const io = req.app.get('io');
+    if (io) {
+      io.to(chatId).emit('messagesRead', { chatId });
+    }
+
+    res.json({
+      success: true,
+      message: 'Xabarlar o\'qilgan deb belgilandi'
+    });
+  } catch (error) {
+    console.error('Mark as read error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Xatolik yuz berdi',
       error: error.message
     });
   }
@@ -273,43 +340,68 @@ const sendMessage = async (req, res) => {
 
 /**
  * POST /messages/:chatId/voice
- * Send voice message
+ * Ovozli xabar yuborish
  */
 const sendVoiceMessage = async (req, res) => {
   try {
     const { chatId } = req.params;
     const userId = req.user.id;
-    const { voice_url, receiver_id, project_id } = req.body;
+    const userRole = req.user.role;
+    const { voice_url } = req.body;
 
     if (!voice_url) {
       return res.status(400).json({
         success: false,
-        message: 'Voice URL kerak.'
+        message: 'Voice URL kerak'
       });
     }
 
-    // Similar to sendMessage but with voice_url
     const result = await pool.query(
       `INSERT INTO messages (
-        chat_id, sender_id, receiver_id, project_id,
-        message_type, voice_url
-      ) VALUES ($1, $2, $3, $4, $5, $6)
+        chat_id, 
+        sender_id,
+        type, 
+        file_url,
+        created_at
+      ) VALUES ($1, $2, $3, $4, NOW())
       RETURNING *`,
-      [chatId, userId, receiver_id || null, project_id || null, 'voice', voice_url]
+      [chatId, userId, 'voice', voice_url]
     );
+
+    const newMessage = result.rows[0];
+
+    // Sender info
+    const userResult = await pool.query(
+      `SELECT role, first_name, last_name, username, avatar_url 
+       FROM users WHERE id = $1`,
+      [userId]
+    );
+    
+    const enrichedMessage = {
+      ...newMessage,
+      sender_role: userRole,
+      sender_first_name: userResult.rows[0]?.first_name,
+      sender_last_name: userResult.rows[0]?.last_name,
+      sender_username: userResult.rows[0]?.username,
+      sender_avatar: userResult.rows[0]?.avatar_url
+    };
+
+    // Socket.io
+    const io = req.app.get('io');
+    if (io) {
+      io.to(chatId).emit('newMessage', enrichedMessage);
+    }
 
     res.status(201).json({
       success: true,
       message: 'Ovozli xabar yuborildi!',
-      data: {
-        message: result.rows[0]
-      }
+      data: { message: enrichedMessage }
     });
   } catch (error) {
     console.error('Send voice message error:', error);
     res.status(500).json({
       success: false,
-      message: 'Ovozli xabar yuborishda xato yuz berdi.',
+      message: 'Ovozli xabar yuborishda xato',
       error: error.message
     });
   }
@@ -363,7 +455,8 @@ module.exports = {
   getChatHistory,
   sendMessage,
   sendVoiceMessage,
-  startVideoCall
+  startVideoCall,
+  markMessagesAsRead
 };
 
 
