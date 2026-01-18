@@ -113,6 +113,7 @@ const getChatHistory = async (req, res) => {
       return res.status(400).json({ success: false, message: "Noto'g'ri chat ID" });
     }
 
+    // Xabarlar tarixini olish
     const messagesQuery = `
       SELECT 
         m.id,
@@ -148,7 +149,7 @@ const getChatHistory = async (req, res) => {
       );
     }
 
-    // Client/freelancer ma'lumotlari (ixtiyoriy, xato chiqmasligi uchun)
+    // Client va freelancer ma'lumotlarini aniqlash
     let client = null;
     let freelancer = null;
 
@@ -156,17 +157,38 @@ const getChatHistory = async (req, res) => {
     const chat = chatQuery.rows[0];
 
     if (chat) {
-      if (chat.job_id) {
-        const jobQuery = await pool.query('SELECT client_id FROM jobs WHERE id = $1', [chat.job_id]);
-        const job = jobQuery.rows[0];
-        if (job) {
-          client = (await pool.query('SELECT id, first_name, last_name, username, avatar_url FROM users WHERE id = $1', [job.client_id])).rows[0];
-        }
-      } else if (chat.contract_id) {
-        const contractQuery = await pool.query('SELECT client_id FROM contracts WHERE id = $1', [chat.contract_id]);
+      // 1. Agar contract_id bo‘lsa — undan client va freelancer ni olamiz (eng to‘g‘ri yo‘l)
+      if (chat.contract_id) {
+        const contractQuery = await pool.query(
+          'SELECT client_id, freelancer_id FROM contracts WHERE id = $1',
+          [chat.contract_id]
+        );
         const contract = contractQuery.rows[0];
         if (contract) {
-          client = (await pool.query('SELECT id, first_name, last_name, username, avatar_url FROM users WHERE id = $1', [contract.client_id])).rows[0];
+          if (contract.client_id) {
+            client = (await pool.query(
+              'SELECT id, first_name, last_name, username, avatar_url FROM users WHERE id = $1',
+              [contract.client_id]
+            )).rows[0];
+          }
+          if (contract.freelancer_id) {
+            freelancer = (await pool.query(
+              'SELECT id, first_name, last_name, username, avatar_url FROM users WHERE id = $1',
+              [contract.freelancer_id]
+            )).rows[0];
+          }
+        }
+      }
+
+      // 2. Agar job_id bo‘lsa va contract bo‘lmasa — faqat client ni olamiz (freelancer hali tanlanmagan)
+      else if (chat.job_id) {
+        const jobQuery = await pool.query('SELECT client_id FROM jobs WHERE id = $1', [chat.job_id]);
+        const job = jobQuery.rows[0];
+        if (job?.client_id) {
+          client = (await pool.query(
+            'SELECT id, first_name, last_name, username, avatar_url FROM users WHERE id = $1',
+            [job.client_id]
+          )).rows[0];
         }
       }
     }
