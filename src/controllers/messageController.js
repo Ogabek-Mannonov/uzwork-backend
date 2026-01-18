@@ -99,13 +99,17 @@ const getChats = async (req, res) => {
  * GET /messages/:chatId
  * Get chat history for a specific chat
  */
+/**
+ * GET /messages/:chatId
+ * Get chat history with real client/freelancer info
+ */
 const getChatHistory = async (req, res) => {
   try {
     const { chatId } = req.params;
     const userId = req.user.id;
-    const isAdmin = req.user.role === 'admin'; // Adminligini tekshirish
+    const isAdmin = req.user.role === 'admin';
 
-    // chatId ni UUID sifatida tekshirish (majburiy emas, lekin xavfsiz)
+    // chatId ni UUID sifatida tekshirish
     if (!chatId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(chatId)) {
       return res.status(400).json({
         success: false,
@@ -113,7 +117,7 @@ const getChatHistory = async (req, res) => {
       });
     }
 
-    // Xabarlar tarixini olish (ASC tartibda, eski xabarlardan boshlab)
+    // Xabarlar tarixini olish (eski xabarlardan boshlab)
     const messagesQuery = `
       SELECT 
         m.id,
@@ -124,10 +128,12 @@ const getChatHistory = async (req, res) => {
         m.file_url,
         m.is_read,
         m.created_at,
+        u_sender.id AS sender_id,
         u_sender.first_name AS sender_first_name,
         u_sender.last_name AS sender_last_name,
-        u_sender.role AS sender_role,
-        u_sender.username AS sender_username
+        u_sender.username AS sender_username,
+        u_sender.avatar_url AS sender_avatar_url,
+        u_sender.role AS sender_role
       FROM messages m
       JOIN users u_sender ON m.sender_id = u_sender.id
       WHERE m.chat_id = $1
@@ -136,13 +142,62 @@ const getChatHistory = async (req, res) => {
 
     const messagesResult = await pool.query(messagesQuery, [chatId]);
 
-    // Har bir xabarga sender_is_admin flag qo‘shish (frontend uchun)
+    // Har bir xabarga sender_is_admin flag qo‘shish
     const messagesWithInfo = messagesResult.rows.map((msg) => ({
       ...msg,
-      sender_is_admin: msg.sender_role === 'admin', // Bu flag frontendda o‘ng/ chap tarafni belgilaydi
+      sender_is_admin: msg.sender_role === 'admin',
     }));
 
-    // Agar foydalanuvchi admin bo‘lsa, barcha o‘qilmagan xabarlarni o‘qilgan deb belgilash
+    // Chatdagi ikkala tarafni aniqlash (client va freelancer)
+    let client = null;
+    let freelancer = null;
+
+    const chatQuery = await pool.query(
+      'SELECT job_id, contract_id FROM chats WHERE id = $1',
+      [chatId]
+    );
+
+    const chat = chatQuery.rows[0];
+
+    if (chat) {
+      if (chat.job_id) {
+        const jobQuery = await pool.query(
+          'SELECT client_id, freelancer_id FROM jobs WHERE id = $1',
+          [chat.job_id]
+        );
+        const job = jobQuery.rows[0];
+        if (job) {
+          client = (await pool.query(
+            'SELECT id, first_name, last_name, username, avatar_url FROM users WHERE id = $1',
+            [job.client_id]
+          )).rows[0];
+
+          freelancer = (await pool.query(
+            'SELECT id, first_name, last_name, username, avatar_url FROM users WHERE id = $1',
+            [job.freelancer_id]
+          )).rows[0];
+        }
+      } else if (chat.contract_id) {
+        const contractQuery = await pool.query(
+          'SELECT client_id, freelancer_id FROM contracts WHERE id = $1',
+          [chat.contract_id]
+        );
+        const contract = contractQuery.rows[0];
+        if (contract) {
+          client = (await pool.query(
+            'SELECT id, first_name, last_name, username, avatar_url FROM users WHERE id = $1',
+            [contract.client_id]
+          )).rows[0];
+
+          freelancer = (await pool.query(
+            'SELECT id, first_name, last_name, username, avatar_url FROM users WHERE id = $1',
+            [contract.freelancer_id]
+          )).rows[0];
+        }
+      }
+    }
+
+    // Admin bo‘lsa xabarlarni o‘qilgan deb belgilash
     if (isAdmin) {
       await pool.query(
         'UPDATE messages SET is_read = TRUE WHERE chat_id = $1 AND sender_id != $2 AND is_read = FALSE',
@@ -154,7 +209,21 @@ const getChatHistory = async (req, res) => {
       success: true,
       data: {
         messages: messagesWithInfo,
-        is_admin: isAdmin // Qo‘shimcha flag (ixtiyoriy, frontendda foydalanilishi mumkin)
+        is_admin: isAdmin,
+        client: client ? {
+          id: client.id,
+          first_name: client.first_name,
+          last_name: client.last_name,
+          username: client.username,
+          avatar_url: client.avatar_url
+        } : null,
+        freelancer: freelancer ? {
+          id: freelancer.id,
+          first_name: freelancer.first_name,
+          last_name: freelancer.last_name,
+          username: freelancer.username,
+          avatar_url: freelancer.avatar_url
+        } : null
       }
     });
   } catch (error) {
