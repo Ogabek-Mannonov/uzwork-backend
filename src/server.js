@@ -161,8 +161,6 @@ app.use('/uploads', (req, res, next) => {
 
 // ... oldingi kodlar (cors, express.json, morgan, helmet va h.k.)
 
-// Static fayllar - VOICE uchun TO‘G‘RI YO‘L
-const path = require('path');
 
 // Asosiy uploads papkasi (agar kerak bo‘lsa)
 app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
