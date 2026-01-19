@@ -450,13 +450,164 @@ const startVideoCall = async (req, res) => {
   }
 };
 
+
+const editMessage = async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const { content } = req.body;
+    const userId = req.user.id;
+    const isAdmin = req.user.role === 'admin';
+
+    if (!content || !content.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Yangi matn kiriting'
+      });
+    }
+
+    // Xabarni topish
+    const messageQuery = await pool.query(
+      'SELECT * FROM messages WHERE id = $1',
+      [messageId]
+    );
+
+    if (messageQuery.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Xabar topilmadi'
+      });
+    }
+
+    const message = messageQuery.rows[0];
+
+    // Ruxsat tekshirish (faqat o'z xabarini yoki admin)
+    if (message.sender_id !== userId && !isAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'Bu xabarni o\'zgartirishga ruxsatingiz yo\'q'
+      });
+    }
+
+    // Faqat text xabarlarni edit qilish mumkin
+    if (message.type !== 'text') {
+      return res.status(400).json({
+        success: false,
+        message: 'Faqat text xabarlarni o\'zgartirish mumkin'
+      });
+    }
+
+    // Update
+    const result = await pool.query(
+      `UPDATE messages 
+       SET content = $1, 
+           updated_at = NOW(),
+           is_edited = TRUE
+       WHERE id = $2
+       RETURNING *`,
+      [content.trim(), messageId]
+    );
+
+    const updatedMessage = result.rows[0];
+
+    // Socket.io orqali yuborish
+    const io = req.app.get('io');
+    if (io) {
+      io.to(message.chat_id).emit('messageEdited', {
+        messageId,
+        content: content.trim(),
+        updated_at: updatedMessage.updated_at
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Xabar o\'zgartirildi',
+      data: { message: updatedMessage }
+    });
+  } catch (error) {
+    console.error('Edit message error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Xabarni o\'zgartirishda xato',
+      error: error.message
+    });
+  }
+};
+
+/**
+ * DELETE /messages/:messageId
+ * Delete message (soft delete)
+ */
+const deleteMessage = async (req, res) => {
+  try {
+    const { messageId } = req.params;
+    const userId = req.user.id;
+    const isAdmin = req.user.role === 'admin';
+
+    // Xabarni topish
+    const messageQuery = await pool.query(
+      'SELECT * FROM messages WHERE id = $1 AND deleted_at IS NULL',
+      [messageId]
+    );
+
+    if (messageQuery.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Xabar topilmadi yoki allaqachon o\'chirilgan'
+      });
+    }
+
+    const message = messageQuery.rows[0];
+
+    // Ruxsat tekshirish (faqat o'z xabarini yoki admin)
+    if (message.sender_id !== userId && !isAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: 'Bu xabarni o\'chirishga ruxsatingiz yo\'q'
+      });
+    }
+
+    // Soft delete
+    await pool.query(
+      `UPDATE messages 
+       SET deleted_at = NOW(),
+           content = NULL,
+           file_url = NULL
+       WHERE id = $1`,
+      [messageId]
+    );
+
+    // Socket.io orqali yuborish
+    const io = req.app.get('io');
+    if (io) {
+      io.to(message.chat_id).emit('messageDeleted', {
+        messageId
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Xabar o\'chirildi'
+    });
+  } catch (error) {
+    console.error('Delete message error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Xabarni o\'chirishda xato',
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   getChats,
   getChatHistory,
   sendMessage,
   sendVoiceMessage,
   startVideoCall,
-  markMessagesAsRead
+  markMessagesAsRead,
+  editMessage,
+  deleteMessage
 };
 
 
