@@ -158,6 +158,27 @@ app.use('/uploads', (req, res, next) => {
   next();
 }, express.static(path.join(__dirname, '/uploads/voice')));
 
+
+// ... oldingi kodlar (cors, express.json, morgan, helmet va h.k.)
+
+// Static fayllar - VOICE uchun TO‘G‘RI YO‘L
+const path = require('path');
+
+// Asosiy uploads papkasi (agar kerak bo‘lsa)
+app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+
+// Voice uchun maxsus (sizning holatingizga mos)
+app.use('/uploads/voice', express.static(path.join(__dirname, '../uploads/voice')));
+
+// CORS bilan static fayllar (brauzer xavfsizligi uchun)
+app.use('/uploads', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Cross-Origin-Resource-Policy', 'cross-origin');
+  next();
+}, express.static(path.join(__dirname, '../uploads')));
+
+// ... qolgan routelar (auth, projects, messages va h.k.)
+
 // Test route
 app.get('/', async (req, res) => {
   try {
