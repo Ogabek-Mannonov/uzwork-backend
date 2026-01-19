@@ -44,13 +44,15 @@ const io = new Server(server, {
       "http://localhost:3000",
       "http://localhost:5173", // Vite default port
       "https://uzwork.uz",
-      "https://uzwork-admin-panel.vercel.app"
-    ],
+      "https://uzwork-admin-panel.vercel.app",
+      process.env.FRONTEND_URL // .env dan
+    ].filter(Boolean),
     methods: ["GET", "POST"],
     credentials: true
   },
   pingTimeout: 60000,
-  pingInterval: 25000
+  pingInterval: 25000,
+  transports: ['websocket', 'polling'] // Render uchun muhim
 });
 
 // Socket.io ni app ga qo'shish (routelardan foydalanish uchun)
@@ -124,8 +126,9 @@ app.use(cors({
     'https://uzwork-admin-panel.vercel.app',
     'http://localhost:3000',
     'http://localhost:5173',
-    'https://uzwork.uz'
-  ],
+    'https://uzwork.uz',
+    process.env.FRONTEND_URL
+  ].filter(Boolean),
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true,
@@ -138,7 +141,8 @@ app.use(morgan('dev'));
 
 // Helmet - security headers
 app.use(helmet({
-  crossOriginResourcePolicy: { policy: "cross-origin" } // Static files uchun
+  crossOriginResourcePolicy: { policy: "cross-origin" }, // Static files uchun
+  crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" }
 }));
 
 // Locale middleware (agar kerak bo'lsa)
@@ -146,7 +150,13 @@ const localeMiddleware = require('./middlewares/localeMiddleware');
 app.use(localeMiddleware);
 
 // Static files - MUHIM! (uploads papkasi)
-app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
+// CORS headerlari bilan static files
+app.use('/uploads', (req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET');
+  res.header('Cross-Origin-Resource-Policy', 'cross-origin');
+  next();
+}, express.static(path.join(__dirname, '../uploads')));
 
 // Test route
 app.get('/', async (req, res) => {

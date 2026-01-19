@@ -4,7 +4,7 @@ const path = require('path');
 const fs = require('fs');
 
 // Uploads papkasini yaratish
-const uploadDir = path.join(__dirname, '../uploads/voice');
+const uploadDir = path.join(__dirname, '../../uploads/voice');
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
   console.log('✅ uploads/voice papkasi yaratildi');
@@ -53,13 +53,19 @@ const uploadVoice = async (req, res) => {
       });
     }
 
-    // File URL (frontend uchun)
-    const fileUrl = `/uploads/voice/${req.file.filename}`;
+    // MUHIM: To'liq URL yaratish (domain bilan)
+    const protocol = req.protocol; // http yoki https
+    const host = req.get('host'); // localhost:3000 yoki domain
+    const fileUrl = `${protocol}://${host}/uploads/voice/${req.file.filename}`;
+    
+    // Yoki static yo'l (agar CORS muammosi bo'lmasa)
+    // const fileUrl = `/uploads/voice/${req.file.filename}`;
 
     console.log('✅ Voice file uploaded:', {
       filename: req.file.filename,
       size: req.file.size,
-      url: fileUrl
+      fullUrl: fileUrl,
+      path: req.file.path
     });
 
     res.json({
