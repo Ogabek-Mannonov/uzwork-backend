@@ -3,7 +3,7 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
-// Uploads papkasini yaratish
+// Uploads papkasini yaratish (Render’da ham ishlaydi)
 const uploadDir = path.join(__dirname, '../../uploads/voice');
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir, { recursive: true });
@@ -16,7 +16,8 @@ const storage = multer.diskStorage({
     cb(null, uploadDir);
   },
   filename: (req, file, cb) => {
-    const uniqueName = `voice-${Date.now()}-${Math.round(Math.random() * 1E9)}${path.extname(file.originalname)}`;
+    const ext = path.extname(file.originalname) || '.webm'; // ext bo‘lmasa webm qo‘sh
+    const uniqueName = `voice-${Date.now()}-${Math.round(Math.random() * 1E9)}${ext}`;
     cb(null, uniqueName);
   }
 });
@@ -37,9 +38,7 @@ const fileFilter = (req, file, cb) => {
 // Multer configuration
 const upload = multer({ 
   storage,
-  limits: { 
-    fileSize: 10 * 1024 * 1024, // 10MB
-  },
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
   fileFilter
 });
 
@@ -53,13 +52,9 @@ const uploadVoice = async (req, res) => {
       });
     }
 
-    // MUHIM: To'liq URL yaratish (domain bilan)
-    const protocol = req.protocol; // http yoki https
-    const host = req.get('host'); // localhost:3000 yoki domain
-    const fileUrl = `${protocol}://${host}/uploads/voice/${req.file.filename}`;
-    
-    // Yoki static yo'l (agar CORS muammosi bo'lmasa)
-    // const fileUrl = `/uploads/voice/${req.file.filename}`;
+    // **Production uchun to‘g‘ri HTTPS URL** (Render’da doim HTTPS)
+    const baseUrl = process.env.BASE_URL || 'https://uzwork-backend.onrender.com';
+    const fileUrl = `${baseUrl}/uploads/voice/${req.file.filename}`;
 
     console.log('✅ Voice file uploaded:', {
       filename: req.file.filename,
@@ -72,7 +67,7 @@ const uploadVoice = async (req, res) => {
       success: true,
       message: 'Ovozli fayl yuklandi',
       data: {
-        url: fileUrl,
+        url: fileUrl, // Frontend bu URL ni ishlatadi
         filename: req.file.filename,
         size: req.file.size,
         mimetype: req.file.mimetype
@@ -88,13 +83,7 @@ const uploadVoice = async (req, res) => {
   }
 };
 
-// MUHIM: Har ikkisini ham export qiling
 module.exports = { 
   upload,
   uploadVoice 
 };
-
-// Test uchun
-console.log('✅ uploadController loaded');
-console.log('✅ upload:', typeof upload);
-console.log('✅ uploadVoice:', typeof uploadVoice);
