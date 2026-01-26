@@ -201,6 +201,14 @@ app.get('/', async (req, res) => {
   }
 });
 
+try {
+  const u = new URL(process.env.DATABASE_URL);
+  console.log("✅ DATABASE_URL host =", u.host);
+} catch (e) {
+  console.log("❌ DATABASE_URL parse error:", e.message);
+}
+
+
 // Health check route
 app.get('/health', (req, res) => {
   res.json({
