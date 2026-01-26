@@ -80,9 +80,9 @@ const signup = async (req, res) => {
           role: user.role,
           first_name: user.first_name,
           last_name: user.last_name,
-          display_name: user.display_name || user.username,  // <--- qo‘shildi
-          is_verified: user.is_verified,                    // <--- qo‘shildi
-          avatar_url: user.avatar_url                        // <--- qo‘shildi
+          display_name: user.display_name || user.username,
+          is_verified: user.is_verified,
+          avatar_url: user.avatar_url
         },
         accessToken,
         refreshToken
@@ -102,7 +102,7 @@ const signup = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Ro\'yxatdan o\'tishda xato yuz berdi.',
-      error: error.message
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };
@@ -124,11 +124,21 @@ const login = async (req, res) => {
         });
       }
 
-      // Find user
-      const result = await pool.query(
-        'SELECT id, username, email, phone, password_hash, role, first_name, last_name, display_name, is_verified, avatar_url FROM users WHERE email = $1 OR phone = $2',
-        [email || phone, email || phone]
-      );
+      // Find user - improved query with proper NULL handling
+      let query, params;
+      
+      if (email && phone) {
+        query = 'SELECT id, username, email, phone, password_hash, role, first_name, last_name, display_name, is_verified, avatar_url FROM users WHERE (email = $1 OR phone = $2) AND deleted_at IS NULL LIMIT 1';
+        params = [email, phone];
+      } else if (email) {
+        query = 'SELECT id, username, email, phone, password_hash, role, first_name, last_name, display_name, is_verified, avatar_url FROM users WHERE email = $1 AND deleted_at IS NULL LIMIT 1';
+        params = [email];
+      } else {
+        query = 'SELECT id, username, email, phone, password_hash, role, first_name, last_name, display_name, is_verified, avatar_url FROM users WHERE phone = $1 AND deleted_at IS NULL LIMIT 1';
+        params = [phone];
+      }
+
+      const result = await pool.query(query, params);
 
       if (result.rows.length === 0) {
         return res.status(401).json({
@@ -164,9 +174,9 @@ const login = async (req, res) => {
             role: user.role,
             first_name: user.first_name,
             last_name: user.last_name,
-            display_name: user.display_name || user.username,  // <--- qo‘shildi
-            is_verified: user.is_verified,                    // <--- qo‘shildi
-            avatar_url: user.avatar_url                        // <--- qo‘shildi
+            display_name: user.display_name || user.username,
+            is_verified: user.is_verified,
+            avatar_url: user.avatar_url
           },
           accessToken,
           refreshToken
@@ -174,7 +184,7 @@ const login = async (req, res) => {
       });
     }
 
-    // Login with SMS code (not implemented in new schema - requires separate SMS verification table)
+    // Login with SMS code (not implemented in new schema)
     if (sms_code) {
       return res.status(400).json({
         success: false,
@@ -191,7 +201,7 @@ const login = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Kirishda xato yuz berdi.',
-      error: error.message
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };
@@ -224,7 +234,7 @@ const refresh = async (req, res) => {
 
     // Check if user exists
     const result = await pool.query(
-      'SELECT id, username, email, phone, role FROM users WHERE id = $1',
+      'SELECT id, username, email, phone, role FROM users WHERE id = $1 AND deleted_at IS NULL',
       [decoded.id]
     );
 
@@ -254,7 +264,7 @@ const refresh = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Token yangilashda xato yuz berdi.',
-      error: error.message
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };
@@ -267,7 +277,7 @@ const verify = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    // Mark user as verified (simple verification - can be extended later)
+    // Mark user as verified
     await pool.query(
       'UPDATE users SET is_verified = TRUE WHERE id = $1',
       [userId]
@@ -282,7 +292,7 @@ const verify = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Tasdiqlashda xato yuz berdi.',
-      error: error.message
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };
@@ -293,8 +303,6 @@ const verify = async (req, res) => {
  */
 const kyc = async (req, res) => {
   try {
-    // KYC functionality not implemented in new schema
-    // Can be added later with separate KYC table
     return res.status(501).json({
       success: false,
       message: 'KYC funksiyasi hozircha qo\'llab-quvvatlanmaydi. Keyingi versiyada qo\'shiladi.'
@@ -304,7 +312,7 @@ const kyc = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'KYC arizasida xato yuz berdi.',
-      error: error.message
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };
@@ -345,13 +353,13 @@ const getMe = async (req, res) => {
           role: user.role,
           first_name: user.first_name,
           last_name: user.last_name,
-          display_name: user.display_name || user.username,  // <--- qo‘shildi
-          is_verified: user.is_verified,                    // <--- qo‘shildi
+          display_name: user.display_name || user.username,
+          is_verified: user.is_verified,
           is_premium: user.is_premium,
           premium_until: user.premium_until,
           balance_uzs: user.balance_uzs,
           balance_usd: user.balance_usd,
-          avatar_url: user.avatar_url,                      // <--- qo‘shildi
+          avatar_url: user.avatar_url,
           created_at: user.created_at,
           updated_at: user.updated_at
         }
@@ -362,7 +370,7 @@ const getMe = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Ma\'lumotlarni olishda xato yuz berdi.',
-      error: error.message
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };
@@ -373,8 +381,6 @@ const getMe = async (req, res) => {
  */
 const logout = async (req, res) => {
   try {
-    // In new schema, refresh tokens are not stored in database
-    // Client should delete tokens on their side
     res.json({
       success: true,
       message: 'Muvaffaqiyatli chiqildi!'
@@ -384,7 +390,7 @@ const logout = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Chiqishda xato yuz berdi.',
-      error: error.message
+      error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 };
