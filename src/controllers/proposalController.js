@@ -565,102 +565,95 @@ const withdrawProposal = async (req, res) => {
  * POST /proposals/:id/accept
  * Accept proposal (only project owner can accept)
  */
+// src/controllers/proposalController.js
 const acceptProposal = async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user.id;
     const userRole = req.user.role;
+    const isAdmin = userRole === "admin";
 
-    if (userRole !== 'client') {
+    if (!["client", "admin"].includes(userRole)) {
       return res.status(403).json({
         success: false,
-        message: 'Faqat clientlar taklifni qabul qilishi mumkin.'
+        message: "Faqat client yoki admin taklifni qabul qilishi mumkin.",
       });
     }
 
-    // Get proposal with project info
+    // proposal + job
     const proposalResult = await pool.query(
-      `SELECT 
-        p.*,
-        pr.client_id,
-        pr.status as project_status
+      `
+      SELECT 
+        p.id as proposal_id,
+        p.job_id,
+        p.status as proposal_status,
+        j.client_id,
+        j.status as job_status
       FROM proposals p
       JOIN jobs j ON p.job_id = j.id
-      WHERE p.id = $1`,
+      WHERE p.id = $1
+      `,
       [id]
     );
 
     if (proposalResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Taklif topilmadi.'
-      });
+      return res.status(404).json({ success: false, message: "Taklif topilmadi." });
     }
 
-    const proposal = proposalResult.rows[0];
+    const row = proposalResult.rows[0];
 
-    if (proposal.client_id !== userId) {
-      return res.status(403).json({
-        success: false,
-        message: 'Siz bu loyihaning egasi emassiz.'
-      });
+    // client faqat o'z jobiga
+    if (!isAdmin && row.client_id !== userId) {
+      return res.status(403).json({ success: false, message: "Siz bu loyihaning egasi emassiz." });
     }
 
-    if (proposal.status !== 'pending') {
-      return res.status(400).json({
-        success: false,
-        message: 'Faqat "pending" statusdagi takliflarni qabul qilish mumkin.'
-      });
+    if (row.proposal_status !== "pending") {
+      return res.status(400).json({ success: false, message: 'Faqat "pending" taklif qabul qilinadi.' });
     }
 
-    if (proposal.project_status !== 'open') {
-      return res.status(400).json({
-        success: false,
-        message: 'Faqat "open" statusdagi loyihalarga taklif qabul qilish mumkin.'
-      });
+    if (row.job_status !== "open") {
+      return res.status(400).json({ success: false, message: 'Faqat "open" loyihada qabul qilish mumkin.' });
     }
 
-    // Start transaction
-    await pool.query('BEGIN');
+    await pool.query("BEGIN");
 
-    try {
-      // Update proposal status
-      await pool.query(
-        'UPDATE proposals SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-        ['accepted', id]
-      );
+    // 1) accepted
+    await pool.query(
+      `UPDATE proposals
+       SET status='accepted', updated_at = CURRENT_TIMESTAMP
+       WHERE id=$1`,
+      [id]
+    );
 
-      // Reject all other proposals for this project
-      await pool.query(
-        'UPDATE proposals SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE job_id = $2 AND id != $3',
-        ['rejected', proposal.job_id, id]
-      );
+    // 2) others rejected
+    await pool.query(
+      `UPDATE proposals
+       SET status='rejected', updated_at = CURRENT_TIMESTAMP
+       WHERE job_id=$1 AND id <> $2`,
+      [row.job_id, id]
+    );
 
-      // Update project status
-      await pool.query(
-        'UPDATE projects SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-        ['in_progress', proposal.job_id]
-      );
+    // 3) job => in_progress ✅
+    await pool.query(
+      `UPDATE jobs
+       SET status='in_progress', updated_at = CURRENT_TIMESTAMP
+       WHERE id=$1`,
+      [row.job_id]
+    );
 
-      await pool.query('COMMIT');
+    await pool.query("COMMIT");
 
-      res.json({
-        success: true,
-        message: 'Taklif qabul qilindi! Loyiha "in_progress" statusiga o\'tdi.'
-      });
-    } catch (error) {
-      await pool.query('ROLLBACK');
-      throw error;
-    }
-  } catch (error) {
-    console.error('Accept proposal error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Taklifni qabul qilishda xato yuz berdi.',
-      error: error.message
+    return res.json({
+      success: true,
+      message: 'Taklif qabul qilindi! Loyiha "in_progress" bo‘ldi.',
     });
+  } catch (error) {
+    await pool.query("ROLLBACK").catch(() => {});
+    console.error("Accept proposal error:", error);
+    return res.status(500).json({ success: false, message: "Xato", error: error.message });
   }
 };
+
 
 /**
  * POST /proposals/:id/reject
