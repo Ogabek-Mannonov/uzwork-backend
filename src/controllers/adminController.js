@@ -198,32 +198,135 @@ const getUsers = async (req, res) => {
 
 
 
+// src/controllers/adminController.js
 const getUserById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const result = await pool.query(`
+    // 1) user info (status ham qo'shildi)
+    const userRes = await pool.query(
+      `
       SELECT 
         id, username, first_name, last_name, email, phone, role, status,
-        is_verified, is_premium,
-        balance_uzs, balance_usd, created_at, updated_at
+        is_verified, is_premium, balance_uzs, balance_usd, created_at
       FROM users
       WHERE id = $1
-    `, [id]);
+      `,
+      [id]
+    );
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({ success: false, message: 'Foydalanuvchi topilmadi.' });
+    if (userRes.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Foydalanuvchi topilmadi." });
     }
 
-    res.json({
+    const user = userRes.rows[0];
+
+    // 2) jobs summary + recent jobs
+    let jobsSummary = {
+      active: 0,        // open + in_progress
+      in_progress: 0,
+      completed: 0,
+      cancelled: 0,
+      total: 0,
+    };
+
+    let recentJobs = [];
+
+    if (user.role === "freelancer") {
+      // Freelancer: proposals -> jobs
+      const jobsRes = await pool.query(
+        `
+        SELECT 
+          j.id,
+          j.title,
+          j.status,
+          j.budget_min,
+          j.budget_max,
+          j.currency,
+          j.created_at,
+          pr.status as proposal_status
+        FROM proposals pr
+        JOIN jobs j ON j.id = pr.job_id
+        WHERE pr.freelancer_id = $1
+          AND j.deleted_at IS NULL
+        ORDER BY j.created_at DESC
+        LIMIT 50
+        `,
+        [id]
+      );
+
+      recentJobs = jobsRes.rows.map((j) => ({
+        id: j.id,
+        title: j.title,
+        status: j.status,
+        budget: j.budget_min != null && j.budget_max != null
+          ? `${Number(j.budget_min).toLocaleString()} - ${Number(j.budget_max).toLocaleString()} ${j.currency || "UZS"}`
+          : "Belgilanmagan",
+        created_at: j.created_at,
+        proposal_status: j.proposal_status,
+      }));
+
+    } else if (user.role === "client") {
+      // Client: jobs.client_id
+      const jobsRes = await pool.query(
+        `
+        SELECT 
+          id,
+          title,
+          status,
+          budget_min,
+          budget_max,
+          currency,
+          created_at
+        FROM jobs
+        WHERE client_id = $1
+          AND deleted_at IS NULL
+        ORDER BY created_at DESC
+        LIMIT 50
+        `,
+        [id]
+      );
+
+      recentJobs = jobsRes.rows.map((j) => ({
+        id: j.id,
+        title: j.title,
+        status: j.status,
+        budget: j.budget_min != null && j.budget_max != null
+          ? `${Number(j.budget_min).toLocaleString()} - ${Number(j.budget_max).toLocaleString()} ${j.currency || "UZS"}`
+          : "Belgilanmagan",
+        created_at: j.created_at,
+      }));
+    }
+
+    // 3) summary hisoblash
+    const statusCount = (s) => recentJobs.filter((x) => x.status === s).length;
+
+    jobsSummary.in_progress = statusCount("in_progress");
+    jobsSummary.completed = statusCount("completed");
+    jobsSummary.cancelled = statusCount("cancelled");
+    jobsSummary.active = recentJobs.filter((x) => x.status === "open" || x.status === "in_progress").length;
+    jobsSummary.total = recentJobs.length;
+
+    return res.json({
       success: true,
-      data: { user: result.rows[0] }
+      data: {
+        user: {
+          ...user,
+          jobs_summary: jobsSummary,
+          recent_jobs: recentJobs,
+        },
+      },
     });
   } catch (error) {
-    console.error('Get user by ID error:', error);
-    res.status(500).json({ success: false, message: 'Foydalanuvchi tafsilotlarini olishda xato.' });
+    console.error("Get user by ID error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Foydalanuvchi tafsilotlarini olishda xato.",
+      error: error.message,
+    });
   }
 };
+
 
 
 /**
