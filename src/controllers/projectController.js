@@ -478,50 +478,64 @@ const deleteProject = async (req, res) => {
     const { id } = req.params;
     const userId = req.user.id;
     const userRole = req.user.role;
+    const isAdmin = userRole === "admin";
 
-    if (userRole !== 'client') {
+    // ✅ faqat client yoki admin
+    if (!["client", "admin"].includes(userRole)) {
       return res.status(403).json({
         success: false,
-        message: 'Faqat clientlar loyihani o\'chirishi mumkin.'
+        message: "Faqat clientlar va admin loyihani o‘chirishi mumkin.",
       });
     }
 
-    // Check if project exists and user is owner
+    // ✅ loyiha bormi?
     const projectCheck = await pool.query(
-      'SELECT client_id, status FROM jobs WHERE id = $1',
+      "SELECT client_id, status, deleted_at FROM jobs WHERE id = $1",
       [id]
     );
 
     if (projectCheck.rows.length === 0) {
       return res.status(404).json({
         success: false,
-        message: 'Loyiha topilmadi.'
+        message: "Loyiha topilmadi.",
       });
     }
 
-    if (projectCheck.rows[0].client_id !== userId) {
+    const project = projectCheck.rows[0];
+
+    // ✅ allaqachon o‘chirilgan bo‘lsa
+    if (project.deleted_at) {
+      return res.status(400).json({
+        success: false,
+        message: "Bu loyiha allaqachon o‘chirilgan.",
+      });
+    }
+
+    // ✅ client bo‘lsa: faqat o‘z loyihasini
+    if (!isAdmin && project.client_id !== userId) {
       return res.status(403).json({
         success: false,
-        message: 'Siz bu loyihaning egasi emassiz.'
+        message: "Siz bu loyihaning egasi emassiz.",
       });
     }
 
-    // Delete project (CASCADE will handle related records)
-    await pool.query('UPDATE jobs SET deleted_at = NOW() WHERE id = $1', [id]);
+    // ✅ soft delete
+    await pool.query("UPDATE jobs SET deleted_at = NOW() WHERE id = $1", [id]);
 
-    res.json({
+    return res.json({
       success: true,
-      message: 'Loyiha muvaffaqiyatli o\'chirildi!'
+      message: "Loyiha muvaffaqiyatli o‘chirildi!",
     });
   } catch (error) {
-    console.error('Delete project error:', error);
-    res.status(500).json({
+    console.error("Delete project error:", error);
+    return res.status(500).json({
       success: false,
-      message: 'Loyihani o\'chirishda xato yuz berdi.',
-      error: error.message
+      message: "Loyihani o‘chirishda xato yuz berdi.",
+      error: error.message,
     });
   }
 };
+
 
 /**
  * GET /projects/my
