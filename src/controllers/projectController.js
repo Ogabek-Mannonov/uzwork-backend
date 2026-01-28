@@ -103,115 +103,128 @@ const createProject = async (req, res) => {
  * GET /projects
  * Get all projects with filters and pagination
  */
+// GET /projects
 const getProjects = async (req, res) => {
   try {
     const {
-      status = 'open',
+      status = "open",          // open | in_progress | completed | cancelled | all
       category,
-      budget_type,
+      budget_type,              // fixed | hourly  (DBda job_type)
       experience_level,
       min_budget,
       max_budget,
       search,
       page = 1,
       limit = 20,
-      sort_by = 'created_at',
-      order = 'DESC'
+      sort_by = "created_at",
+      order = "DESC",
     } = req.query;
 
-    const offset = (parseInt(page) - 1) * parseInt(limit);
-    const validSortColumns = ['created_at', 'budget_min', 'budget_max', 'title'];
-    const sortColumn = validSortColumns.includes(sort_by) ? sort_by : 'created_at';
-    const sortOrder = order.toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+    const pageNum = Math.max(parseInt(page, 10) || 1, 1);
+    const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 200);
+    const offset = (pageNum - 1) * limitNum;
 
-    // Build WHERE clause
-    let whereConditions = ['status = $1'];
-    let queryParams = [status];
-    let paramIndex = 2;
+    const validSortColumns = ["created_at", "budget_min", "budget_max", "title"];
+    const sortColumn = validSortColumns.includes(sort_by) ? sort_by : "created_at";
+    const sortOrder = String(order).toUpperCase() === "ASC" ? "ASC" : "DESC";
 
-    if (category) {
-      whereConditions.push(`category = $${paramIndex}`);
-      queryParams.push(category);
-      paramIndex++;
+    // ✅ WHERE clause build
+    let whereConditions = [];
+    let queryParams = [];
+    let paramIndex = 1;
+
+    // ✅ status=all bo'lsa filter qilmaymiz
+    if (status && status !== "all") {
+      whereConditions.push(`j.status = $${paramIndex++}`);
+      queryParams.push(status);
     }
 
+    if (category) {
+      whereConditions.push(`j.category = $${paramIndex++}`);
+      queryParams.push(category);
+    }
+
+    // ✅ frontend budget_type -> DB job_type
     if (budget_type) {
-      whereConditions.push(`budget_type = $${paramIndex}`);
+      whereConditions.push(`j.job_type = $${paramIndex++}`);
       queryParams.push(budget_type);
-      paramIndex++;
     }
 
     if (experience_level) {
-      whereConditions.push(`experience_level = $${paramIndex}`);
+      whereConditions.push(`j.experience_level = $${paramIndex++}`);
       queryParams.push(experience_level);
-      paramIndex++;
     }
 
     if (min_budget) {
-      whereConditions.push(`(budget_max >= $${paramIndex} OR hourly_rate * 160 >= $${paramIndex})`);
+      whereConditions.push(`j.budget_max >= $${paramIndex++}`);
       queryParams.push(parseFloat(min_budget));
-      paramIndex++;
     }
 
     if (max_budget) {
-      whereConditions.push(`(budget_min <= $${paramIndex} OR hourly_rate * 160 <= $${paramIndex})`);
+      whereConditions.push(`j.budget_min <= $${paramIndex++}`);
       queryParams.push(parseFloat(max_budget));
-      paramIndex++;
     }
 
     if (search) {
-      whereConditions.push(`(title ILIKE $${paramIndex} OR description ILIKE $${paramIndex})`);
+      whereConditions.push(
+        `(j.title ILIKE $${paramIndex} OR j.description ILIKE $${paramIndex})`
+      );
       queryParams.push(`%${search}%`);
       paramIndex++;
     }
 
-    const whereClause = whereConditions.join(' AND ');
+    const whereClause =
+      whereConditions.length > 0 ? `WHERE ${whereConditions.join(" AND ")}` : "";
 
-    // Get total count
-    const countQuery = `SELECT COUNT(*) FROM jobs WHERE ${whereClause}`;
+    // ✅ total count
+    const countQuery = `SELECT COUNT(*) FROM jobs j ${whereClause}`;
     const countResult = await pool.query(countQuery, queryParams);
-    const total = parseInt(countResult.rows[0].count);
+    const total = parseInt(countResult.rows[0].count, 10);
 
-    // Get jobs with client info
+    // ✅ data query (proposals_count bilan)
     const jobsQuery = `
       SELECT 
         j.*,
         u.id as client_id,
         u.first_name as client_first_name,
         u.last_name as client_last_name,
+        u.username as client_username,
         u.email as client_email,
-        (SELECT COUNT(*) FROM proposals WHERE job_id = j.id) as proposals_count
+        COALESCE(COUNT(p.id), 0)::int as proposals_count
       FROM jobs j
       JOIN users u ON j.client_id = u.id
-      WHERE ${whereClause}
+      LEFT JOIN proposals p ON p.job_id = j.id
+      ${whereClause}
+      GROUP BY j.id, u.id
       ORDER BY j.${sortColumn} ${sortOrder}
       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
     `;
-    queryParams.push(parseInt(limit), offset);
 
-    const jobsResult = await pool.query(jobsQuery, queryParams);
+    const finalParams = [...queryParams, limitNum, offset];
+    const jobsResult = await pool.query(jobsQuery, finalParams);
 
     res.json({
       success: true,
       data: {
         projects: jobsResult.rows,
         pagination: {
-          page: parseInt(page),
-          limit: parseInt(limit),
+          page: pageNum,
+          limit: limitNum,
           total,
-          totalPages: Math.ceil(total / parseInt(limit))
-        }
-      }
+          totalPages: Math.ceil(total / limitNum),
+        },
+      },
     });
   } catch (error) {
-    console.error('Get projects error:', error);
+    console.error("Get projects error:", error);
     res.status(500).json({
       success: false,
-      message: 'Loyihalarni olishda xato yuz berdi.',
-      error: error.message
+      message: "Loyihalarni olishda xato yuz berdi.",
+      error: error.message,
     });
   }
 };
+
 
 /**
  * GET /projects/:id
