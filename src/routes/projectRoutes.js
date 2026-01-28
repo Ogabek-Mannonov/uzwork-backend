@@ -31,8 +31,8 @@ router.post('/:id/boost', authenticate, authorize('client'), boostProject);
 router.post('/:id/ai-translate', aiTranslate);
 router.post('/:id/save', authenticate, saveProject);
 router.post('/:id/report', authenticate, reportProject);
-router.put('/:id', authenticate, authorize('client'), updateProject);
-router.delete('/:id', authenticate, authorize('client'), deleteProject);
+router.put('/:id', authenticate, authorize('client', 'admin'), updateProject);
+router.delete('/:id', authenticate, authorize('client', 'admin'), deleteProject);
 
 module.exports = router;
 

@@ -275,145 +275,199 @@ const getProjectById = async (req, res) => {
  * PUT /projects/:id
  * Update project (only owner can update)
  */
+// src/controllers/projectController.js
 const updateProject = async (req, res) => {
   try {
     const { id } = req.params;
+
     const userId = req.user.id;
     const userRole = req.user.role;
+    const isAdmin = userRole === "admin";
 
-    if (userRole !== 'client') {
+    // ✅ faqat client yoki admin
+    if (!["client", "admin"].includes(userRole)) {
       return res.status(403).json({
         success: false,
-        message: 'Faqat clientlar loyihani yangilashi mumkin.'
+        message: "Bu amalni bajarish uchun ruxsat yo‘q.",
       });
     }
 
-    // Check if project exists and user is owner
+    // ✅ projectni topamiz
     const projectCheck = await pool.query(
-      'SELECT client_id, status FROM jobs WHERE id = $1',
+      "SELECT client_id, status FROM jobs WHERE id = $1",
       [id]
     );
 
     if (projectCheck.rows.length === 0) {
       return res.status(404).json({
         success: false,
-        message: 'Loyiha topilmadi.'
+        message: "Loyiha topilmadi.",
       });
     }
 
-    if (projectCheck.rows[0].client_id !== userId) {
+    const project = projectCheck.rows[0];
+
+    // ✅ client bo‘lsa faqat o‘ziniki
+    if (!isAdmin && project.client_id !== userId) {
       return res.status(403).json({
         success: false,
-        message: 'Siz bu loyihaning egasi emassiz.'
+        message: "Siz bu loyihaning egasi emassiz.",
       });
     }
 
-    if (projectCheck.rows[0].status !== 'open') {
+    // ✅ client uchun faqat open; admin uchun xohlasangiz cheklash mumkin
+    if (!isAdmin && project.status !== "open") {
       return res.status(400).json({
         success: false,
-        message: 'Faqat "open" statusdagi loyihalarni yangilash mumkin.'
+        message: 'Faqat "open" statusdagi loyihalarni yangilash mumkin.',
       });
     }
 
+    // -------------------------
+    // Helpers: JSON normalize
+    // -------------------------
+    const normalizeToArray = (v) => {
+      if (v == null) return [];
+      if (Array.isArray(v)) return v;
+      if (typeof v === "string") {
+        // "react, node" -> ["react","node"]
+        return v
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
+      }
+      // object kelib qolsa ham array qilib yubormaymiz
+      return [];
+    };
+
+    const safeJsonValue = (v, fallback) => {
+      if (v == null) return fallback;
+      if (typeof v === "string") {
+        try {
+          return JSON.parse(v);
+        } catch {
+          return fallback;
+        }
+      }
+      return v;
+    };
+
+    // Body
     const {
       title,
       description,
       category,
+
+      // skills
       skills,
+      required_skills,
+
+      // type
       budget_type,
+      job_type,
+
       budget_min,
       budget_max,
+      currency,
+
+      // optional fields (schema’da bo‘lmasa olib tashlang)
       hourly_rate,
       duration,
       experience_level,
-      attachments
+
+      attachments,
+
+      // statusni admin o‘zgartirsin
+      status,
     } = req.body;
 
-    // Build update query dynamically
+    // -------------------------
+    // Dynamic UPDATE builder
+    // -------------------------
     const updateFields = [];
     const updateValues = [];
     let paramIndex = 1;
 
-    if (title !== undefined) {
-      updateFields.push(`title = $${paramIndex++}`);
-      updateValues.push(title);
+    const addField = (sqlSetExpr, value) => {
+      updateFields.push(sqlSetExpr.replace("$$", `$${paramIndex++}`));
+      updateValues.push(value);
+    };
+
+    if (title !== undefined) addField(`title = $$`, title);
+    if (description !== undefined) addField(`description = $$`, description);
+    if (category !== undefined) addField(`category = $$`, category);
+
+    // ✅ job_type (fallback budget_type)
+    if (job_type !== undefined) addField(`job_type = $$`, job_type);
+    else if (budget_type !== undefined) addField(`job_type = $$`, budget_type);
+
+    if (budget_min !== undefined) addField(`budget_min = $$`, budget_min);
+    if (budget_max !== undefined) addField(`budget_max = $$`, budget_max);
+    if (currency !== undefined) addField(`currency = $$`, currency);
+
+    // ✅ required_skills json/jsonb
+    if (required_skills !== undefined || skills !== undefined) {
+      const arr =
+        required_skills !== undefined
+          ? normalizeToArray(required_skills)
+          : normalizeToArray(skills);
+
+      // jsonb ga to‘g‘ri formatda yuboramiz
+      addField(`required_skills = $$::jsonb`, JSON.stringify(arr));
     }
-    if (description !== undefined) {
-      updateFields.push(`description = $${paramIndex++}`);
-      updateValues.push(description);
-    }
-    if (category !== undefined) {
-      updateFields.push(`category = $${paramIndex++}`);
-      updateValues.push(category);
-    }
-    if (skills !== undefined) {
-      updateFields.push(`skills = $${paramIndex++}`);
-      updateValues.push(skills);
-    }
-    if (budget_type !== undefined) {
-      updateFields.push(`budget_type = $${paramIndex++}`);
-      updateValues.push(budget_type);
-    }
-    if (budget_min !== undefined) {
-      updateFields.push(`budget_min = $${paramIndex++}`);
-      updateValues.push(budget_min);
-    }
-    if (budget_max !== undefined) {
-      updateFields.push(`budget_max = $${paramIndex++}`);
-      updateValues.push(budget_max);
-    }
-    if (hourly_rate !== undefined) {
-      updateFields.push(`hourly_rate = $${paramIndex++}`);
-      updateValues.push(hourly_rate);
-    }
-    if (duration !== undefined) {
-      updateFields.push(`duration = $${paramIndex++}`);
-      updateValues.push(duration);
-    }
-    if (experience_level !== undefined) {
-      updateFields.push(`experience_level = $${paramIndex++}`);
-      updateValues.push(experience_level);
-    }
+
+    // ✅ attachments json/jsonb
     if (attachments !== undefined) {
-      updateFields.push(`attachments = $${paramIndex++}`);
-      updateValues.push(attachments);
+      const val = safeJsonValue(attachments, []);
+      addField(`attachments = $$::jsonb`, JSON.stringify(val));
     }
+
+    // ⚠️ Quyidagilar sizning jobs table’da bo‘lmasa O‘CHIRING
+    if (hourly_rate !== undefined) addField(`hourly_rate = $$`, hourly_rate);
+    if (duration !== undefined) addField(`duration = $$`, duration);
+    if (experience_level !== undefined) addField(`experience_level = $$`, experience_level);
+
+    // ✅ status faqat admin uchun
+    if (status !== undefined && isAdmin) addField(`status = $$`, status);
 
     if (updateFields.length === 0) {
       return res.status(400).json({
         success: false,
-        message: 'Yangilanish uchun hech bo\'lmaganda bitta maydon kerak.'
+        message: "Yangilanish uchun hech bo‘lmaganda bitta maydon kerak.",
       });
     }
 
     updateFields.push(`updated_at = CURRENT_TIMESTAMP`);
+
+    // WHERE id param
     updateValues.push(id);
 
     const updateQuery = `
-      UPDATE projects 
-      SET ${updateFields.join(', ')}
+      UPDATE jobs
+      SET ${updateFields.join(", ")}
       WHERE id = $${paramIndex}
       RETURNING *
     `;
 
     const result = await pool.query(updateQuery, updateValues);
 
-    res.json({
+    return res.json({
       success: true,
-      message: 'Loyiha muvaffaqiyatli yangilandi!',
+      message: "Loyiha muvaffaqiyatli yangilandi!",
       data: {
-        project: result.rows[0]
-      }
+        project: result.rows[0],
+      },
     });
   } catch (error) {
-    console.error('Update project error:', error);
-    res.status(500).json({
+    console.error("Update project error:", error);
+    return res.status(500).json({
       success: false,
-      message: 'Loyihani yangilashda xato yuz berdi.',
-      error: error.message
+      message: "Loyihani yangilashda xato yuz berdi.",
+      error: error.message,
     });
   }
 };
+
 
 /**
  * DELETE /projects/:id
