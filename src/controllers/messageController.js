@@ -216,7 +216,7 @@ const sendMessage = async (req, res) => {
   try {
     const userId = req.user.id;
     const userRole = req.user.role; // 'client', 'freelancer', 'admin'
-    
+
     const {
       chat_id,
       message_text,
@@ -236,6 +236,26 @@ const sendMessage = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'Xabar matni yoki file_url kerak'
+      });
+    }
+
+    // ✅ 1) CHAT STATUS TEKSHIRISH (BLOCKED BO'LSA STOP)
+    const chat = await pool.query(
+      "SELECT id, status FROM chats WHERE id = $1",
+      [chat_id]
+    );
+
+    if (chat.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Chat topilmadi"
+      });
+    }
+
+    if (chat.rows[0]?.status === "blocked") {
+      return res.status(403).json({
+        success: false,
+        message: "Bu chat admin tomonidan bloklangan"
       });
     }
 
@@ -269,7 +289,7 @@ const sendMessage = async (req, res) => {
        FROM users WHERE id = $1`,
       [userId]
     );
-    
+
     const enrichedMessage = {
       ...newMessage,
       sender_role: userRole,
@@ -599,6 +619,48 @@ const deleteMessage = async (req, res) => {
   }
 };
 
+// PATCH /admin/chats/:id/status
+const updateChatStatus = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body; // active | blocked
+
+    if (!["active", "blocked"].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "Noto‘g‘ri status"
+      });
+    }
+
+    const result = await pool.query(
+      `UPDATE chats
+       SET status = $1
+       WHERE id = $2
+       RETURNING *`,
+      [status, id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Chat topilmadi"
+      });
+    }
+
+    res.json({
+      success: true,
+      data: { chat: result.rows[0] }
+    });
+  } catch (err) {
+    console.error("Chat status update error:", err);
+    res.status(500).json({
+      success: false,
+      message: "Chat statusini o‘zgartirishda xato"
+    });
+  }
+};
+
+
 module.exports = {
   getChats,
   getChatHistory,
@@ -607,7 +669,8 @@ module.exports = {
   startVideoCall,
   markMessagesAsRead,
   editMessage,
-  deleteMessage
+  deleteMessage,
+  updateChatStatus
 };
 
 

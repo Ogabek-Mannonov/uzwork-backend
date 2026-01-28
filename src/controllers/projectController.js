@@ -107,9 +107,9 @@ const createProject = async (req, res) => {
 const getProjects = async (req, res) => {
   try {
     const {
-      status = "open",          // open | in_progress | completed | cancelled | all
+      status = "open", // open | in_progress | completed | cancelled | all
       category,
-      budget_type,              // fixed | hourly  (DBda job_type)
+      budget_type,
       experience_level,
       min_budget,
       max_budget,
@@ -120,110 +120,114 @@ const getProjects = async (req, res) => {
       order = "DESC",
     } = req.query;
 
-    const pageNum = Math.max(parseInt(page, 10) || 1, 1);
-    const limitNum = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 200);
-    const offset = (pageNum - 1) * limitNum;
-
+    const offset = (parseInt(page) - 1) * parseInt(limit);
     const validSortColumns = ["created_at", "budget_min", "budget_max", "title"];
     const sortColumn = validSortColumns.includes(sort_by) ? sort_by : "created_at";
-    const sortOrder = String(order).toUpperCase() === "ASC" ? "ASC" : "DESC";
+    const sortOrder = order.toUpperCase() === "ASC" ? "ASC" : "DESC";
 
-    // ✅ WHERE clause build
-    let whereConditions = [];
+    // ✅ ALWAYS exclude deleted
+    let whereConditions = ["j.deleted_at IS NULL"];
     let queryParams = [];
     let paramIndex = 1;
 
-    // ✅ status=all bo'lsa filter qilmaymiz
+    // ✅ status=all bo'lsa status filter qo‘shmaymiz
     if (status && status !== "all") {
-      whereConditions.push(`j.status = $${paramIndex++}`);
+      whereConditions.push(`j.status = $${paramIndex}`);
       queryParams.push(status);
+      paramIndex++;
     }
 
     if (category) {
-      whereConditions.push(`j.category = $${paramIndex++}`);
+      whereConditions.push(`j.category = $${paramIndex}`);
       queryParams.push(category);
+      paramIndex++;
     }
 
-    // ✅ frontend budget_type -> DB job_type
+    // sizning schema: job_type bo‘lsa shuni ishlating, bo‘lmasa budget_type
     if (budget_type) {
-      whereConditions.push(`j.job_type = $${paramIndex++}`);
+      // agar sizda job_type bo‘lsa:
+      whereConditions.push(`j.job_type = $${paramIndex}`);
+      // agar sizda budget_type bo‘lsa, yuqoridagini o‘rniga:
+      // whereConditions.push(`j.budget_type = $${paramIndex}`);
       queryParams.push(budget_type);
+      paramIndex++;
     }
 
     if (experience_level) {
-      whereConditions.push(`j.experience_level = $${paramIndex++}`);
+      whereConditions.push(`j.experience_level = $${paramIndex}`);
       queryParams.push(experience_level);
+      paramIndex++;
     }
 
     if (min_budget) {
-      whereConditions.push(`j.budget_max >= $${paramIndex++}`);
+      whereConditions.push(`j.budget_max >= $${paramIndex}`);
       queryParams.push(parseFloat(min_budget));
+      paramIndex++;
     }
 
     if (max_budget) {
-      whereConditions.push(`j.budget_min <= $${paramIndex++}`);
+      whereConditions.push(`j.budget_min <= $${paramIndex}`);
       queryParams.push(parseFloat(max_budget));
+      paramIndex++;
     }
 
     if (search) {
-      whereConditions.push(
-        `(j.title ILIKE $${paramIndex} OR j.description ILIKE $${paramIndex})`
-      );
+      whereConditions.push(`(j.title ILIKE $${paramIndex} OR j.description ILIKE $${paramIndex})`);
       queryParams.push(`%${search}%`);
       paramIndex++;
     }
 
-    const whereClause =
-      whereConditions.length > 0 ? `WHERE ${whereConditions.join(" AND ")}` : "";
+    const whereClause = whereConditions.join(" AND ");
 
-    // ✅ total count
-    const countQuery = `SELECT COUNT(*) FROM jobs j ${whereClause}`;
-    const countResult = await pool.query(countQuery, queryParams);
+    // count
+    const countResult = await pool.query(
+      `SELECT COUNT(*) FROM jobs j WHERE ${whereClause}`,
+      queryParams
+    );
     const total = parseInt(countResult.rows[0].count, 10);
 
-    // ✅ data query (proposals_count bilan)
+    // list
     const jobsQuery = `
       SELECT 
         j.*,
         u.id as client_id,
         u.first_name as client_first_name,
         u.last_name as client_last_name,
-        u.username as client_username,
         u.email as client_email,
-        COALESCE(COUNT(p.id), 0)::int as proposals_count
+        (SELECT COUNT(*) FROM proposals WHERE job_id = j.id) as proposals_count
       FROM jobs j
       JOIN users u ON j.client_id = u.id
-      LEFT JOIN proposals p ON p.job_id = j.id
-      ${whereClause}
-      GROUP BY j.id, u.id
+      WHERE ${whereClause}
       ORDER BY j.${sortColumn} ${sortOrder}
       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
     `;
 
-    const finalParams = [...queryParams, limitNum, offset];
-    const jobsResult = await pool.query(jobsQuery, finalParams);
+    queryParams.push(parseInt(limit), offset);
 
-    res.json({
+    const jobsResult = await pool.query(jobsQuery, queryParams);
+
+    return res.json({
       success: true,
       data: {
         projects: jobsResult.rows,
         pagination: {
-          page: pageNum,
-          limit: limitNum,
+          page: parseInt(page),
+          limit: parseInt(limit),
           total,
-          totalPages: Math.ceil(total / limitNum),
+          totalPages: Math.ceil(total / parseInt(limit)),
         },
       },
     });
   } catch (error) {
     console.error("Get projects error:", error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Loyihalarni olishda xato yuz berdi.",
       error: error.message,
     });
   }
 };
+
 
 
 /**
@@ -480,17 +484,16 @@ const deleteProject = async (req, res) => {
     const userRole = req.user.role;
     const isAdmin = userRole === "admin";
 
-    // ✅ faqat client yoki admin
-    if (!["client", "admin"].includes(userRole)) {
+    if (userRole !== "client" && !isAdmin) {
       return res.status(403).json({
         success: false,
         message: "Faqat clientlar va admin loyihani o‘chirishi mumkin.",
       });
     }
 
-    // ✅ loyiha bormi?
+    // project exists?
     const projectCheck = await pool.query(
-      "SELECT client_id, status, deleted_at FROM jobs WHERE id = $1",
+      "SELECT client_id, deleted_at FROM jobs WHERE id = $1",
       [id]
     );
 
@@ -501,25 +504,22 @@ const deleteProject = async (req, res) => {
       });
     }
 
-    const project = projectCheck.rows[0];
-
-    // ✅ allaqachon o‘chirilgan bo‘lsa
-    if (project.deleted_at) {
-      return res.status(400).json({
-        success: false,
-        message: "Bu loyiha allaqachon o‘chirilgan.",
+    // already deleted -> 200 qaytaramiz (idempotent delete)
+    if (projectCheck.rows[0].deleted_at) {
+      return res.json({
+        success: true,
+        message: "Loyiha allaqachon o‘chirilgan.",
       });
     }
 
-    // ✅ client bo‘lsa: faqat o‘z loyihasini
-    if (!isAdmin && project.client_id !== userId) {
+    // owner check faqat admin emas bo‘lsa
+    if (!isAdmin && projectCheck.rows[0].client_id !== userId) {
       return res.status(403).json({
         success: false,
         message: "Siz bu loyihaning egasi emassiz.",
       });
     }
 
-    // ✅ soft delete
     await pool.query("UPDATE jobs SET deleted_at = NOW() WHERE id = $1", [id]);
 
     return res.json({
@@ -535,6 +535,7 @@ const deleteProject = async (req, res) => {
     });
   }
 };
+
 
 
 /**

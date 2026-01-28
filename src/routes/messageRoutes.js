@@ -8,7 +8,8 @@ const {
   startVideoCall,
   markMessagesAsRead,
   editMessage,      
-  deleteMessage     
+  deleteMessage,  
+  updateChatStatus  
 } = require('../controllers/messageController');
 const { authenticate } = require('../middlewares/authMiddleware');
 
@@ -23,5 +24,7 @@ router.post('/:chatId/video-call', authenticate, startVideoCall);
 // Edit va Delete
 router.put('/:messageId', authenticate, editMessage);       
 router.delete('/:messageId', authenticate, deleteMessage);  
+
+router.patch('/chats/:id/status', updateChatStatus);
 
 module.exports = router;
