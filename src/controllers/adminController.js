@@ -197,13 +197,16 @@ const getUsers = async (req, res) => {
 };
 
 
+
 const getUserById = async (req, res) => {
   try {
     const { id } = req.params;
+
     const result = await pool.query(`
       SELECT 
-        id, username, first_name, last_name, email, phone, role, is_verified, is_premium,
-        balance_uzs, balance_usd, created_at
+        id, username, first_name, last_name, email, phone, role, status,
+        is_verified, is_premium,
+        balance_uzs, balance_usd, created_at, updated_at
       FROM users
       WHERE id = $1
     `, [id]);
@@ -221,6 +224,7 @@ const getUserById = async (req, res) => {
     res.status(500).json({ success: false, message: 'Foydalanuvchi tafsilotlarini olishda xato.' });
   }
 };
+
 
 /**
  * GET /admin/jobs
@@ -344,6 +348,132 @@ const getChats = async (req, res) => {
   }
 };
 
+const updateUserByAdmin = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const {
+      first_name,
+      last_name,
+      username,
+      email,
+      phone,
+      role,
+      status, // xohlasangiz editdan ham o‘zgartirasiz
+    } = req.body;
+
+    // role va status validatsiya (ixtiyoriy, lekin foydali)
+    const allowedRoles = ['admin', 'client', 'freelancer'];
+    const allowedStatuses = ['active', 'blocked'];
+
+    if (role !== undefined && !allowedRoles.includes(role)) {
+      return res.status(400).json({ success: false, message: "role noto‘g‘ri." });
+    }
+    if (status !== undefined && !allowedStatuses.includes(status)) {
+      return res.status(400).json({ success: false, message: "status faqat 'active' yoki 'blocked'." });
+    }
+
+    const updateFields = [];
+    const updateValues = [];
+    let paramIndex = 1;
+
+    const push = (col, val) => {
+      updateFields.push(`${col} = $${paramIndex++}`);
+      updateValues.push(val);
+    };
+
+    if (first_name !== undefined) push("first_name", first_name);
+    if (last_name !== undefined) push("last_name", last_name);
+    if (username !== undefined) push("username", username);
+    if (email !== undefined) push("email", email);
+    if (phone !== undefined) push("phone", phone);
+    if (role !== undefined) push("role", role);
+    if (status !== undefined) push("status", status);
+
+    if (updateFields.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Yangilash uchun kamida 1 ta maydon yuboring."
+      });
+    }
+
+    updateValues.push(id);
+
+    const query = `
+      UPDATE users
+      SET ${updateFields.join(", ")}, updated_at = NOW()
+      WHERE id = $${paramIndex}
+      RETURNING 
+        id, username, first_name, last_name, email, phone, role, status,
+        is_verified, is_premium, balance_uzs, balance_usd, created_at, updated_at
+    `;
+
+    const result = await pool.query(query, updateValues);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "User topilmadi." });
+    }
+
+    res.json({
+      success: true,
+      data: { user: result.rows[0] },
+      message: "User muvaffaqiyatli yangilandi."
+    });
+  } catch (error) {
+    console.error("updateUserByAdmin error:", error);
+    res.status(500).json({
+      success: false,
+      message: "User yangilashda xato yuz berdi.",
+      error: error.message
+    });
+  }
+};
+
+const updateUserStatusByAdmin = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { status } = req.body; // "active" | "blocked"
+
+    if (!["active", "blocked"].includes(status)) {
+      return res.status(400).json({
+        success: false,
+        message: "status faqat 'active' yoki 'blocked' bo‘lishi kerak."
+      });
+    }
+
+    const result = await pool.query(
+      `
+      UPDATE users
+      SET status = $1, updated_at = NOW()
+      WHERE id = $2
+      RETURNING 
+        id, username, first_name, last_name, email, phone, role, status,
+        is_verified, is_premium, balance_uzs, balance_usd, created_at, updated_at
+      `,
+      [status, id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "User topilmadi." });
+    }
+
+    res.json({
+      success: true,
+      data: { user: result.rows[0] },
+      message: "User status yangilandi."
+    });
+  } catch (error) {
+    console.error("updateUserStatusByAdmin error:", error);
+    res.status(500).json({
+      success: false,
+      message: "User status yangilashda xato yuz berdi.",
+      error: error.message
+    });
+  }
+};
+
+
+
 module.exports = {
   isAdmin,
   getDashboardStats,
@@ -353,4 +483,6 @@ module.exports = {
   getPayments,
   getChats,
   getJobById,
+  updateUserByAdmin,
+  updateUserStatusByAdmin
 };

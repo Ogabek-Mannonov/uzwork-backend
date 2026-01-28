@@ -11,6 +11,8 @@ const {
   getChats,
   getJobById,
   getUserById,
+  updateUserByAdmin,
+  updateUserStatusByAdmin,
   // qolgan funksiyalar keyin qo‘shiladi
 } = require('../controllers/adminController');
 
@@ -24,6 +26,8 @@ router.get('/dashboard', getDashboardStats);
 // Foydalanuvchilar
 router.get('/users', getUsers);
 router.get('/users/:id', getUserById);
+router.put('/users/:id', updateUserByAdmin);
+router.patch('/users/:id/status', updateUserStatusByAdmin);
 
 // Loyihalar
 router.get('/jobs', getJobs);
