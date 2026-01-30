@@ -30,6 +30,7 @@ const supportRoutes = require('./routes/supportRoutes');
 const currencyRoutes = require('./routes/currencyRoutes');
 const fileRoutes = require('./routes/fileRoutes');
 const uploadRoutes = require('./routes/uploadRoutes');
+const disputeRoutes = require('./routes/disputeRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -238,7 +239,8 @@ app.use('/ai', aiRoutes);
 app.use('/support', supportRoutes);
 app.use('/currencies', currencyRoutes);
 app.use('/files', fileRoutes);
-app.use('/upload', uploadRoutes); // Voice upload route
+app.use('/upload', uploadRoutes);
+app.use('/disputes', disputeRoutes); // Voice upload route
 
 // 404 handler
 app.use((req, res) => {
