@@ -1,24 +1,30 @@
 // src/routes/paymentRoutes.js
-const express = require('express');
+const express = require("express");
 const router = express.Router();
+
 const {
   getPayments,
   getBalance,
   deposit,
   withdraw,
   paymentWebhook,
-  releaseMilestone
-} = require('../controllers/paymentController');
-const { authenticate } = require('../middlewares/authMiddleware');
+  releaseMilestone,
+  escrowHold,
+  getPaymentDetail,
+} = require("../controllers/paymentController");
 
-// Protected routes
-router.get('/', authenticate, getPayments);
-router.get('/balance', authenticate, getBalance);
-router.post('/deposit', authenticate, deposit);
-router.post('/withdraw', authenticate, withdraw);
-router.post('/webhook', paymentWebhook); // Public for payment providers
-router.post('/contracts/:id/release', authenticate, releaseMilestone);
+const { authenticate } = require("../middlewares/authMiddleware");
+
+// Protected
+router.get("/", authenticate, getPayments);
+router.get("/balance", authenticate, getBalance);
+router.post("/deposit", authenticate, deposit);
+router.post("/withdraw", authenticate, withdraw);
+router.post("/contracts/:id/release", authenticate, releaseMilestone);
+router.post("/escrow/hold", authenticate, escrowHold);
+router.get("/:id", authenticate, getPaymentDetail);
+
+// Public (payment provider webhook) — keyin signature tekshir qo‘shamiz
+router.post("/webhook", paymentWebhook);
 
 module.exports = router;
-
-

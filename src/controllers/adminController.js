@@ -127,25 +127,24 @@ const getDashboardStats = async (req, res) => {
     try {
       const r = await pool.query("SELECT COUNT(*)::int AS c FROM users");
       stats.totalUsers = r.rows[0]?.c ?? 0;
-    } catch (e) { stats.totalUsers = 0; }
+    } catch { stats.totalUsers = 0; }
 
     try {
       const r = await pool.query("SELECT COUNT(*)::int AS c FROM users WHERE role='freelancer'");
       stats.totalFreelancers = r.rows[0]?.c ?? 0;
-    } catch (e) { stats.totalFreelancers = 0; }
+    } catch { stats.totalFreelancers = 0; }
 
     try {
       const r = await pool.query("SELECT COUNT(*)::int AS c FROM users WHERE role='client'");
       stats.totalClients = r.rows[0]?.c ?? 0;
-    } catch (e) { stats.totalClients = 0; }
+    } catch { stats.totalClients = 0; }
 
     try {
       const r = await pool.query("SELECT COUNT(*)::int AS c FROM users WHERE status='blocked'");
       moderation.blockedUsers = r.rows[0]?.c ?? 0;
-    } catch (e) { moderation.blockedUsers = 0; }
+    } catch { moderation.blockedUsers = 0; }
 
-    // ===== JOBS TOTAL + ACTIVE (FIXED) =====
-    // MUAMMO SHU YERDA EDI: deleted_at IS NULL qo‘shildi
+    // ===== ACTIVE JOBS =====
     try {
       const r = await pool.query(`
         SELECT COUNT(*)::int AS c
@@ -154,13 +153,11 @@ const getDashboardStats = async (req, res) => {
           AND status IN ('open','in_progress')
       `);
       stats.activeJobs = r.rows[0]?.c ?? 0;
-    } catch (e) { stats.activeJobs = 0; }
+    } catch { stats.activeJobs = 0; }
 
-    // ===== RANGE: new users/jobs, revenue =====
+    // ===== RANGE: new users/jobs =====
     let newUsers = 0, prevNewUsers = 0;
     let newJobs = 0, prevNewJobs = 0;
-    let revenue = 0, prevRevenue = 0;
-    let fee = 0, prevFee = 0;
 
     try {
       const r = await pool.query(
@@ -174,7 +171,7 @@ const getDashboardStats = async (req, res) => {
         [toIso(prevStart), toIso(rangeStart)]
       );
       prevNewUsers = pr.rows[0]?.c ?? 0;
-    } catch (e) {}
+    } catch {}
 
     try {
       const r = await pool.query(
@@ -188,60 +185,112 @@ const getDashboardStats = async (req, res) => {
         [toIso(prevStart), toIso(rangeStart)]
       );
       prevNewJobs = pr.rows[0]?.c ?? 0;
-    } catch (e) {}
-
-    // Revenue from transactions
-    try {
-      const r = await pool.query(
-        `SELECT COALESCE(SUM(amount),0)::bigint AS s
-         FROM transactions
-         WHERE status='completed' AND created_at >= $1`,
-        [toIso(rangeStart)]
-      );
-      revenue = Number(r.rows[0]?.s ?? 0);
-
-      const pr = await pool.query(
-        `SELECT COALESCE(SUM(amount),0)::bigint AS s
-         FROM transactions
-         WHERE status='completed' AND created_at >= $1 AND created_at < $2`,
-        [toIso(prevStart), toIso(rangeStart)]
-      );
-      prevRevenue = Number(pr.rows[0]?.s ?? 0);
-    } catch (e) {}
-
-    // Platform fee
-    try {
-      const r = await pool.query(
-        `SELECT COALESCE(SUM(amount),0)::bigint AS s
-         FROM transactions
-         WHERE type='platform_fee' AND status='completed' AND created_at >= $1`,
-        [toIso(rangeStart)]
-      );
-      fee = Number(r.rows[0]?.s ?? 0);
-
-      const pr = await pool.query(
-        `SELECT COALESCE(SUM(amount),0)::bigint AS s
-         FROM transactions
-         WHERE type='platform_fee' AND status='completed'
-           AND created_at >= $1 AND created_at < $2`,
-        [toIso(prevStart), toIso(rangeStart)]
-      );
-      prevFee = Number(pr.rows[0]?.s ?? 0);
-    } catch (e) {}
+    } catch {}
 
     stats.newUsers = newUsers;
     stats.newJobs = newJobs;
 
     stats.usersGrowthPct = pct(newUsers, prevNewUsers);
     stats.jobsGrowthPct = pct(newJobs, prevNewJobs);
-    stats.revenueGrowthPct = pct(revenue, prevRevenue);
-    stats.feeGrowthPct = pct(fee, prevFee);
 
-    stats.totalRevenue = revenue;
-    stats.platformFee = fee;
+    // ===== FINANCIAL METRICS (3 cards) =====
+    // 1) GMV = escrow_release
+    // 2) Platform Revenue = fee
+    // 3) Deposit Volume = deposit
+    let gmv = 0, prevGmv = 0;
+    let platformRevenue = 0, prevPlatformRevenue = 0;
+    let depositVolume = 0, prevDepositVolume = 0;
 
-    stats.totalRevenueLabel = formatMoneyUZS(revenue);
-    stats.platformFeeLabel = formatMoneyUZS(fee);
+    // GMV
+    try {
+      const r = await pool.query(
+        `SELECT COALESCE(SUM(amount),0)::numeric AS s
+         FROM transactions
+         WHERE status='completed'
+           AND type='escrow_release'
+           AND created_at >= $1`,
+        [toIso(rangeStart)]
+      );
+      gmv = Number(r.rows[0]?.s ?? 0);
+
+      const pr = await pool.query(
+        `SELECT COALESCE(SUM(amount),0)::numeric AS s
+         FROM transactions
+         WHERE status='completed'
+           AND type='escrow_release'
+           AND created_at >= $1
+           AND created_at < $2`,
+        [toIso(prevStart), toIso(rangeStart)]
+      );
+      prevGmv = Number(pr.rows[0]?.s ?? 0);
+    } catch {}
+
+    // Platform Revenue (fee)
+    try {
+      const r = await pool.query(
+        `SELECT COALESCE(SUM(amount),0)::numeric AS s
+         FROM transactions
+         WHERE status='completed'
+           AND type='fee'
+           AND created_at >= $1`,
+        [toIso(rangeStart)]
+      );
+      platformRevenue = Number(r.rows[0]?.s ?? 0);
+
+      const pr = await pool.query(
+        `SELECT COALESCE(SUM(amount),0)::numeric AS s
+         FROM transactions
+         WHERE status='completed'
+           AND type='fee'
+           AND created_at >= $1
+           AND created_at < $2`,
+        [toIso(prevStart), toIso(rangeStart)]
+      );
+      prevPlatformRevenue = Number(pr.rows[0]?.s ?? 0);
+    } catch {}
+
+    // Deposit volume
+    try {
+      const r = await pool.query(
+        `SELECT COALESCE(SUM(amount),0)::numeric AS s
+         FROM transactions
+         WHERE status='completed'
+           AND type='deposit'
+           AND created_at >= $1`,
+        [toIso(rangeStart)]
+      );
+      depositVolume = Number(r.rows[0]?.s ?? 0);
+
+      const pr = await pool.query(
+        `SELECT COALESCE(SUM(amount),0)::numeric AS s
+         FROM transactions
+         WHERE status='completed'
+           AND type='deposit'
+           AND created_at >= $1
+           AND created_at < $2`,
+        [toIso(prevStart), toIso(rangeStart)]
+      );
+      prevDepositVolume = Number(pr.rows[0]?.s ?? 0);
+    } catch {}
+
+    // assign
+    stats.gmv = gmv;
+    stats.platformRevenue = platformRevenue;
+    stats.depositVolume = depositVolume;
+
+    stats.gmvLabel = formatMoneyUZS(gmv);
+    stats.platformRevenueLabel = formatMoneyUZS(platformRevenue);
+    stats.depositVolumeLabel = formatMoneyUZS(depositVolume);
+
+    stats.gmvGrowthPct = pct(gmv, prevGmv);
+    stats.platformRevenueGrowthPct = pct(platformRevenue, prevPlatformRevenue);
+    stats.depositVolumeGrowthPct = pct(depositVolume, prevDepositVolume);
+
+    // (ixtiyoriy) eski nomlar bilan ham qaytarib qo'yamiz — UI sindirmaslik uchun
+    stats.totalRevenue = gmv;
+    stats.totalRevenueLabel = formatMoneyUZS(gmv);
+    stats.platformFee = platformRevenue;
+    stats.platformFeeLabel = formatMoneyUZS(platformRevenue);
 
     // ===== JOB STATUS BREAKDOWN =====
     try {
@@ -260,7 +309,7 @@ const getDashboardStats = async (req, res) => {
         completed: map.completed || 0,
         cancelled: map.cancelled || 0,
       };
-    } catch (e) {
+    } catch {
       breakdown.jobs = { open: 0, in_progress: 0, completed: 0, cancelled: 0 };
     }
 
@@ -268,12 +317,12 @@ const getDashboardStats = async (req, res) => {
     try {
       const r = await pool.query("SELECT COUNT(*)::int AS c FROM disputes WHERE status='open'");
       moderation.openDisputes = r.rows[0]?.c ?? 0;
-    } catch (e) { moderation.openDisputes = 0; }
+    } catch { moderation.openDisputes = 0; }
 
     try {
       const r = await pool.query("SELECT COUNT(*)::int AS c FROM milestones WHERE status='pending'");
       moderation.pendingMilestones = r.rows[0]?.c ?? 0;
-    } catch (e) { moderation.pendingMilestones = 0; }
+    } catch { moderation.pendingMilestones = 0; }
 
     try {
       const r = await pool.query(`
@@ -283,28 +332,28 @@ const getDashboardStats = async (req, res) => {
           AND approved_at >= date_trunc('month', CURRENT_DATE)
       `);
       moderation.completedThisMonth = r.rows[0]?.c ?? 0;
-    } catch (e) { moderation.completedThisMonth = 0; }
+    } catch { moderation.completedThisMonth = 0; }
 
     // ===== FINANCE OVERVIEW =====
     try {
       const r = await pool.query(`
         SELECT COUNT(*)::int AS c
         FROM transactions
-        WHERE type IN ('withdraw','withdrawal')
+        WHERE type='withdrawal'
           AND status IN ('pending','processing')
       `);
       finance.pendingWithdrawals = r.rows[0]?.c ?? 0;
-    } catch (e) { finance.pendingWithdrawals = 0; }
+    } catch { finance.pendingWithdrawals = 0; }
 
     try {
       const r = await pool.query(`
-        SELECT COALESCE(SUM(amount),0)::bigint AS s
+        SELECT COALESCE(SUM(amount),0)::numeric AS s
         FROM transactions
-        WHERE type IN ('withdraw','withdrawal')
+        WHERE type='withdrawal'
           AND status IN ('pending','processing')
       `);
       finance.pendingWithdrawalsAmount = Number(r.rows[0]?.s ?? 0);
-    } catch (e) { finance.pendingWithdrawalsAmount = 0; }
+    } catch { finance.pendingWithdrawalsAmount = 0; }
 
     finance.pendingWithdrawalsAmountLabel = formatMoneyUZS(finance.pendingWithdrawalsAmount);
 
@@ -312,12 +361,12 @@ const getDashboardStats = async (req, res) => {
     try {
       const r = await pool.query("SELECT COUNT(*)::int AS c FROM chats");
       chatStats.totalChats = r.rows[0]?.c ?? 0;
-    } catch (e) { chatStats.totalChats = 0; }
+    } catch { chatStats.totalChats = 0; }
 
     try {
       const r = await pool.query("SELECT COUNT(*)::int AS c FROM chats WHERE status='blocked'");
       chatStats.blockedChats = r.rows[0]?.c ?? 0;
-    } catch (e) { chatStats.blockedChats = 0; }
+    } catch { chatStats.blockedChats = 0; }
 
     try {
       const r = await pool.query(`
@@ -326,15 +375,12 @@ const getDashboardStats = async (req, res) => {
         WHERE created_at >= NOW() - INTERVAL '24 hours'
       `);
       chatStats.messagesLast24h = r.rows[0]?.c ?? 0;
-    } catch (e) { chatStats.messagesLast24h = 0; }
+    } catch { chatStats.messagesLast24h = 0; }
 
-    // flagged chats (agar ustun bo‘lsa)
     try {
       const r = await pool.query("SELECT COUNT(*)::int AS c FROM chats WHERE flagged=true");
       chatStats.suspiciousChats = r.rows[0]?.c ?? 0;
-    } catch (e) {
-      chatStats.suspiciousChats = 0;
-    }
+    } catch { chatStats.suspiciousChats = 0; }
 
     // ===== TOP CLIENTS =====
     try {
@@ -353,10 +399,9 @@ const getDashboardStats = async (req, res) => {
         LIMIT 5
       `);
       topClients = r.rows || [];
-    } catch (e) { topClients = []; }
+    } catch { topClients = []; }
 
     // ===== TOP FREELANCERS =====
-    // eng faol freelancer (messages count) — range bo‘yicha
     try {
       const r = await pool.query(`
         SELECT
@@ -374,7 +419,7 @@ const getDashboardStats = async (req, res) => {
         LIMIT 5
       `, [toIso(rangeStart)]);
       topFreelancers = r.rows || [];
-    } catch (e) { topFreelancers = []; }
+    } catch { topFreelancers = []; }
 
     // ===== RECENT ACTIVITY (mixed) =====
     const activities = [];
@@ -382,21 +427,16 @@ const getDashboardStats = async (req, res) => {
     // users created
     try {
       const r = await pool.query(`
-        SELECT id, first_name, last_name, username, created_at
+        SELECT first_name, last_name, username, created_at
         FROM users
         ORDER BY created_at DESC
         LIMIT 5
       `);
       r.rows.forEach(u => {
         const name = `${u.first_name || ""} ${u.last_name || ""}`.trim() || u.username || "User";
-        activities.push({
-          type: "user_created",
-          name,
-          action: "Ro‘yxatdan o‘tdi",
-          at: u.created_at,
-        });
+        activities.push({ type: "user_created", name, action: "Ro‘yxatdan o‘tdi", at: u.created_at });
       });
-    } catch (e) {}
+    } catch {}
 
     // jobs created
     try {
@@ -417,7 +457,7 @@ const getDashboardStats = async (req, res) => {
           at: row.created_at,
         });
       });
-    } catch (e) {}
+    } catch {}
 
     // disputes opened
     try {
@@ -428,14 +468,9 @@ const getDashboardStats = async (req, res) => {
         LIMIT 5
       `);
       r.rows.forEach(row => {
-        activities.push({
-          type: "dispute_opened",
-          name: "Dispute",
-          action: "Yangi dispute ochildi",
-          at: row.created_at,
-        });
+        activities.push({ type: "dispute_opened", name: "Dispute", action: "Yangi dispute ochildi", at: row.created_at });
       });
-    } catch (e) {}
+    } catch {}
 
     // milestones
     try {
@@ -449,15 +484,13 @@ const getDashboardStats = async (req, res) => {
         activities.push({
           type: "milestone",
           name: "Milestone",
-          action: row.status === "pending"
-            ? "Milestone kutilmoqda (pending)"
-            : `Milestone status: ${row.status}`,
+          action: row.status === "pending" ? "Milestone kutilmoqda (pending)" : `Milestone status: ${row.status}`,
           at: row.created_at,
         });
       });
-    } catch (e) {}
+    } catch {}
 
-    // payments
+    // payments (transactions)
     try {
       const r = await pool.query(`
         SELECT type, amount, created_at
@@ -474,7 +507,7 @@ const getDashboardStats = async (req, res) => {
           at: row.created_at,
         });
       });
-    } catch (e) {}
+    } catch {}
 
     // chat blocked
     try {
@@ -486,16 +519,10 @@ const getDashboardStats = async (req, res) => {
         LIMIT 5
       `);
       r.rows.forEach(row => {
-        activities.push({
-          type: "chat_blocked",
-          name: "Chat",
-          action: "Chat admin tomonidan bloklandi",
-          at: row.updated_at,
-        });
+        activities.push({ type: "chat_blocked", name: "Chat", action: "Chat admin tomonidan bloklandi", at: row.updated_at });
       });
-    } catch (e) {}
+    } catch {}
 
-    // sort by at desc and take 10
     recentActivity = activities
       .filter(a => a.at)
       .sort((a, b) => new Date(b.at) - new Date(a.at))
@@ -542,6 +569,7 @@ const getDashboardStats = async (req, res) => {
     });
   }
 };
+
 
 
 /**
