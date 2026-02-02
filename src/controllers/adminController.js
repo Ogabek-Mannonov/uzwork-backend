@@ -607,28 +607,46 @@ const getUsers = async (req, res) => {
 const getUserById = async (req, res) => {
   try {
     const { id } = req.params;
-
-    // 1) user info (status ham qo'shildi)
+    // 1) user + balance (SOURCE OF TRUTH)
     const userRes = await pool.query(
       `
       SELECT 
-        id, username, first_name, last_name, email, phone, role, status,
-        is_verified, is_premium, balance_uzs, balance_usd, created_at
-      FROM users
-      WHERE id = $1
+        u.id,
+        u.username,
+        u.first_name,
+        u.last_name,
+        u.email,
+        u.phone,
+        u.role,
+        u.status,
+        u.is_verified,
+        u.is_premium,
+        u.created_at,
+
+        -- ✅ BALANCE user_balances dan
+        COALESCE(ub.available_balance, 0) AS available_balance,
+        COALESCE(ub.escrow_balance, 0)    AS escrow_balance,
+        COALESCE(ub.total_spent, 0)       AS total_spent,
+        COALESCE(ub.total_earned, 0)      AS total_earned
+      FROM users u
+      LEFT JOIN user_balances ub ON ub.user_id = u.id
+      WHERE u.id = $1
       `,
       [id]
     );
 
     if (userRes.rows.length === 0) {
-      return res.status(404).json({ success: false, message: "Foydalanuvchi topilmadi." });
+      return res.status(404).json({
+        success: false,
+        message: "Foydalanuvchi topilmadi.",
+      });
     }
 
     const user = userRes.rows[0];
 
-    // 2) jobs summary + recent jobs
+    // 2) jobs summary + recent jobs (OLD CODE — O‘ZGARMAYDI)
     let jobsSummary = {
-      active: 0,        // open + in_progress
+      active: 0,
       in_progress: 0,
       completed: 0,
       cancelled: 0,
@@ -638,7 +656,6 @@ const getUserById = async (req, res) => {
     let recentJobs = [];
 
     if (user.role === "freelancer") {
-      // Freelancer: proposals -> jobs
       const jobsRes = await pool.query(
         `
         SELECT 
@@ -664,15 +681,16 @@ const getUserById = async (req, res) => {
         id: j.id,
         title: j.title,
         status: j.status,
-        budget: j.budget_min != null && j.budget_max != null
-          ? `${Number(j.budget_min).toLocaleString()} - ${Number(j.budget_max).toLocaleString()} ${j.currency || "UZS"}`
-          : "Belgilanmagan",
+        budget:
+          j.budget_min != null && j.budget_max != null
+            ? `${Number(j.budget_min).toLocaleString()} - ${Number(
+                j.budget_max
+              ).toLocaleString()} ${j.currency || "UZS"}`
+            : "Belgilanmagan",
         created_at: j.created_at,
         proposal_status: j.proposal_status,
       }));
-
     } else if (user.role === "client") {
-      // Client: jobs.client_id
       const jobsRes = await pool.query(
         `
         SELECT 
@@ -696,9 +714,12 @@ const getUserById = async (req, res) => {
         id: j.id,
         title: j.title,
         status: j.status,
-        budget: j.budget_min != null && j.budget_max != null
-          ? `${Number(j.budget_min).toLocaleString()} - ${Number(j.budget_max).toLocaleString()} ${j.currency || "UZS"}`
-          : "Belgilanmagan",
+        budget:
+          j.budget_min != null && j.budget_max != null
+            ? `${Number(j.budget_min).toLocaleString()} - ${Number(
+                j.budget_max
+              ).toLocaleString()} ${j.currency || "UZS"}`
+            : "Belgilanmagan",
         created_at: j.created_at,
       }));
     }
@@ -709,7 +730,9 @@ const getUserById = async (req, res) => {
     jobsSummary.in_progress = statusCount("in_progress");
     jobsSummary.completed = statusCount("completed");
     jobsSummary.cancelled = statusCount("cancelled");
-    jobsSummary.active = recentJobs.filter((x) => x.status === "open" || x.status === "in_progress").length;
+    jobsSummary.active = recentJobs.filter(
+      (x) => x.status === "open" || x.status === "in_progress"
+    ).length;
     jobsSummary.total = recentJobs.length;
 
     return res.json({
@@ -731,6 +754,7 @@ const getUserById = async (req, res) => {
     });
   }
 };
+
 
 
 
