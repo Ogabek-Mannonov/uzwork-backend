@@ -12,6 +12,7 @@ const {
  * User registration
  */
 const signup = async (req, res) => {
+  const client = await pool.connect();
   try {
     const { email, phone, password, role, first_name, last_name, username, display_name } = req.body;
 
@@ -38,13 +39,16 @@ const signup = async (req, res) => {
       });
     }
 
+    await client.query('BEGIN');
+
     // Check if user already exists
-    const existingUser = await pool.query(
+    const existingUser = await client.query(
       'SELECT id FROM users WHERE email = $1 OR phone = $2 OR username = $3',
       [email, phone, username]
     );
 
     if (existingUser.rows.length > 0) {
+      await client.query('ROLLBACK');
       return res.status(409).json({
         success: false,
         message: 'Bu email, telefon raqam yoki username allaqachon ro\'yxatdan o\'tgan.'
@@ -55,7 +59,7 @@ const signup = async (req, res) => {
     const passwordHash = await hashPassword(password);
 
     // Insert user
-    const result = await pool.query(
+    const result = await client.query(
       `INSERT INTO users (username, email, phone, password_hash, role, first_name, last_name, display_name, is_verified, avatar_url)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING id, username, email, phone, role, first_name, last_name, display_name, is_verified, avatar_url, created_at`,
@@ -64,11 +68,30 @@ const signup = async (req, res) => {
 
     const user = result.rows[0];
 
+    // ✅ Create role-based profile skeleton row
+    if (role === 'freelancer') {
+      await client.query(
+        `INSERT INTO freelancer_profiles (user_id)
+         VALUES ($1)
+         ON CONFLICT (user_id) DO NOTHING`,
+        [user.id]
+      );
+    } else {
+      await client.query(
+        `INSERT INTO client_profiles (user_id)
+         VALUES ($1)
+         ON CONFLICT (user_id) DO NOTHING`,
+        [user.id]
+      );
+    }
+
+    await client.query('COMMIT');
+
     // Generate tokens
     const accessToken = generateAccessToken(user);
     const refreshToken = generateRefreshToken(user);
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: 'Ro\'yxatdan muvaffaqiyatli o\'tdingiz!',
       data: {
@@ -90,7 +113,8 @@ const signup = async (req, res) => {
     });
   } catch (error) {
     console.error('Signup error:', error);
-    
+    try { await client.query('ROLLBACK'); } catch (e) {}
+
     // Handle unique constraint violations
     if (error.code === '23505') {
       return res.status(409).json({
@@ -99,11 +123,13 @@ const signup = async (req, res) => {
       });
     }
 
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Ro\'yxatdan o\'tishda xato yuz berdi.',
       error: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
+  } finally {
+    client.release();
   }
 };
 

@@ -1,21 +1,19 @@
-// src/routes/profileRoutes.js
 const express = require('express');
 const router = express.Router();
+
 const {
   getMyProfile,
   getUserProfile,
   updateMyProfile
 } = require('../controllers/profileController');
+
 const { authenticate } = require('../middlewares/authMiddleware');
 
-// Public routes
-router.get('/:userId', getUserProfile);
-
-// Protected routes
+// Protected routes (AVVAL)
 router.get('/me', authenticate, getMyProfile);
 router.put('/me', authenticate, updateMyProfile);
 
+// Public routes (KEYIN)
+router.get('/:userId', getUserProfile);
+
 module.exports = router;
-
-
-
