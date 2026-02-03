@@ -127,6 +127,7 @@ app.use(cors({
     'https://uzwork-admin-panel.vercel.app',
     'http://localhost:3000',
     'http://localhost:5173',
+    'http://localhost:5174',
     'https://uzwork.uz',
     process.env.FRONTEND_URL
   ].filter(Boolean),
