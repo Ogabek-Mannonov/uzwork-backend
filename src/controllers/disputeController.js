@@ -3,6 +3,20 @@ const pool = require("../db/pool");
 // helper: role normalize
 const normalizeRole = (r) => String(r || "").toLowerCase();
 
+const safeJsonArray = (v) => {
+  if (v == null) return [];
+  if (Array.isArray(v)) return v;
+  if (typeof v === "string") {
+    try {
+      const parsed = JSON.parse(v);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+};
+
 // =========================
 // POST /disputes
 // Body: { chat_id, reason, evidence_files?: [], amount?: number, currency?: "UZS" }
@@ -14,7 +28,7 @@ const createDispute = async (req, res) => {
     const userId = req.user?.id;
     const role = normalizeRole(req.user?.role);
 
-    // disputes_raised_by_role_check -> faqat client/freelancer bo‘lsin
+    // faqat client/freelancer
     if (!["client", "freelancer"].includes(role)) {
       return res.status(403).json({
         success: false,
@@ -22,7 +36,7 @@ const createDispute = async (req, res) => {
       });
     }
 
-    const { chat_id, reason, evidence_files = [], amount, currency } = req.body;
+    const { chat_id, reason, evidence_files, amount, currency } = req.body;
 
     if (!chat_id || !reason) {
       return res.status(400).json({
@@ -83,7 +97,24 @@ const createDispute = async (req, res) => {
     const againstUser =
       role === "client" ? contract.freelancer_id : contract.client_id;
 
-    // amount/currency: agar yuborilmasa contract.total_amount dan olamiz (amount bigint bo‘lgani uchun yaxlitlaymiz)
+    // 5) shu contract uchun open dispute bor-yo‘qligini tekshiramiz
+    const existing = await pool.query(
+      `SELECT id
+       FROM disputes
+       WHERE contract_id = $1
+         AND status IN ('open','in_review')
+       LIMIT 1`,
+      [contractId]
+    );
+
+    if (existing.rowCount > 0) {
+      return res.status(409).json({
+        success: false,
+        message: "Bu contract uchun dispute allaqachon ochilgan.",
+      });
+    }
+
+    // amount/currency: yuborilmasa contract.total_amount
     const finalCurrency = currency || "UZS";
     const finalAmount =
       amount != null
@@ -92,9 +123,7 @@ const createDispute = async (req, res) => {
         ? Math.round(Number(contract.total_amount))
         : null;
 
-    // evidence_files jsonb
-    const evidenceJson =
-      Array.isArray(evidence_files) ? evidence_files : [];
+    const evidenceArr = safeJsonArray(evidence_files);
 
     const ins = await pool.query(
       `INSERT INTO disputes (
@@ -111,7 +140,7 @@ const createDispute = async (req, res) => {
         created_at,
         updated_at
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,'open',$8,$9,NOW(),NOW())
+      VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,'open',$8,$9,NOW(),NOW())
       RETURNING *`,
       [
         userId,
@@ -120,7 +149,7 @@ const createDispute = async (req, res) => {
         chat_id,
         contractId,
         reason,
-        JSON.stringify(evidenceJson),
+        JSON.stringify(evidenceArr),
         finalAmount,
         finalCurrency,
       ]
@@ -147,6 +176,7 @@ const createDispute = async (req, res) => {
 const getDisputes = async (req, res) => {
   try {
     const { status, page = 1, limit = 20 } = req.query;
+
     const p = Math.max(parseInt(page, 10) || 1, 1);
     const l = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
     const offset = (p - 1) * l;
@@ -160,7 +190,14 @@ const getDisputes = async (req, res) => {
       params.push(status);
     }
 
-    // client/freelancer ni contractdan olamiz
+    // total count
+    const countQ = await pool.query(
+      `SELECT COUNT(*)::int AS c FROM disputes d ${where}`,
+      params
+    );
+    const total = countQ.rows[0]?.c ?? 0;
+
+    // list (client/freelancer ni contractdan olamiz)
     const q = await pool.query(
       `
       SELECT
@@ -197,8 +234,12 @@ const getDisputes = async (req, res) => {
       success: true,
       data: {
         disputes: q.rows,
-        page: p,
-        limit: l,
+        pagination: {
+          page: p,
+          limit: l,
+          total,
+          totalPages: Math.ceil(total / l),
+        },
       },
     });
   } catch (error) {
@@ -213,6 +254,7 @@ const getDisputes = async (req, res) => {
 
 // =========================
 // GET /disputes/my (client/freelancer)
+// user ishtirok etgan hammasi: raised_by yoki against_user
 // =========================
 const getMyDisputes = async (req, res) => {
   try {
@@ -222,7 +264,7 @@ const getMyDisputes = async (req, res) => {
       `
       SELECT d.*
       FROM disputes d
-      WHERE d.raised_by = $1
+      WHERE d.raised_by = $1 OR d.against_user = $1
       ORDER BY d.created_at DESC
       `,
       [userId]
@@ -242,6 +284,7 @@ const getMyDisputes = async (req, res) => {
 // =========================
 // GET /disputes/:id (admin detail)
 // Return: dispute + client + freelancer + last 30 messages + milestones
+// NOTE: messages.sender_role ishlatilmaydi (schema’da bo‘lmasa ham)
 // =========================
 const getDisputeById = async (req, res) => {
   try {
@@ -289,7 +332,7 @@ const getDisputeById = async (req, res) => {
     const contractId = row.contract_id || row.chat_contract_id || null;
     const chatId = row.chat_id;
 
-    // 2) last 30 messages (deleted_at IS NULL)
+    // 2) last 30 messages (deleted_at IS NULL) + sender role users’dan olinadi
     let chatHistory = [];
     if (chatId) {
       const mQ = await pool.query(
@@ -298,7 +341,7 @@ const getDisputeById = async (req, res) => {
           m.id,
           m.chat_id,
           m.sender_id,
-          m.sender_role,
+          u.role AS sender_role,
           m.content,
           m.type,
           m.file_url,
@@ -320,7 +363,6 @@ const getDisputeById = async (req, res) => {
         [chatId]
       );
 
-      // UI uchun odatda eski->yangi ko‘rsatamiz:
       chatHistory = (mQ.rows || []).reverse();
     }
 
@@ -329,7 +371,7 @@ const getDisputeById = async (req, res) => {
     if (contractId) {
       const msQ = await pool.query(
         `
-        SELECT id, contract_id, title, amount, status, submitted_at, approved_at, created_at
+        SELECT id, contract_id, title, amount, status, created_at, approved_at
         FROM milestones
         WHERE contract_id = $1
         ORDER BY created_at ASC
@@ -339,7 +381,6 @@ const getDisputeById = async (req, res) => {
       milestones = msQ.rows || [];
     }
 
-    // client/freelancer obj
     const client = row.client_id_full
       ? {
           id: row.client_id_full,
@@ -360,7 +401,6 @@ const getDisputeById = async (req, res) => {
         }
       : null;
 
-    // dispute payload (row ichidagi join fieldlarni tozalab)
     const dispute = {
       id: row.id,
       chat_id: row.chat_id,
@@ -372,7 +412,7 @@ const getDisputeById = async (req, res) => {
       against_user: row.against_user,
 
       reason: row.reason,
-      evidence_files: row.evidence_files || [],
+      evidence_files: safeJsonArray(row.evidence_files),
       status: row.status,
 
       amount: row.amount,
@@ -418,7 +458,7 @@ const updateDisputeStatus = async (req, res) => {
     const q = await pool.query(
       `
       UPDATE disputes
-      SET status = $1,
+      SET status = $1::varchar,
           resolved_at = CASE WHEN $1 = 'resolved' THEN NOW() ELSE resolved_at END,
           updated_at = NOW()
       WHERE id = $2

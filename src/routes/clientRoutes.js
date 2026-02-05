@@ -1,19 +1,22 @@
 // src/routes/clientRoutes.js
-const express = require('express');
+const express = require("express");
 const router = express.Router();
+
 const {
   getClients,
   getClientById,
-  updateMyProfile
-} = require('../controllers/clientController');
-const { authenticate, authorize } = require('../middlewares/authMiddleware');
+  updateMyProfile,
+} = require("../controllers/clientController");
 
-// Public routes
-router.get('/', getClients);
-router.get('/:id', getClientById);
+const { authenticate, authorize } = require("../middlewares/authMiddleware");
 
-// Protected routes
-router.put('/me', authenticate, authorize('client'), updateMyProfile);
+// ✅ Public
+router.get("/", getClients);
+
+// ✅ Protected (STATIC AVVAL)
+router.put("/me", authenticate, authorize("client"), updateMyProfile);
+
+// ✅ Dynamic OXIRIDA
+router.get("/:id", getClientById);
 
 module.exports = router;
-

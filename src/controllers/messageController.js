@@ -1,5 +1,149 @@
 // src/controllers/messageController.js
-const pool = require('../db/pool');
+const pool = require("../db/pool");
+
+// ---------- helpers ----------
+const isUuid = (v) =>
+  typeof v === "string" &&
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+
+const ensureChatMemberOrAdmin = async (chatId, user) => {
+  // returns chat row if allowed, else throws {status, message}
+  const chatRes = await pool.query(
+    `SELECT id, job_id, contract_id, status
+     FROM chats
+     WHERE id = $1`,
+    [chatId]
+  );
+
+  if (chatRes.rows.length === 0) {
+    throw { status: 404, message: "Chat topilmadi" };
+  }
+
+  const chat = chatRes.rows[0];
+  if (user.role === "admin") return chat;
+
+  // if contract chat -> user must be in contract
+  if (chat.contract_id) {
+    const cRes = await pool.query(
+      `SELECT id
+       FROM contracts
+       WHERE id = $1
+         AND (client_id = $2 OR freelancer_id = $2)`,
+      [chat.contract_id, user.id]
+    );
+    if (cRes.rows.length === 0) {
+      throw { status: 403, message: "Siz bu chatga kira olmaysiz." };
+    }
+    return chat;
+  }
+
+  // if job chat -> at least client OR accepted freelancer
+  if (chat.job_id) {
+    const jRes = await pool.query(
+      `SELECT client_id
+       FROM jobs
+       WHERE id = $1`,
+      [chat.job_id]
+    );
+    if (jRes.rows.length === 0) {
+      throw { status: 404, message: "Job topilmadi (chat bog'langan job yo'q)" };
+    }
+
+    const clientId = jRes.rows[0].client_id;
+    if (clientId === user.id) return chat;
+
+    const acceptedRes = await pool.query(
+      `SELECT 1
+       FROM proposals
+       WHERE job_id = $1
+         AND freelancer_id = $2
+         AND status = 'accepted'
+       LIMIT 1`,
+      [chat.job_id, user.id]
+    );
+
+    if (acceptedRes.rows.length === 0) {
+      throw { status: 403, message: "Siz bu chatga kira olmaysiz." };
+    }
+    return chat;
+  }
+
+  // neither contract_id nor job_id
+  throw { status: 400, message: "Chat noto'g'ri konfiguratsiya qilingan (job_id/contract_id yo'q)." };
+};
+
+const getPartnerForChat = async (chatRow, userId) => {
+  // returns {partnerUser} or null
+  // priority: contract participants
+  if (chatRow.contract_id) {
+    const cRes = await pool.query(
+      `SELECT client_id, freelancer_id
+       FROM contracts
+       WHERE id = $1`,
+      [chatRow.contract_id]
+    );
+    const c = cRes.rows[0];
+    if (!c) return null;
+
+    const partnerId = c.client_id === userId ? c.freelancer_id : c.client_id;
+    if (!partnerId) return null;
+
+    const uRes = await pool.query(
+      `SELECT id, first_name, last_name, role, username, avatar_url
+       FROM users
+       WHERE id = $1`,
+      [partnerId]
+    );
+    return uRes.rows[0] || null;
+  }
+
+  // job chat:
+  if (chatRow.job_id) {
+    const jRes = await pool.query(
+      `SELECT client_id
+       FROM jobs
+       WHERE id = $1`,
+      [chatRow.job_id]
+    );
+    const j = jRes.rows[0];
+    if (!j) return null;
+
+    // if current user is client -> partner is accepted freelancer (if exists)
+    if (j.client_id === userId) {
+      const pRes = await pool.query(
+        `SELECT freelancer_id
+         FROM proposals
+         WHERE job_id = $1 AND status = 'accepted'
+         ORDER BY updated_at DESC NULLS LAST, created_at DESC
+         LIMIT 1`,
+        [chatRow.job_id]
+      );
+      const freelancerId = pRes.rows[0]?.freelancer_id;
+      if (!freelancerId) return null;
+
+      const uRes = await pool.query(
+        `SELECT id, first_name, last_name, role, username, avatar_url
+         FROM users
+         WHERE id = $1`,
+        [freelancerId]
+      );
+      return uRes.rows[0] || null;
+    }
+
+    // else partner is client
+    const uRes = await pool.query(
+      `SELECT id, first_name, last_name, role, username, avatar_url
+       FROM users
+       WHERE id = $1`,
+      [j.client_id]
+    );
+    return uRes.rows[0] || null;
+  }
+
+  return null;
+};
+
+// ---------- controllers ----------
 
 /**
  * GET /messages
@@ -8,112 +152,133 @@ const pool = require('../db/pool');
 const getChats = async (req, res) => {
   try {
     const userId = req.user.id;
+    const isAdmin = req.user.role === "admin";
 
-    if (!userId) {
-      return res.status(401).json({ success: false, message: "Foydalanuvchi topilmadi" });
-    }
-
-    const chatsQuery = `
-      SELECT 
-        c.id AS chat_id,
-        c.job_id,
-        c.contract_id,
-        c.created_at AS chat_created_at,
-        MAX(m.created_at) AS last_message_at,
-        -- Oxirgi xabar matni (optional)
-        (SELECT content FROM messages m2 
-         WHERE m2.chat_id = c.id 
-         ORDER BY m2.created_at DESC LIMIT 1) AS last_message_content,
-        -- O‘qilmagan xabarlar soni (sender_id != $1 bo‘lsa hisoblaymiz)
-        COUNT(m.id) FILTER (WHERE m.sender_id != $1 AND m.is_read = FALSE) AS unread_count
-      FROM chats c
-      LEFT JOIN messages m ON m.chat_id = c.id
-      WHERE c.id IN (
-        SELECT m3.chat_id FROM messages m3 
-        WHERE m3.sender_id = $1 OR m3.chat_id IN (
-          SELECT c2.id FROM chats c2 
-          WHERE c2.job_id IN (SELECT id FROM jobs WHERE client_id = $1)
-          OR c2.contract_id IN (SELECT id FROM contracts WHERE freelancer_id = $1 OR client_id = $1)
-        )
-      )
-      GROUP BY c.id
-      ORDER BY COALESCE(MAX(m.created_at), c.created_at) DESC
-    `;
+    // Admin: all chats
+    // User: chats where user is contract participant OR job client OR accepted freelancer
+    const chatsQuery = isAdmin
+      ? `
+        SELECT
+          c.id AS chat_id,
+          c.job_id,
+          c.contract_id,
+          c.status,
+          c.created_at AS chat_created_at,
+          COALESCE((
+            SELECT m.created_at
+            FROM messages m
+            WHERE m.chat_id = c.id AND m.deleted_at IS NULL
+            ORDER BY m.created_at DESC
+            LIMIT 1
+          ), c.created_at) AS last_message_at,
+          (
+            SELECT m.content
+            FROM messages m
+            WHERE m.chat_id = c.id AND m.deleted_at IS NULL
+            ORDER BY m.created_at DESC
+            LIMIT 1
+          ) AS last_message_content,
+          (
+            SELECT COUNT(*)
+            FROM messages m
+            WHERE m.chat_id = c.id
+              AND m.deleted_at IS NULL
+              AND m.sender_id <> $1
+              AND m.is_read = FALSE
+          )::int AS unread_count
+        FROM chats c
+        ORDER BY last_message_at DESC
+      `
+      : `
+        SELECT
+          c.id AS chat_id,
+          c.job_id,
+          c.contract_id,
+          c.status,
+          c.created_at AS chat_created_at,
+          COALESCE((
+            SELECT m.created_at
+            FROM messages m
+            WHERE m.chat_id = c.id AND m.deleted_at IS NULL
+            ORDER BY m.created_at DESC
+            LIMIT 1
+          ), c.created_at) AS last_message_at,
+          (
+            SELECT m.content
+            FROM messages m
+            WHERE m.chat_id = c.id AND m.deleted_at IS NULL
+            ORDER BY m.created_at DESC
+            LIMIT 1
+          ) AS last_message_content,
+          (
+            SELECT COUNT(*)
+            FROM messages m
+            WHERE m.chat_id = c.id
+              AND m.deleted_at IS NULL
+              AND m.sender_id <> $1
+              AND m.is_read = FALSE
+          )::int AS unread_count
+        FROM chats c
+        WHERE
+          (
+            c.contract_id IS NOT NULL AND EXISTS (
+              SELECT 1 FROM contracts ct
+              WHERE ct.id = c.contract_id
+                AND (ct.client_id = $1 OR ct.freelancer_id = $1)
+            )
+          )
+          OR
+          (
+            c.job_id IS NOT NULL AND (
+              EXISTS (SELECT 1 FROM jobs j WHERE j.id = c.job_id AND j.client_id = $1)
+              OR EXISTS (SELECT 1 FROM proposals p WHERE p.job_id = c.job_id AND p.freelancer_id = $1 AND p.status = 'accepted')
+            )
+          )
+        ORDER BY last_message_at DESC
+      `;
 
     const chatsResult = await pool.query(chatsQuery, [userId]);
 
-    // Partner ma'lumotlarini olish (job yoki contract orqali)
+    // attach partner info
     const chatsWithInfo = await Promise.all(
       chatsResult.rows.map(async (chat) => {
-        let partnerId = null;
-        let partnerQuery = '';
-
-        if (chat.job_id) {
-          // Job bo‘lsa client yoki freelancer ni aniqlash
-          const jobResult = await pool.query(
-            'SELECT client_id, freelancer_id FROM proposals p JOIN jobs j ON p.job_id = j.id WHERE j.id = $1 LIMIT 1',
-            [chat.job_id]
-          );
-          partnerId = jobResult.rows[0]?.client_id === userId ? jobResult.rows[0]?.freelancer_id : jobResult.rows[0]?.client_id;
-        } else if (chat.contract_id) {
-          // Contract bo‘lsa
-          const contractResult = await pool.query(
-            'SELECT client_id, freelancer_id FROM contracts WHERE id = $1',
-            [chat.contract_id]
-          );
-          partnerId = contractResult.rows[0]?.client_id === userId ? contractResult.rows[0]?.freelancer_id : contractResult.rows[0]?.client_id;
-        }
-
-        if (partnerId) {
-          const partnerResult = await pool.query(
-            'SELECT id, first_name, last_name, role, username FROM users WHERE id = $1',
-            [partnerId]
-          );
-          partnerQuery = partnerResult.rows[0];
-        }
-
+        const partner = await getPartnerForChat(chat, userId);
         return {
           ...chat,
-          partner: partnerQuery || { first_name: "Noma'lum" }
+          partner: partner || { first_name: "Noma'lum", last_name: "", username: null, avatar_url: null },
         };
       })
     );
 
-    console.log("Chatlar natijasi (admin):", chatsResult.rows.length, "ta");
-
-    res.json({
+    return res.json({
       success: true,
-      data: { chats: chatsWithInfo }
+      data: { chats: chatsWithInfo },
     });
   } catch (error) {
-    console.error('Get chats FULL ERROR:', error.stack);
-    res.status(500).json({
+    console.error("Get chats FULL ERROR:", error.stack || error);
+    return res.status(500).json({
       success: false,
-      message: 'Chatlarni olishda xato yuz berdi.',
-      error: error.message
+      message: "Chatlarni olishda xato yuz berdi.",
+      error: error.message,
     });
   }
 };
-/**
- /**
- * GET /messages/:chatId
- * Get chat history for a specific chat
- */
+
 /**
  * GET /messages/:chatId
- * Get chat history with real client/freelancer info
+ * Get chat history
  */
 const getChatHistory = async (req, res) => {
   try {
     const { chatId } = req.params;
-    const userId = req.user.id;
-    const isAdmin = req.user.role === 'admin';
-
-    if (!chatId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(chatId)) {
+    if (!isUuid(chatId)) {
       return res.status(400).json({ success: false, message: "Noto'g'ri chat ID" });
     }
 
-    // Xabarlar tarixini olish
+    // ✅ membership check
+    const chat = await ensureChatMemberOrAdmin(chatId, req.user);
+
+    // messages
     const messagesQuery = `
       SELECT 
         m.id,
@@ -123,88 +288,59 @@ const getChatHistory = async (req, res) => {
         m.type,
         m.file_url,
         m.is_read,
+        m.is_edited,
         m.created_at,
-        u_sender.first_name,
-        u_sender.last_name,
-        u_sender.username,
-        u_sender.avatar_url,
-        u_sender.role AS sender_role
+        m.updated_at,
+        m.deleted_at,
+        u.first_name,
+        u.last_name,
+        u.username,
+        u.avatar_url,
+        u.role AS sender_role
       FROM messages m
-      JOIN users u_sender ON m.sender_id = u_sender.id
+      JOIN users u ON m.sender_id = u.id
       WHERE m.chat_id = $1
       ORDER BY m.created_at ASC
     `;
 
     const messagesResult = await pool.query(messagesQuery, [chatId]);
 
-    const messagesWithInfo = messagesResult.rows.map(msg => ({
-      ...msg,
-      sender_is_admin: msg.sender_role === 'admin'
-    }));
+    // ✅ mark as read for THIS user (admin ham, oddiy user ham)
+    await pool.query(
+      `UPDATE messages
+       SET is_read = TRUE
+       WHERE chat_id = $1
+         AND sender_id <> $2
+         AND is_read = FALSE
+         AND deleted_at IS NULL`,
+      [chatId, req.user.id]
+    );
 
-    if (isAdmin) {
-      await pool.query(
-        'UPDATE messages SET is_read = TRUE WHERE chat_id = $1 AND sender_id != $2 AND is_read = FALSE',
-        [chatId, userId]
-      );
-    }
+    const partner = await getPartnerForChat(chat, req.user.id);
 
-    // Client va freelancer ma'lumotlarini aniqlash
-    let client = null;
-    let freelancer = null;
-
-    const chatQuery = await pool.query('SELECT job_id, contract_id FROM chats WHERE id = $1', [chatId]);
-    const chat = chatQuery.rows[0];
-
-    if (chat) {
-      // 1. Agar contract_id bo‘lsa — undan client va freelancer ni olamiz (eng to‘g‘ri yo‘l)
-      if (chat.contract_id) {
-        const contractQuery = await pool.query(
-          'SELECT client_id, freelancer_id FROM contracts WHERE id = $1',
-          [chat.contract_id]
-        );
-        const contract = contractQuery.rows[0];
-        if (contract) {
-          if (contract.client_id) {
-            client = (await pool.query(
-              'SELECT id, first_name, last_name, username, avatar_url FROM users WHERE id = $1',
-              [contract.client_id]
-            )).rows[0];
-          }
-          if (contract.freelancer_id) {
-            freelancer = (await pool.query(
-              'SELECT id, first_name, last_name, username, avatar_url FROM users WHERE id = $1',
-              [contract.freelancer_id]
-            )).rows[0];
-          }
-        }
-      }
-
-      // 2. Agar job_id bo‘lsa va contract bo‘lmasa — faqat client ni olamiz (freelancer hali tanlanmagan)
-      else if (chat.job_id) {
-        const jobQuery = await pool.query('SELECT client_id FROM jobs WHERE id = $1', [chat.job_id]);
-        const job = jobQuery.rows[0];
-        if (job?.client_id) {
-          client = (await pool.query(
-            'SELECT id, first_name, last_name, username, avatar_url FROM users WHERE id = $1',
-            [job.client_id]
-          )).rows[0];
-        }
-      }
-    }
-
-    res.json({
+    return res.json({
       success: true,
       data: {
-        messages: messagesWithInfo,
-        is_admin: isAdmin,
-        client,
-        freelancer
-      }
+        messages: messagesResult.rows.map((m) => ({
+          ...m,
+          sender_is_admin: m.sender_role === "admin",
+        })),
+        chat: {
+          id: chat.id,
+          status: chat.status,
+          job_id: chat.job_id,
+          contract_id: chat.contract_id,
+        },
+        partner: partner || null,
+      },
     });
   } catch (error) {
-    console.error('Get chat history FULL ERROR:', error.stack);
-    res.status(500).json({ success: false, message: error.message });
+    const status = error?.status || 500;
+    console.error("Get chat history FULL ERROR:", error.stack || error);
+    return res.status(status).json({
+      success: false,
+      message: error?.message || "Xato yuz berdi",
+    });
   }
 };
 
@@ -215,311 +351,283 @@ const getChatHistory = async (req, res) => {
 const sendMessage = async (req, res) => {
   try {
     const userId = req.user.id;
-    const userRole = req.user.role; // 'client', 'freelancer', 'admin'
 
-    const {
-      chat_id,
-      message_text,
-      type = 'text',
-      file_url
-    } = req.body;
+    const { chat_id, message_text, type = "text", file_url } = req.body;
 
-    // Validatsiya
-    if (!chat_id) {
-      return res.status(400).json({
-        success: false,
-        message: 'chat_id majburiy'
-      });
+    if (!chat_id || !isUuid(chat_id)) {
+      return res.status(400).json({ success: false, message: "chat_id noto'g'ri" });
     }
 
     if (!message_text && !file_url) {
-      return res.status(400).json({
-        success: false,
-        message: 'Xabar matni yoki file_url kerak'
-      });
+      return res.status(400).json({ success: false, message: "Xabar matni yoki file_url kerak" });
     }
 
-    // ✅ 1) CHAT STATUS TEKSHIRISH (BLOCKED BO'LSA STOP)
-    const chat = await pool.query(
-      "SELECT id, status FROM chats WHERE id = $1",
-      [chat_id]
-    );
+    // ✅ membership + chat status
+    const chat = await ensureChatMemberOrAdmin(chat_id, req.user);
 
-    if (chat.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Chat topilmadi"
-      });
+    if (chat.status === "blocked" && req.user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Bu chat admin tomonidan bloklangan" });
     }
 
-    if (chat.rows[0]?.status === "blocked") {
-      return res.status(403).json({
-        success: false,
-        message: "Bu chat admin tomonidan bloklangan"
-      });
-    }
+    const allowedTypes = ["text", "image", "file", "voice", "video_call"];
+    const safeType = allowedTypes.includes(type) ? type : "text";
 
-    // Xabar qo'shish
-    const result = await pool.query(
+    const insertRes = await pool.query(
       `INSERT INTO messages (
-        chat_id, 
+        chat_id,
         sender_id,
-        content, 
-        type, 
+        content,
+        type,
         file_url,
         is_read,
         created_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, NOW())
+      )
+      VALUES ($1, $2, $3, $4, $5, FALSE, NOW())
       RETURNING *`,
-      [
-        chat_id,
-        userId,
-        message_text || null,
-        type,
-        file_url || null,
-        false
-      ]
+      [chat_id, userId, message_text || null, safeType, file_url || null]
     );
 
-    const newMessage = result.rows[0];
+    const newMessage = insertRes.rows[0];
 
-    // Sender ma'lumotlarini qo'shish (Socket.io uchun)
-    const userResult = await pool.query(
-      `SELECT role, first_name, last_name, username, avatar_url 
-       FROM users WHERE id = $1`,
+    const senderRes = await pool.query(
+      `SELECT role, first_name, last_name, username, avatar_url
+       FROM users
+       WHERE id = $1`,
       [userId]
     );
 
+    const sender = senderRes.rows[0] || {};
+
     const enrichedMessage = {
       ...newMessage,
-      sender_role: userRole,
-      sender_first_name: userResult.rows[0]?.first_name,
-      sender_last_name: userResult.rows[0]?.last_name,
-      sender_username: userResult.rows[0]?.username,
-      sender_avatar: userResult.rows[0]?.avatar_url
+      sender_role: sender.role,
+      sender_first_name: sender.first_name,
+      sender_last_name: sender.last_name,
+      sender_username: sender.username,
+      sender_avatar: sender.avatar_url,
     };
 
-    // Socket.io orqali real-time yuborish
-    const io = req.app.get('io');
-    if (io) {
-      io.to(chat_id).emit('newMessage', enrichedMessage);
-    }
+    // Socket.io
+    const io = req.app.get("io");
+    if (io) io.to(chat_id).emit("newMessage", enrichedMessage);
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
-      message: 'Xabar yuborildi!',
-      data: { message: enrichedMessage }
+      message: "Xabar yuborildi!",
+      data: { message: enrichedMessage },
     });
   } catch (error) {
-    console.error('Send message error:', error);
-    res.status(500).json({
+    const status = error?.status || 500;
+    console.error("Send message error:", error.stack || error);
+    return res.status(status).json({
       success: false,
-      message: 'Xabar yuborishda xato',
-      error: error.message
+      message: error?.message || "Xabar yuborishda xato",
+      error: status === 500 ? error.message : undefined,
     });
   }
 };
 
 /**
- * PUT /messages/:chatId/read
- * Xabarlarni o'qilgan deb belgilash
+ * PUT /messages/read/:chatId
+ * Mark messages as read
  */
 const markMessagesAsRead = async (req, res) => {
   try {
     const { chatId } = req.params;
-    const userId = req.user.id;
-
-    await pool.query(
-      `UPDATE messages 
-       SET is_read = true 
-       WHERE chat_id = $1 
-       AND sender_id != $2 
-       AND is_read = false`,
-      [chatId, userId]
-    );
-
-    // Socket.io orqali xabar yuborish
-    const io = req.app.get('io');
-    if (io) {
-      io.to(chatId).emit('messagesRead', { chatId });
+    if (!isUuid(chatId)) {
+      return res.status(400).json({ success: false, message: "Noto'g'ri chat ID" });
     }
 
-    res.json({
-      success: true,
-      message: 'Xabarlar o\'qilgan deb belgilandi'
-    });
+    // ✅ membership check
+    await ensureChatMemberOrAdmin(chatId, req.user);
+
+    await pool.query(
+      `UPDATE messages
+       SET is_read = TRUE
+       WHERE chat_id = $1
+         AND sender_id <> $2
+         AND is_read = FALSE
+         AND deleted_at IS NULL`,
+      [chatId, req.user.id]
+    );
+
+    const io = req.app.get("io");
+    if (io) io.to(chatId).emit("messagesRead", { chatId });
+
+    return res.json({ success: true, message: "Xabarlar o'qilgan deb belgilandi" });
   } catch (error) {
-    console.error('Mark as read error:', error);
-    res.status(500).json({
+    const status = error?.status || 500;
+    console.error("Mark as read error:", error.stack || error);
+    return res.status(status).json({
       success: false,
-      message: 'Xatolik yuz berdi',
-      error: error.message
+      message: error?.message || "Xatolik yuz berdi",
     });
   }
 };
 
 /**
  * POST /messages/:chatId/voice
- * Ovozli xabar yuborish
+ * Voice message: type='voice', file_url = voice_url
  */
 const sendVoiceMessage = async (req, res) => {
   try {
     const { chatId } = req.params;
-    const userId = req.user.id;
-    const userRole = req.user.role;
-    const { voice_url } = req.body;
-
-    if (!voice_url) {
-      return res.status(400).json({
-        success: false,
-        message: 'Voice URL kerak'
-      });
+    if (!isUuid(chatId)) {
+      return res.status(400).json({ success: false, message: "Noto'g'ri chat ID" });
     }
 
-    const result = await pool.query(
-      `INSERT INTO messages (
-        chat_id, 
-        sender_id,
-        type, 
-        file_url,
-        created_at
-      ) VALUES ($1, $2, $3, $4, NOW())
-      RETURNING *`,
-      [chatId, userId, 'voice', voice_url]
+    const { voice_url } = req.body;
+    if (!voice_url) {
+      return res.status(400).json({ success: false, message: "voice_url kerak" });
+    }
+
+    // ✅ membership + chat status
+    const chat = await ensureChatMemberOrAdmin(chatId, req.user);
+    if (chat.status === "blocked" && req.user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Bu chat admin tomonidan bloklangan" });
+    }
+
+    const insertRes = await pool.query(
+      `INSERT INTO messages (chat_id, sender_id, type, file_url, is_read, created_at)
+       VALUES ($1, $2, 'voice', $3, FALSE, NOW())
+       RETURNING *`,
+      [chatId, req.user.id, voice_url]
     );
 
-    const newMessage = result.rows[0];
+    const msg = insertRes.rows[0];
 
-    // Sender info
-    const userResult = await pool.query(
-      `SELECT role, first_name, last_name, username, avatar_url 
+    const senderRes = await pool.query(
+      `SELECT role, first_name, last_name, username, avatar_url
        FROM users WHERE id = $1`,
-      [userId]
+      [req.user.id]
     );
-    
-    const enrichedMessage = {
-      ...newMessage,
-      sender_role: userRole,
-      sender_first_name: userResult.rows[0]?.first_name,
-      sender_last_name: userResult.rows[0]?.last_name,
-      sender_username: userResult.rows[0]?.username,
-      sender_avatar: userResult.rows[0]?.avatar_url
+
+    const sender = senderRes.rows[0] || {};
+    const enriched = {
+      ...msg,
+      sender_role: sender.role,
+      sender_first_name: sender.first_name,
+      sender_last_name: sender.last_name,
+      sender_username: sender.username,
+      sender_avatar: sender.avatar_url,
     };
 
-    // Socket.io
-    const io = req.app.get('io');
-    if (io) {
-      io.to(chatId).emit('newMessage', enrichedMessage);
-    }
+    const io = req.app.get("io");
+    if (io) io.to(chatId).emit("newMessage", enriched);
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
-      message: 'Ovozli xabar yuborildi!',
-      data: { message: enrichedMessage }
+      message: "Ovozli xabar yuborildi!",
+      data: { message: enriched },
     });
   } catch (error) {
-    console.error('Send voice message error:', error);
-    res.status(500).json({
+    const status = error?.status || 500;
+    console.error("Send voice message error:", error.stack || error);
+    return res.status(status).json({
       success: false,
-      message: 'Ovozli xabar yuborishda xato',
-      error: error.message
+      message: error?.message || "Ovozli xabar yuborishda xato",
     });
   }
 };
 
 /**
  * POST /messages/:chatId/video-call
- * Start video call
+ * Video call: type='video_call', content = link (yoki file_url)
  */
 const startVideoCall = async (req, res) => {
   try {
     const { chatId } = req.params;
-    const userId = req.user.id;
-    const { video_call_link, receiver_id, project_id } = req.body;
-
-    if (!video_call_link) {
-      return res.status(400).json({
-        success: false,
-        message: 'Video call link kerak.'
-      });
+    if (!isUuid(chatId)) {
+      return res.status(400).json({ success: false, message: "Noto'g'ri chat ID" });
     }
 
-    const result = await pool.query(
-      `INSERT INTO messages (
-        chat_id, sender_id, receiver_id, project_id,
-        message_type, video_call_link
-      ) VALUES ($1, $2, $3, $4, $5, $6)
-      RETURNING *`,
-      [chatId, userId, receiver_id || null, project_id || null, 'video_call', video_call_link]
+    const { video_call_link } = req.body;
+    if (!video_call_link) {
+      return res.status(400).json({ success: false, message: "video_call_link kerak." });
+    }
+
+    // ✅ membership + chat status
+    const chat = await ensureChatMemberOrAdmin(chatId, req.user);
+    if (chat.status === "blocked" && req.user.role !== "admin") {
+      return res.status(403).json({ success: false, message: "Bu chat admin tomonidan bloklangan" });
+    }
+
+    // DBga mos: type='video_call', content=link
+    const insertRes = await pool.query(
+      `INSERT INTO messages (chat_id, sender_id, type, content, is_read, created_at)
+       VALUES ($1, $2, 'video_call', $3, FALSE, NOW())
+       RETURNING *`,
+      [chatId, req.user.id, video_call_link]
     );
 
-    res.status(201).json({
+    const msg = insertRes.rows[0];
+
+    const io = req.app.get("io");
+    if (io) io.to(chatId).emit("newMessage", msg);
+
+    return res.status(201).json({
       success: true,
-      message: 'Video call boshlandi!',
-      data: {
-        message: result.rows[0]
-      }
+      message: "Video call boshlandi!",
+      data: { message: msg },
     });
   } catch (error) {
-    console.error('Start video call error:', error);
-    res.status(500).json({
+    const status = error?.status || 500;
+    console.error("Start video call error:", error.stack || error);
+    return res.status(status).json({
       success: false,
-      message: 'Video call boshlashda xato yuz berdi.',
-      error: error.message
+      message: error?.message || "Video call boshlashda xato yuz berdi.",
     });
   }
 };
 
-
+/**
+ * PUT /messages/:messageId
+ * Edit message (only owner or admin), only text, not deleted
+ */
 const editMessage = async (req, res) => {
   try {
     const { messageId } = req.params;
-    const { content } = req.body;
-    const userId = req.user.id;
-    const isAdmin = req.user.role === 'admin';
-
-    if (!content || !content.trim()) {
-      return res.status(400).json({
-        success: false,
-        message: 'Yangi matn kiriting'
-      });
+    if (!isUuid(messageId)) {
+      return res.status(400).json({ success: false, message: "Noto'g'ri message ID" });
     }
 
-    // Xabarni topish
-    const messageQuery = await pool.query(
-      'SELECT * FROM messages WHERE id = $1',
+    const { content } = req.body;
+    if (!content || !content.trim()) {
+      return res.status(400).json({ success: false, message: "Yangi matn kiriting" });
+    }
+
+    const msgRes = await pool.query(
+      `SELECT id, chat_id, sender_id, type, deleted_at
+       FROM messages
+       WHERE id = $1`,
       [messageId]
     );
 
-    if (messageQuery.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Xabar topilmadi'
-      });
+    if (msgRes.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Xabar topilmadi" });
     }
 
-    const message = messageQuery.rows[0];
+    const msg = msgRes.rows[0];
 
-    // Ruxsat tekshirish (faqat o'z xabarini yoki admin)
-    if (message.sender_id !== userId && !isAdmin) {
-      return res.status(403).json({
-        success: false,
-        message: 'Bu xabarni o\'zgartirishga ruxsatingiz yo\'q'
-      });
+    if (msg.deleted_at) {
+      return res.status(400).json({ success: false, message: "O‘chirilgan xabarni edit qilib bo‘lmaydi" });
     }
 
-    // Faqat text xabarlarni edit qilish mumkin
-    if (message.type !== 'text') {
-      return res.status(400).json({
-        success: false,
-        message: 'Faqat text xabarlarni o\'zgartirish mumkin'
-      });
+    // membership for safety (admin bypass inside ensure)
+    await ensureChatMemberOrAdmin(msg.chat_id, req.user);
+
+    const isAdmin = req.user.role === "admin";
+    if (msg.sender_id !== req.user.id && !isAdmin) {
+      return res.status(403).json({ success: false, message: "Bu xabarni o'zgartirishga ruxsatingiz yo'q" });
     }
 
-    // Update
-    const result = await pool.query(
-      `UPDATE messages 
-       SET content = $1, 
+    if (msg.type !== "text") {
+      return res.status(400).json({ success: false, message: "Faqat text xabarlarni o'zgartirish mumkin" });
+    }
+
+    const updRes = await pool.query(
+      `UPDATE messages
+       SET content = $1,
            updated_at = NOW(),
            is_edited = TRUE
        WHERE id = $2
@@ -527,69 +635,69 @@ const editMessage = async (req, res) => {
       [content.trim(), messageId]
     );
 
-    const updatedMessage = result.rows[0];
+    const updatedMessage = updRes.rows[0];
 
-    // Socket.io orqali yuborish
-    const io = req.app.get('io');
+    const io = req.app.get("io");
     if (io) {
-      io.to(message.chat_id).emit('messageEdited', {
+      io.to(msg.chat_id).emit("messageEdited", {
         messageId,
-        content: content.trim(),
-        updated_at: updatedMessage.updated_at
+        content: updatedMessage.content,
+        updated_at: updatedMessage.updated_at,
       });
     }
 
-    res.json({
+    return res.json({
       success: true,
-      message: 'Xabar o\'zgartirildi',
-      data: { message: updatedMessage }
+      message: "Xabar o'zgartirildi",
+      data: { message: updatedMessage },
     });
   } catch (error) {
-    console.error('Edit message error:', error);
-    res.status(500).json({
+    const status = error?.status || 500;
+    console.error("Edit message error:", error.stack || error);
+    return res.status(status).json({
       success: false,
-      message: 'Xabarni o\'zgartirishda xato',
-      error: error.message
+      message: error?.message || "Xabarni o'zgartirishda xato",
     });
   }
 };
 
 /**
  * DELETE /messages/:messageId
- * Delete message (soft delete)
+ * Soft delete message (only owner or admin)
  */
 const deleteMessage = async (req, res) => {
   try {
     const { messageId } = req.params;
-    const userId = req.user.id;
-    const isAdmin = req.user.role === 'admin';
+    if (!isUuid(messageId)) {
+      return res.status(400).json({ success: false, message: "Noto'g'ri message ID" });
+    }
 
-    // Xabarni topish
-    const messageQuery = await pool.query(
-      'SELECT * FROM messages WHERE id = $1 AND deleted_at IS NULL',
+    const msgRes = await pool.query(
+      `SELECT id, chat_id, sender_id, deleted_at
+       FROM messages
+       WHERE id = $1`,
       [messageId]
     );
 
-    if (messageQuery.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Xabar topilmadi yoki allaqachon o\'chirilgan'
-      });
+    if (msgRes.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Xabar topilmadi" });
     }
 
-    const message = messageQuery.rows[0];
-
-    // Ruxsat tekshirish (faqat o'z xabarini yoki admin)
-    if (message.sender_id !== userId && !isAdmin) {
-      return res.status(403).json({
-        success: false,
-        message: 'Bu xabarni o\'chirishga ruxsatingiz yo\'q'
-      });
+    const msg = msgRes.rows[0];
+    if (msg.deleted_at) {
+      return res.status(200).json({ success: true, message: "Xabar allaqachon o'chirilgan" });
     }
 
-    // Soft delete
+    // membership check
+    await ensureChatMemberOrAdmin(msg.chat_id, req.user);
+
+    const isAdmin = req.user.role === "admin";
+    if (msg.sender_id !== req.user.id && !isAdmin) {
+      return res.status(403).json({ success: false, message: "Bu xabarni o'chirishga ruxsatingiz yo'q" });
+    }
+
     await pool.query(
-      `UPDATE messages 
+      `UPDATE messages
        SET deleted_at = NOW(),
            content = NULL,
            file_url = NULL
@@ -597,65 +705,59 @@ const deleteMessage = async (req, res) => {
       [messageId]
     );
 
-    // Socket.io orqali yuborish
-    const io = req.app.get('io');
-    if (io) {
-      io.to(message.chat_id).emit('messageDeleted', {
-        messageId
-      });
-    }
+    const io = req.app.get("io");
+    if (io) io.to(msg.chat_id).emit("messageDeleted", { messageId });
 
-    res.json({
-      success: true,
-      message: 'Xabar o\'chirildi'
-    });
+    return res.json({ success: true, message: "Xabar o'chirildi" });
   } catch (error) {
-    console.error('Delete message error:', error);
-    res.status(500).json({
+    const status = error?.status || 500;
+    console.error("Delete message error:", error.stack || error);
+    return res.status(status).json({
       success: false,
-      message: 'Xabarni o\'chirishda xato',
-      error: error.message
+      message: error?.message || "Xabarni o'chirishda xato",
     });
   }
 };
 
-// PATCH /admin/chats/:id/status
+/**
+ * PATCH /messages/chats/:id/status
+ * Admin only (route-level authorize bor)
+ */
 const updateChatStatus = async (req, res) => {
   try {
     const { id } = req.params;
-    const { status } = req.body; // active | blocked
+    if (!isUuid(id)) {
+      return res.status(400).json({ success: false, message: "Noto'g'ri chat ID" });
+    }
 
+    const { status } = req.body; // active | blocked
     if (!["active", "blocked"].includes(status)) {
-      return res.status(400).json({
-        success: false,
-        message: "Noto‘g‘ri status"
-      });
+      return res.status(400).json({ success: false, message: "Noto‘g‘ri status" });
     }
 
     const result = await pool.query(
       `UPDATE chats
-       SET status = $1
+       SET status = $1, updated_at = NOW()
        WHERE id = $2
        RETURNING *`,
       [status, id]
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Chat topilmadi"
-      });
+      return res.status(404).json({ success: false, message: "Chat topilmadi" });
     }
 
-    res.json({
-      success: true,
-      data: { chat: result.rows[0] }
-    });
+    // optional socket broadcast
+    const io = req.app.get("io");
+    if (io) io.to(id).emit("chatStatusUpdated", { chatId: id, status });
+
+    return res.json({ success: true, data: { chat: result.rows[0] } });
   } catch (err) {
-    console.error("Chat status update error:", err);
-    res.status(500).json({
+    console.error("Chat status update error:", err.stack || err);
+    return res.status(500).json({
       success: false,
-      message: "Chat statusini o‘zgartirishda xato"
+      message: "Chat statusini o‘zgartirishda xato",
+      error: err.message,
     });
   }
 };
@@ -670,7 +772,5 @@ module.exports = {
   markMessagesAsRead,
   editMessage,
   deleteMessage,
-  updateChatStatus
+  updateChatStatus,
 };
-
-

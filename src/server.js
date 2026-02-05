@@ -1,303 +1,254 @@
 // src/server.js
-const express = require('express');
-const cors = require('cors');
-const morgan = require('morgan');
-const helmet = require('helmet');
-const http = require('http');
-const { Server } = require('socket.io');
-const path = require('path');
-require('dotenv').config();
+const express = require("express");
+const cors = require("cors");
+const morgan = require("morgan");
+const helmet = require("helmet");
+const http = require("http");
+const { Server } = require("socket.io");
+const path = require("path");
+require("dotenv").config();
 
-const pool = require('./db/pool');
+const pool = require("./db/pool");
 
-// Import routes
-const authRoutes = require('./routes/authRoutes');
-const projectRoutes = require('./routes/projectRoutes');
-const proposalRoutes = require('./routes/proposalRoutes');
-const contractRoutes = require('./routes/contractRoutes');
-const reviewRoutes = require('./routes/reviewRoutes');
-const profileRoutes = require('./routes/profileRoutes');
-const freelancerRoutes = require('./routes/freelancerRoutes');
-const clientRoutes = require('./routes/clientRoutes');
-const searchRoutes = require('./routes/searchRoutes');
-const notificationRoutes = require('./routes/notificationRoutes');
-const messageRoutes = require('./routes/messageRoutes');
-const paymentRoutes = require('./routes/paymentRoutes');
-const marketplaceRoutes = require('./routes/marketplaceRoutes');
-const adminRoutes = require('./routes/adminRoutes');
-const aiRoutes = require('./routes/aiRoutes');
-const supportRoutes = require('./routes/supportRoutes');
-const currencyRoutes = require('./routes/currencyRoutes');
-const fileRoutes = require('./routes/fileRoutes');
-const uploadRoutes = require('./routes/uploadRoutes');
-const disputeRoutes = require('./routes/disputeRoutes');
+// Routes
+const authRoutes = require("./routes/authRoutes");
+const projectRoutes = require("./routes/projectRoutes");
+const proposalRoutes = require("./routes/proposalRoutes");
+const contractRoutes = require("./routes/contractRoutes");
+const reviewRoutes = require("./routes/reviewRoutes");
+const profileRoutes = require("./routes/profileRoutes");
+const freelancerRoutes = require("./routes/freelancerRoutes");
+const clientRoutes = require("./routes/clientRoutes");
+const searchRoutes = require("./routes/searchRoutes");
+const notificationRoutes = require("./routes/notificationRoutes");
+const messageRoutes = require("./routes/messageRoutes");
+const paymentRoutes = require("./routes/paymentRoutes");
+const marketplaceRoutes = require("./routes/marketplaceRoutes");
+const adminRoutes = require("./routes/adminRoutes");
+const aiRoutes = require("./routes/aiRoutes");
+const supportRoutes = require("./routes/supportRoutes");
+const currencyRoutes = require("./routes/currencyRoutes");
+const fileRoutes = require("./routes/fileRoutes");
+const uploadRoutes = require("./routes/uploadRoutes");
+const disputeRoutes = require("./routes/disputeRoutes");
+
+const localeMiddleware = require("./middlewares/localeMiddleware");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// HTTP server yaratish (Socket.io uchun kerak)
+// Render/Proxy bo‘lsa kerak (cookie/ip uchun foydali)
+app.set("trust proxy", 1);
+
+// HTTP server (socket uchun)
 const server = http.createServer(app);
 
-// Socket.io sozlamalari (real-time chat uchun)
+// CORS origins
+const allowedOrigins = [
+  "http://localhost:3000",
+  "http://localhost:5173",
+  "http://localhost:5174",
+  "https://uzwork.uz",
+  "https://uzwork-admin-panel.vercel.app",
+  process.env.FRONTEND_URL,
+].filter(Boolean);
+
+// Socket.io
 const io = new Server(server, {
   cors: {
-    origin: [
-      "http://localhost:3000",
-      "http://localhost:5173", // Vite default port
-      "https://uzwork.uz",
-      "https://uzwork-admin-panel.vercel.app",
-      process.env.FRONTEND_URL // .env dan
-    ].filter(Boolean),
-    methods: ["GET", "POST"],
-    credentials: true
+    origin: allowedOrigins,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    credentials: true,
   },
   pingTimeout: 60000,
   pingInterval: 25000,
-  transports: ['websocket', 'polling'] // Render uchun muhim
+  transports: ["websocket", "polling"],
 });
 
-// Socket.io ni app ga qo'shish (routelardan foydalanish uchun)
-app.set('io', io);
+// io ni controllers ichidan ishlatish uchun
+app.set("io", io);
 
-// Socket.io ulanishlarini boshqarish
-io.on('connection', (socket) => {
-  console.log('✅ Yangi foydalanuvchi ulandi:', socket.id);
+// Socket events
+io.on("connection", (socket) => {
+  console.log("✅ Socket connected:", socket.id);
 
-  // Foydalanuvchi o'z roomiga qo'shiladi
-  socket.on('joinUser', (userId) => {
-    if (userId) {
-      socket.join(`user_${userId}`);
-      console.log(`👤 User ${userId} o'z roomiga qo'shildi`);
-    }
+  socket.on("joinUser", (userId) => {
+    if (!userId) return;
+    socket.join(`user_${userId}`);
   });
 
-  // Suhbat roomiga qo'shilish (chatId bo'yicha)
-  socket.on('joinChat', (chatId) => {
-    if (chatId) {
-      socket.join(chatId); // chat_ prefixi siz
-      console.log(`💬 Socket ${socket.id} ${chatId} roomiga qo'shildi`);
-    }
+  socket.on("joinChat", (chatId) => {
+    if (!chatId) return;
+    socket.join(chatId);
   });
 
-  // Yangi xabar yuborish
-  socket.on('sendMessage', (data) => {
-    const { chatId, receiverId, message } = data;
-    
-    // Suhbatdagi barcha qatnashuvchilarga yuborish
-    io.to(chatId).emit('newMessage', message);
-    
-    // Yangi xabar bildirishnomasi (o'qilmagan soni)
+  socket.on("sendMessage", (data) => {
+    const { chatId, receiverId, message } = data || {};
+    if (!chatId || !message) return;
+
+    io.to(chatId).emit("newMessage", message);
+
     if (receiverId) {
-      io.to(`user_${receiverId}`).emit('unreadUpdate', {
+      io.to(`user_${receiverId}`).emit("unreadUpdate", {
         chatId,
-        unreadCount: 1
+        unreadCount: 1,
       });
     }
   });
 
-  // Xabar o'qilganini bildirish
-  socket.on('markAsRead', ({ chatId, userId }) => {
-    if (userId) {
-      io.to(`user_${userId}`).emit('messagesRead', { chatId });
-    }
+  socket.on("markAsRead", ({ chatId, userId }) => {
+    if (!chatId || !userId) return;
+    io.to(`user_${userId}`).emit("messagesRead", { chatId });
   });
 
-  // Online status
-  socket.on('userOnline', (userId) => {
-    io.emit('userStatus', { userId, online: true });
+  socket.on("typing", ({ chatId, userId, username }) => {
+    if (!chatId) return;
+    socket.to(chatId).emit("userTyping", { userId, username });
   });
 
-  // Typing indicator
-  socket.on('typing', ({ chatId, userId, username }) => {
-    socket.to(chatId).emit('userTyping', { userId, username });
+  socket.on("stopTyping", ({ chatId }) => {
+    if (!chatId) return;
+    socket.to(chatId).emit("userStoppedTyping");
   });
 
-  socket.on('stopTyping', ({ chatId }) => {
-    socket.to(chatId).emit('userStoppedTyping');
-  });
-
-  socket.on('disconnect', () => {
-    console.log('❌ Foydalanuvchi uzildi:', socket.id);
+  socket.on("disconnect", () => {
+    console.log("❌ Socket disconnected:", socket.id);
   });
 });
 
 // Middlewares
-app.use(cors({
-  origin: [
-    'https://uzwork-admin-panel.vercel.app',
-    'http://localhost:3000',
-    'http://localhost:5173',
-    'http://localhost:5174',
-    'https://uzwork.uz',
-    process.env.FRONTEND_URL
-  ].filter(Boolean),
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true,
-  optionsSuccessStatus: 200
-}));
+app.use(
+  cors({
+    origin: allowedOrigins,
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
+    optionsSuccessStatus: 200,
+  })
+);
 
-app.use(express.json({ limit: '50mb' })); // File upload uchun kattaroq limit
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
-app.use(morgan('dev'));
+app.use(express.json({ limit: "50mb" }));
+app.use(express.urlencoded({ extended: true, limit: "50mb" }));
+app.use(morgan("dev"));
 
-// Helmet - security headers
-app.use(helmet({
-  crossOriginResourcePolicy: { policy: "cross-origin" }, // Static files uchun
-  crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" }
-}));
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+    crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
+  })
+);
 
-// Locale middleware (agar kerak bo'lsa)
-const localeMiddleware = require('./middlewares/localeMiddleware');
 app.use(localeMiddleware);
 
-// Static files - MUHIM! (uploads papkasi)
-// CORS headerlari bilan static files
-app.use('/uploads', (req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET');
-  res.header('Cross-Origin-Resource-Policy', 'cross-origin');
-  next();
-}, express.static(path.join(__dirname, '/uploads/voice')));
-
-
-// ... oldingi kodlar (cors, express.json, morgan, helmet va h.k.)
-
-
-// Asosiy uploads papkasi (agar kerak bo‘lsa)
-app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
-
-// Voice uchun maxsus (sizning holatingizga mos)
-app.use('/uploads/voice', express.static(path.join(__dirname, '../uploads/voice')));
-
-// CORS bilan static fayllar (brauzer xavfsizligi uchun)
-app.use('/uploads', (req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Cross-Origin-Resource-Policy', 'cross-origin');
-  next();
-}, express.static(path.join(__dirname, '../uploads')));
-
-// ... qolgan routelar (auth, projects, messages va h.k.)
+// Static uploads (1 marta, konflikt yo‘q)
+app.use(
+  "/uploads",
+  (req, res, next) => {
+    res.header("Access-Control-Allow-Origin", "*");
+    res.header("Cross-Origin-Resource-Policy", "cross-origin");
+    next();
+  },
+  express.static(path.join(__dirname, "../uploads"))
+);
 
 // Test route
-app.get('/', async (req, res) => {
+app.get("/", async (req, res) => {
   try {
-    const result = await pool.query('SELECT NOW()');
+    const result = await pool.query("SELECT NOW()");
     res.json({
       success: true,
-      message: 'UzWork backend ishlayapti! 🇺🇿🚀',
-      version: '1.0.0',
+      message: "UzWork backend ishlayapti! 🇺🇿🚀",
+      version: "1.0.0",
       database_time: result.rows[0].now,
       features: {
         socketIO: true,
-        fileUpload: true,
-        voiceMessages: true
-      }
+        uploads: true,
+      },
     });
   } catch (err) {
     res.status(500).json({
       success: false,
-      message: 'Database ulanishda xato',
-      error: err.message
+      message: "Database ulanishda xato",
+      error: err.message,
     });
   }
 });
 
-try {
-  const u = new URL(process.env.DATABASE_URL);
-  console.log("✅ DATABASE_URL host =", u.host);
-} catch (e) {
-  console.log("❌ DATABASE_URL parse error:", e.message);
-}
-
-
-// Health check route
-app.get('/health', (req, res) => {
+app.get("/health", (req, res) => {
   res.json({
     success: true,
-    status: 'healthy',
+    status: "healthy",
     uptime: process.uptime(),
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
   });
 });
 
-// API Routes
-app.use('/auth', authRoutes);
-app.use('/projects', projectRoutes);
-app.use('/proposals', proposalRoutes);
-app.use('/contracts', contractRoutes);
-app.use('/reviews', reviewRoutes);
-app.use('/profiles', profileRoutes);
-app.use('/freelancers', freelancerRoutes);
-app.use('/clients', clientRoutes);
-app.use('/search', searchRoutes);
-app.use('/notifications', notificationRoutes);
-app.use('/messages', messageRoutes);
-app.use('/payments', paymentRoutes);
-app.use('/marketplace', marketplaceRoutes);
-app.use('/admin', adminRoutes);
-app.use('/ai', aiRoutes);
-app.use('/support', supportRoutes);
-app.use('/currencies', currencyRoutes);
-app.use('/files', fileRoutes);
-app.use('/upload', uploadRoutes);
-app.use('/disputes', disputeRoutes); // Voice upload route
+// Routes
+app.use("/auth", authRoutes);
+app.use("/projects", projectRoutes);
+app.use("/proposals", proposalRoutes);
+app.use("/contracts", contractRoutes);
+app.use("/reviews", reviewRoutes);
+app.use("/profiles", profileRoutes);
+app.use("/freelancers", freelancerRoutes);
+app.use("/clients", clientRoutes);
+app.use("/search", searchRoutes);
+app.use("/notifications", notificationRoutes);
+app.use("/messages", messageRoutes);
+app.use("/payments", paymentRoutes);
+app.use("/marketplace", marketplaceRoutes);
+app.use("/admin", adminRoutes);
+app.use("/ai", aiRoutes);
+app.use("/support", supportRoutes);
+app.use("/currencies", currencyRoutes);
+app.use("/files", fileRoutes);
+app.use("/upload", uploadRoutes);
+app.use("/disputes", disputeRoutes);
 
-// 404 handler
+// 404
 app.use((req, res) => {
   res.status(404).json({
     success: false,
-    message: `Route topilmadi: ${req.method} ${req.url}`
+    message: `Route topilmadi: ${req.method} ${req.url}`,
   });
 });
 
 // Error handler
 app.use((err, req, res, next) => {
-  console.error('❌ Server Error:', err);
-  
-  // Multer file upload errors
-  if (err.code === 'LIMIT_FILE_SIZE') {
+  console.error("❌ Server Error:", err);
+
+  if (err.code === "LIMIT_FILE_SIZE") {
     return res.status(400).json({
       success: false,
-      message: 'Fayl hajmi juda katta (max 10MB)'
-    });
-  }
-  
-  if (err.message === 'Faqat audio fayllar ruxsat etilgan') {
-    return res.status(400).json({
-      success: false,
-      message: err.message
+      message: "Fayl hajmi juda katta",
     });
   }
 
   res.status(err.status || 500).json({
     success: false,
-    message: err.message || 'Server xatosi',
-    error: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    message: err.message || "Server xatosi",
+    error: process.env.NODE_ENV === "development" ? err.stack : undefined,
   });
 });
 
 // Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('⚠️ SIGTERM signal received: closing HTTP server');
+process.on("SIGTERM", () => {
+  console.log("⚠️ SIGTERM: closing server...");
   server.close(() => {
-    console.log('✅ HTTP server closed');
     pool.end(() => {
-      console.log('✅ Database pool closed');
+      console.log("✅ DB pool closed");
       process.exit(0);
     });
   });
 });
 
-// Serverni ishga tushirish (Socket.io bilan)
+// Start
 server.listen(PORT, () => {
-  console.log('='.repeat(50));
-  console.log(`🚀 UzWork Server ishga tushdi!`);
-  console.log(`📡 Port: ${PORT}`);
-  console.log(`🌐 URL: http://localhost:${PORT}`);
-  console.log(`💬 Socket.io: Enabled`);
-  console.log(`📁 Uploads: /uploads`);
-  console.log(`🎤 Voice Messages: Enabled`);
-  console.log(`🔒 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log('='.repeat(50));
+  console.log("=".repeat(50));
+  console.log("🚀 UzWork Server ishga tushdi!");
+  console.log("📡 Port:", PORT);
+  console.log("💬 Socket.io: Enabled");
+  console.log("📁 Uploads:", "/uploads");
+  console.log("🔒 Env:", process.env.NODE_ENV || "development");
+  console.log("=".repeat(50));
 });

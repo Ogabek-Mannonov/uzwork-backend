@@ -1,5 +1,5 @@
 // src/controllers/proposalController.js
-const pool = require('../db/pool');
+const pool = require("../db/pool");
 
 /**
  * POST /proposals
@@ -10,92 +10,77 @@ const createProposal = async (req, res) => {
     const userId = req.user.id;
     const userRole = req.user.role;
 
-    if (userRole !== 'freelancer') {
+    if (userRole !== "freelancer") {
       return res.status(403).json({
         success: false,
-        message: 'Faqat freelancerlar taklif yaratishi mumkin.'
+        message: "Faqat freelancerlar taklif yaratishi mumkin.",
       });
     }
 
-    const {
-      job_id,
-      cover_letter,
-      proposed_price,       // sizning table da bor
-      proposed_duration     // sizning table da bor
-    } = req.body;
+    const { job_id, cover_letter, proposed_price, proposed_duration } = req.body;
 
-    // Validation
-    if (!job_id || !cover_letter || !proposed_price || !proposed_duration) {
+    if (!job_id || !cover_letter || proposed_price == null || proposed_duration == null) {
       return res.status(400).json({
         success: false,
-        message: 'job_id, cover_letter, proposed_price va proposed_duration majburiy maydonlar.'
+        message: "job_id, cover_letter, proposed_price va proposed_duration majburiy maydonlar.",
       });
     }
 
-    // Check if project exists and is open
-    const projectCheck = await pool.query(
-      'SELECT id, client_id, job_type, status FROM jobs WHERE id = $1',
+    // Job mavjudmi + openmi + deleted emasmi
+    const jobCheck = await pool.query(
+      "SELECT id, client_id, job_type, status, deleted_at FROM jobs WHERE id = $1",
       [job_id]
     );
 
-    if (projectCheck.rows.length === 0) {
+    if (jobCheck.rows.length === 0 || jobCheck.rows[0].deleted_at) {
       return res.status(404).json({
         success: false,
-        message: 'Loyiha topilmadi.'
+        message: "Loyiha topilmadi.",
       });
     }
 
-    const project = projectCheck.rows[0];
+    const job = jobCheck.rows[0];
 
-    if (project.status !== 'open') {
+    if (job.status !== "open") {
       return res.status(400).json({
         success: false,
-        message: 'Faqat "open" statusdagi loyihalarga taklif yuborish mumkin.'
+        message: 'Faqat "open" statusdagi loyihalarga taklif yuborish mumkin.',
       });
     }
 
-    // Check if freelancer already submitted proposal
-    const existingProposal = await pool.query(
-      'SELECT id FROM proposals WHERE job_id = $1 AND freelancer_id = $2',
+    // allaqachon yuborganmi
+    const existing = await pool.query(
+      "SELECT id FROM proposals WHERE job_id = $1 AND freelancer_id = $2",
       [job_id, userId]
     );
 
-    if (existingProposal.rows.length > 0) {
+    if (existing.rows.length > 0) {
       return res.status(409).json({
         success: false,
-        message: 'Siz bu loyihaga allaqachon taklif yuborganingiz.'
+        message: "Siz bu loyihaga allaqachon taklif yuborgansiz.",
       });
     }
 
-    // Insert proposal (sizning table ga mos)
     const result = await pool.query(
       `INSERT INTO proposals (
         job_id, freelancer_id, cover_letter,
-        proposed_price, proposed_duration
-      ) VALUES ($1, $2, $3, $4, $5)
+        proposed_price, proposed_duration, status
+      ) VALUES ($1, $2, $3, $4, $5, 'pending')
       RETURNING *`,
-      [
-        job_id,
-        userId,
-        cover_letter,
-        proposed_price,
-        proposed_duration
-      ]
+      [job_id, userId, cover_letter, proposed_price, proposed_duration]
     );
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
-      message: 'Taklif muvaffaqiyatli yuborildi!',
-      data: {
-        proposal: result.rows[0]
-      }
+      message: "Taklif muvaffaqiyatli yuborildi!",
+      data: { proposal: result.rows[0] },
     });
   } catch (error) {
-    console.error('Create proposal error:', error);
-    res.status(500).json({
+    console.error("Create proposal error:", error);
+    return res.status(500).json({
       success: false,
-      message: 'Taklif yaratishda xato yuz berdi.',
-      error: error.message
+      message: "Taklif yaratishda xato yuz berdi.",
+      error: error.message,
     });
   }
 };
@@ -106,85 +91,86 @@ const createProposal = async (req, res) => {
  */
 const getProposals = async (req, res) => {
   try {
-    const {
-      job_id,
-      freelancer_id,
-      status,
-      page = 1,
-      limit = 20
-    } = req.query;
+    const { job_id, freelancer_id, status, page = 1, limit = 20 } = req.query;
 
-    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
 
-    // Build WHERE clause
-    let whereConditions = [];
-    let queryParams = [];
-    let paramIndex = 1;
+    let where = [];
+    let params = [];
+    let i = 1;
+
+    // ✅ jobs o‘chirilmagan bo‘lsin
+    where.push("j.deleted_at IS NULL");
 
     if (job_id) {
-      whereConditions.push(`p.job_id = $${paramIndex++}`);
-      queryParams.push(job_id);
+      where.push(`p.job_id = $${i++}`);
+      params.push(job_id);
     }
 
     if (freelancer_id) {
-      whereConditions.push(`p.freelancer_id = $${paramIndex++}`);
-      queryParams.push(freelancer_id);
+      where.push(`p.freelancer_id = $${i++}`);
+      params.push(freelancer_id);
     }
 
     if (status) {
-      whereConditions.push(`p.status = $${paramIndex++}`);
-      queryParams.push(status);
+      where.push(`p.status = $${i++}`);
+      params.push(status);
     }
 
-    const whereClause = whereConditions.length > 0
-      ? 'WHERE ' + whereConditions.join(' AND ')
-      : '';
+    const whereClause = where.length ? `WHERE ${where.join(" AND ")}` : "";
 
-    // Get total count
-    const countQuery = `SELECT COUNT(*) FROM proposals p ${whereClause}`;
-    const countResult = await pool.query(countQuery, queryParams);
-    const total = parseInt(countResult.rows[0].count);
+    const countResult = await pool.query(
+      `
+      SELECT COUNT(*)::int AS c
+      FROM proposals p
+      JOIN jobs j ON j.id = p.job_id
+      ${whereClause}
+      `,
+      params
+    );
+    const total = countResult.rows[0]?.c ?? 0;
 
-    // Get proposals with user and project info
-    const proposalsQuery = `
+    const listQuery = `
       SELECT 
         p.*,
         u.id as freelancer_id,
         u.first_name as freelancer_first_name,
         u.last_name as freelancer_last_name,
         u.email as freelancer_email,
+
         j.id as job_id,
-        pr.title as project_title,
-        pr.client_id as project_client_id
+        j.title as job_title,
+        j.client_id as job_client_id,
+        j.status as job_status
       FROM proposals p
-      JOIN users u ON p.freelancer_id = u.id
-      JOIN jobs j ON p.job_id = j.id
+      JOIN users u ON u.id = p.freelancer_id
+      JOIN jobs j ON j.id = p.job_id
       ${whereClause}
       ORDER BY p.created_at DESC
-      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
+      LIMIT $${i} OFFSET $${i + 1}
     `;
-    queryParams.push(parseInt(limit), offset);
 
-    const proposalsResult = await pool.query(proposalsQuery, queryParams);
+    const listParams = [...params, parseInt(limit, 10), offset];
+    const proposalsResult = await pool.query(listQuery, listParams);
 
-    res.json({
+    return res.json({
       success: true,
       data: {
         proposals: proposalsResult.rows,
         pagination: {
-          page: parseInt(page),
-          limit: parseInt(limit),
+          page: parseInt(page, 10),
+          limit: parseInt(limit, 10),
           total,
-          totalPages: Math.ceil(total / parseInt(limit))
-        }
-      }
+          totalPages: Math.ceil(total / parseInt(limit, 10)),
+        },
+      },
     });
   } catch (error) {
-    console.error('Get proposals error:', error);
-    res.status(500).json({
+    console.error("Get proposals error:", error);
+    return res.status(500).json({
       success: false,
-      message: 'Takliflarni olishda xato yuz berdi.',
-      error: error.message
+      message: "Takliflarni olishda xato yuz berdi.",
+      error: error.message,
     });
   }
 };
@@ -198,161 +184,164 @@ const getProposalById = async (req, res) => {
     const { id } = req.params;
 
     const result = await pool.query(
-      `SELECT 
+      `
+      SELECT 
         p.*,
         u.id as freelancer_id,
         u.first_name as freelancer_first_name,
         u.last_name as freelancer_last_name,
         u.email as freelancer_email,
+
         j.id as job_id,
-        pr.title as project_title,
-        pr.description as project_description,
-        pr.client_id as project_client_id
+        j.title as job_title,
+        j.description as job_description,
+        j.client_id as job_client_id,
+        j.status as job_status
       FROM proposals p
-      JOIN users u ON p.freelancer_id = u.id
-      JOIN jobs j ON p.job_id = j.id
-      WHERE p.id = $1`,
+      JOIN users u ON u.id = p.freelancer_id
+      JOIN jobs j ON j.id = p.job_id
+      WHERE p.id = $1 AND j.deleted_at IS NULL
+      `,
       [id]
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Taklif topilmadi.'
-      });
+      return res.status(404).json({ success: false, message: "Taklif topilmadi." });
     }
 
-    res.json({
+    return res.json({
       success: true,
-      data: {
-        proposal: result.rows[0]
-      }
+      data: { proposal: result.rows[0] },
     });
   } catch (error) {
-    console.error('Get proposal by ID error:', error);
-    res.status(500).json({
+    console.error("Get proposal by ID error:", error);
+    return res.status(500).json({
       success: false,
-      message: 'Taklifni olishda xato yuz berdi.',
-      error: error.message
+      message: "Taklifni olishda xato yuz berdi.",
+      error: error.message,
     });
   }
 };
 
 /**
  * GET /proposals/my
- * Get current user's proposals
+ * Get current freelancer proposals
  */
 const getMyProposals = async (req, res) => {
   try {
     const userId = req.user.id;
-    const userRole = req.user.role;
     const { status, page = 1, limit = 20 } = req.query;
-    const offset = (parseInt(page) - 1) * parseInt(limit);
 
-    let whereClause = 'WHERE p.freelancer_id = $1';
-    let queryParams = [userId];
-    let paramIndex = 2;
+    const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
+
+    let where = ["p.freelancer_id = $1", "j.deleted_at IS NULL"];
+    let params = [userId];
+    let i = 2;
 
     if (status) {
-      whereClause += ` AND p.status = $${paramIndex++}`;
-      queryParams.push(status);
+      where.push(`p.status = $${i++}`);
+      params.push(status);
     }
 
-    // Get total count
-    const countQuery = `SELECT COUNT(*) FROM proposals p ${whereClause}`;
-    const countResult = await pool.query(countQuery, queryParams);
-    const total = parseInt(countResult.rows[0].count);
+    const whereClause = `WHERE ${where.join(" AND ")}`;
 
-    // Get proposals
-    const proposalsQuery = `
+    const countResult = await pool.query(
+      `
+      SELECT COUNT(*)::int AS c
+      FROM proposals p
+      JOIN jobs j ON j.id = p.job_id
+      ${whereClause}
+      `,
+      params
+    );
+    const total = countResult.rows[0]?.c ?? 0;
+
+    const listQuery = `
       SELECT 
         p.*,
         j.id as job_id,
-        pr.title as project_title,
-        pr.status as project_status,
-        pr.client_id as project_client_id
+        j.title as job_title,
+        j.status as job_status,
+        j.client_id as job_client_id
       FROM proposals p
-      JOIN jobs j ON p.job_id = j.id
+      JOIN jobs j ON j.id = p.job_id
       ${whereClause}
       ORDER BY p.created_at DESC
-      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
+      LIMIT $${i} OFFSET $${i + 1}
     `;
-    queryParams.push(parseInt(limit), offset);
 
-    const proposalsResult = await pool.query(proposalsQuery, queryParams);
+    const listParams = [...params, parseInt(limit, 10), offset];
+    const proposalsResult = await pool.query(listQuery, listParams);
 
-    res.json({
+    return res.json({
       success: true,
       data: {
         proposals: proposalsResult.rows,
         pagination: {
-          page: parseInt(page),
-          limit: parseInt(limit),
+          page: parseInt(page, 10),
+          limit: parseInt(limit, 10),
           total,
-          totalPages: Math.ceil(total / parseInt(limit))
-        }
-      }
+          totalPages: Math.ceil(total / parseInt(limit, 10)),
+        },
+      },
     });
   } catch (error) {
-    console.error('Get my proposals error:', error);
-    res.status(500).json({
+    console.error("Get my proposals error:", error);
+    return res.status(500).json({
       success: false,
-      message: 'Takliflarni olishda xato yuz berdi.',
-      error: error.message
+      message: "Takliflarni olishda xato yuz berdi.",
+      error: error.message,
     });
   }
 };
 
 /**
  * GET /proposals/project/:projectId
- * Get proposals for a specific project (only project owner can view)
+ * Get proposals for a job (only job owner or admin)
  */
 const getProjectProposals = async (req, res) => {
   try {
-    const { projectId } = req.params;
+    const { projectId } = req.params; // bu aslida jobId
     const userId = req.user.id;
     const userRole = req.user.role;
+    const isAdmin = userRole === "admin";
 
-    // Check if project exists
-    const projectCheck = await pool.query(
-      'SELECT client_id FROM jobs WHERE id = $1',
-      [projectId]
-    );
+    const jobCheck = await pool.query("SELECT client_id, deleted_at FROM jobs WHERE id = $1", [
+      projectId,
+    ]);
 
-    if (projectCheck.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Loyiha topilmadi.'
-      });
+    if (jobCheck.rows.length === 0 || jobCheck.rows[0].deleted_at) {
+      return res.status(404).json({ success: false, message: "Loyiha topilmadi." });
     }
 
-    const project = projectCheck.rows[0];
-
-    if (userRole !== 'admin' && project.client_id !== userId) {
+    if (!isAdmin && jobCheck.rows[0].client_id !== userId) {
       return res.status(403).json({
         success: false,
-        message: 'Siz bu loyihaning egasi emassiz.'
+        message: "Siz bu loyihaning egasi emassiz.",
       });
     }
 
-    // Qolgan kod o‘zgarmaydi (pagination, query va h.k.)
     const { status, page = 1, limit = 20 } = req.query;
-    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
 
-    let whereClause = 'WHERE p.job_id = $1';
-    let queryParams = [projectId];
-    let paramIndex = 2;
+    let where = ["p.job_id = $1"];
+    let params = [projectId];
+    let i = 2;
 
     if (status) {
-      whereClause += ` AND p.status = $${paramIndex++}`;
-      queryParams.push(status);
+      where.push(`p.status = $${i++}`);
+      params.push(status);
     }
 
-    const countQuery = `SELECT COUNT(*) FROM proposals p ${whereClause}`;
-    const countResult = await pool.query(countQuery, queryParams);
-    const total = parseInt(countResult.rows[0].count);
+    const whereClause = `WHERE ${where.join(" AND ")}`;
 
-    const proposalsQuery = `
+    const countResult = await pool.query(
+      `SELECT COUNT(*)::int AS c FROM proposals p ${whereClause}`,
+      params
+    );
+    const total = countResult.rows[0]?.c ?? 0;
+
+    const listQuery = `
       SELECT 
         p.*,
         u.id as freelancer_id,
@@ -360,215 +349,199 @@ const getProjectProposals = async (req, res) => {
         u.last_name as freelancer_last_name,
         u.email as freelancer_email
       FROM proposals p
-      JOIN users u ON p.freelancer_id = u.id
+      JOIN users u ON u.id = p.freelancer_id
       ${whereClause}
       ORDER BY p.created_at DESC
-      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
+      LIMIT $${i} OFFSET $${i + 1}
     `;
-    queryParams.push(parseInt(limit), offset);
+    const listParams = [...params, parseInt(limit, 10), offset];
+    const proposalsResult = await pool.query(listQuery, listParams);
 
-    const proposalsResult = await pool.query(proposalsQuery, queryParams);
-
-    res.json({
+    return res.json({
       success: true,
       data: {
         proposals: proposalsResult.rows,
         pagination: {
-          page: parseInt(page),
-          limit: parseInt(limit),
+          page: parseInt(page, 10),
+          limit: parseInt(limit, 10),
           total,
-          totalPages: Math.ceil(total / parseInt(limit))
-        }
-      }
+          totalPages: Math.ceil(total / parseInt(limit, 10)),
+        },
+      },
     });
   } catch (error) {
-    console.error('Get project proposals error:', error);
-    res.status(500).json({
+    console.error("Get project proposals error:", error);
+    return res.status(500).json({
       success: false,
-      message: 'Takliflarni olishda xato yuz berdi.',
-      error: error.message
+      message: "Takliflarni olishda xato yuz berdi.",
+      error: error.message,
     });
   }
 };
+
 /**
  * PUT /proposals/:id
- * Update proposal (only author can update)
+ * Update proposal (only author, only pending)
+ * ✅ schema: cover_letter, proposed_price, proposed_duration
  */
 const updateProposal = async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user.id;
-    const userRole = req.user.role;
 
-    if (userRole !== 'freelancer') {
-      return res.status(403).json({
-        success: false,
-        message: 'Faqat freelancerlar taklifni yangilashi mumkin.'
-      });
-    }
-
-    // Check if proposal exists and user is author
     const proposalCheck = await pool.query(
-      'SELECT freelancer_id, status, job_id FROM proposals WHERE id = $1',
+      "SELECT freelancer_id, status FROM proposals WHERE id = $1",
       [id]
     );
 
     if (proposalCheck.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Taklif topilmadi.'
-      });
+      return res.status(404).json({ success: false, message: "Taklif topilmadi." });
     }
 
-    if (proposalCheck.rows[0].freelancer_id !== userId) {
+    const proposal = proposalCheck.rows[0];
+
+    if (proposal.freelancer_id !== userId) {
       return res.status(403).json({
         success: false,
-        message: 'Siz bu taklifning muallifi emassiz.'
+        message: "Siz bu taklifning muallifi emassiz.",
       });
     }
 
-    if (proposalCheck.rows[0].status !== 'pending') {
+    if (proposal.status !== "pending") {
       return res.status(400).json({
         success: false,
-        message: 'Faqat "pending" statusdagi takliflarni yangilash mumkin.'
+        message: 'Faqat "pending" statusdagi takliflarni yangilash mumkin.',
       });
     }
 
-    const {
-      cover_letter,
-      proposed_rate,
-      proposed_amount,
-      estimated_hours,
-      estimated_days
-    } = req.body;
+    const { cover_letter, proposed_price, proposed_duration } = req.body;
 
-    // Build update query
-    const updateFields = [];
-    const updateValues = [];
-    let paramIndex = 1;
+    const sets = [];
+    const vals = [];
+    let i = 1;
 
     if (cover_letter !== undefined) {
-      updateFields.push(`cover_letter = $${paramIndex++}`);
-      updateValues.push(cover_letter);
+      sets.push(`cover_letter = $${i++}`);
+      vals.push(cover_letter);
     }
-    if (proposed_rate !== undefined) {
-      updateFields.push(`proposed_rate = $${paramIndex++}`);
-      updateValues.push(proposed_rate);
+    if (proposed_price !== undefined) {
+      sets.push(`proposed_price = $${i++}`);
+      vals.push(proposed_price);
     }
-    if (proposed_amount !== undefined) {
-      updateFields.push(`proposed_amount = $${paramIndex++}`);
-      updateValues.push(proposed_amount);
-    }
-    if (estimated_hours !== undefined) {
-      updateFields.push(`estimated_hours = $${paramIndex++}`);
-      updateValues.push(estimated_hours);
-    }
-    if (estimated_days !== undefined) {
-      updateFields.push(`estimated_days = $${paramIndex++}`);
-      updateValues.push(estimated_days);
+    if (proposed_duration !== undefined) {
+      sets.push(`proposed_duration = $${i++}`);
+      vals.push(proposed_duration);
     }
 
-    if (updateFields.length === 0) {
+    if (sets.length === 0) {
       return res.status(400).json({
         success: false,
-        message: 'Yangilanish uchun hech bo\'lmaganda bitta maydon kerak.'
+        message: "Yangilanish uchun hech bo‘lmaganda bitta maydon kerak.",
       });
     }
 
-    updateFields.push(`updated_at = CURRENT_TIMESTAMP`);
-    updateValues.push(id);
+    sets.push(`updated_at = CURRENT_TIMESTAMP`);
 
-    const updateQuery = `
-      UPDATE proposals 
-      SET ${updateFields.join(', ')}
-      WHERE id = $${paramIndex}
+    vals.push(id);
+
+    const q = `
+      UPDATE proposals
+      SET ${sets.join(", ")}
+      WHERE id = $${i}
       RETURNING *
     `;
 
-    const result = await pool.query(updateQuery, updateValues);
+    const result = await pool.query(q, vals);
 
-    res.json({
+    return res.json({
       success: true,
-      message: 'Taklif muvaffaqiyatli yangilandi!',
-      data: {
-        proposal: result.rows[0]
-      }
+      message: "Taklif muvaffaqiyatli yangilandi!",
+      data: { proposal: result.rows[0] },
     });
   } catch (error) {
-    console.error('Update proposal error:', error);
-    res.status(500).json({
+    console.error("Update proposal error:", error);
+    return res.status(500).json({
       success: false,
-      message: 'Taklifni yangilashda xato yuz berdi.',
-      error: error.message
+      message: "Taklifni yangilashda xato yuz berdi.",
+      error: error.message,
     });
   }
 };
 
 /**
  * DELETE /proposals/:id
- * Withdraw proposal (only author can withdraw)
+ * Withdraw proposal (only author)
  */
 const withdrawProposal = async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user.id;
-    const userRole = req.user.role;
 
-    if (userRole !== 'freelancer') {
-      return res.status(403).json({
-        success: false,
-        message: 'Faqat freelancerlar taklifni bekor qilishi mumkin.'
-      });
-    }
-
-    // Check if proposal exists and user is author
     const proposalCheck = await pool.query(
-      'SELECT freelancer_id, status FROM proposals WHERE id = $1',
+      "SELECT freelancer_id, status FROM proposals WHERE id = $1",
       [id]
     );
 
     if (proposalCheck.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Taklif topilmadi.'
-      });
+      return res.status(404).json({ success: false, message: "Taklif topilmadi." });
     }
 
-    if (proposalCheck.rows[0].freelancer_id !== userId) {
+    const proposal = proposalCheck.rows[0];
+
+    if (proposal.freelancer_id !== userId) {
       return res.status(403).json({
         success: false,
-        message: 'Siz bu taklifning muallifi emassiz.'
+        message: "Siz bu taklifning muallifi emassiz.",
       });
     }
 
-    // Update status to withdrawn
+    // pending bo‘lmasa ham withdrawn qilish mumkin (xohlasang cheklaysan)
     await pool.query(
-      'UPDATE proposals SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-      ['withdrawn', id]
+      "UPDATE proposals SET status='withdrawn', updated_at = CURRENT_TIMESTAMP WHERE id = $1",
+      [id]
     );
 
-    res.json({
-      success: true,
-      message: 'Taklif bekor qilindi!'
-    });
+    return res.json({ success: true, message: "Taklif bekor qilindi!" });
   } catch (error) {
-    console.error('Withdraw proposal error:', error);
-    res.status(500).json({
+    console.error("Withdraw proposal error:", error);
+    return res.status(500).json({
       success: false,
-      message: 'Taklifni bekor qilishda xato yuz berdi.',
-      error: error.message
+      message: "Taklifni bekor qilishda xato yuz berdi.",
+      error: error.message,
     });
   }
 };
 
 /**
  * POST /proposals/:id/accept
- * Accept proposal (only project owner can accept)
+ * Accept proposal (client/admin)
+ */
+/**
+ * POST /proposals/:id/accept
+ * Accept proposal (client/admin) -> creates contract + creates chat(contract_id)
  */
 // src/controllers/proposalController.js
+// proposalController.js
+
+
+
+
+const normalizeStatus = (s) => (s ? String(s).toLowerCase() : null);
+
+async function ensureBalanceRow(qClient, userId) {
+  await qClient.query(
+    `INSERT INTO user_balances (user_id)
+     VALUES ($1)
+     ON CONFLICT (user_id) DO NOTHING`,
+    [userId]
+  );
+}
+
 const acceptProposal = async (req, res) => {
+  const client = await pool.connect();
+
   try {
-    const { id } = req.params;
+    const { id } = req.params; // proposal id
     const userId = req.user.id;
     const userRole = req.user.role;
     const isAdmin = userRole === "admin";
@@ -580,19 +553,284 @@ const acceptProposal = async (req, res) => {
       });
     }
 
-    // proposal + job
+    await client.query("BEGIN");
+
+    // 1) Proposal + Job (LOCK)
+    const pr = await client.query(
+      `
+      SELECT
+        p.id AS proposal_id,
+        p.job_id,
+        p.freelancer_id,
+        p.proposed_price,
+        p.status AS proposal_status,
+
+        j.client_id,
+        j.status AS job_status,
+        j.deleted_at
+      FROM proposals p
+      JOIN jobs j ON j.id = p.job_id
+      WHERE p.id = $1
+      FOR UPDATE
+      `,
+      [id]
+    );
+
+    if (pr.rows.length === 0 || pr.rows[0].deleted_at) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ success: false, message: "Taklif topilmadi." });
+    }
+
+    const row = pr.rows[0];
+
+    if (!isAdmin && String(row.client_id) !== String(userId)) {
+      await client.query("ROLLBACK");
+      return res.status(403).json({ success: false, message: "Siz bu loyihaning egasi emassiz." });
+    }
+
+    if (normalizeStatus(row.proposal_status) !== "pending") {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        success: false,
+        message: 'Faqat "pending" taklif qabul qilinadi.',
+      });
+    }
+
+    if (normalizeStatus(row.job_status) !== "open") {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        success: false,
+        message: 'Faqat "open" loyihada qabul qilish mumkin.',
+      });
+    }
+
+    // 2) Contract bor-yo‘qligini tekshir
+    const existing = await client.query(
+      `
+      SELECT id
+      FROM contracts
+      WHERE job_id = $1
+        AND status IN ('active','disputed')
+      LIMIT 1
+      `,
+      [row.job_id]
+    );
+
+    if (existing.rows.length > 0) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        success: false,
+        message: "Bu job uchun allaqachon active/disputed contract bor.",
+      });
+    }
+
+    const totalAmount = Number(row.proposed_price) || 0;
+    if (totalAmount <= 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ success: false, message: "proposed_price noto‘g‘ri." });
+    }
+
+    // 3) ✅ Proposal ACCEPT + boshqalar REJECT
+    await client.query(`UPDATE proposals SET status='accepted', updated_at=NOW() WHERE id=$1`, [id]);
+
+    await client.query(
+      `UPDATE proposals SET status='rejected', updated_at=NOW()
+       WHERE job_id=$1 AND id <> $2`,
+      [row.job_id, id]
+    );
+
+    // 4) Job -> in_progress
+    await client.query(`UPDATE jobs SET status='in_progress', updated_at=NOW() WHERE id=$1`, [
+      row.job_id,
+    ]);
+
+    // 5) ✅ Contract yaratish
+    const contractRes = await client.query(
+      `
+      INSERT INTO contracts (
+        job_id, freelancer_id, client_id,
+        total_amount, platform_fee,
+        status, signed_at, created_at, updated_at
+      )
+      VALUES ($1,$2,$3,$4,$5,'active',NOW(),NOW(),NOW())
+      RETURNING *
+      `,
+      [row.job_id, row.freelancer_id, row.client_id, totalAmount, 0]
+    );
+    const contract = contractRes.rows[0];
+
+    // 6) ✅ Chat yaratish (contract_id unique bo‘lsa dublikat bo‘lmaydi)
+    const chatIns = await client.query(
+      `
+      INSERT INTO chats (contract_id, job_id, status, created_at)
+      VALUES ($1,$2,'active',NOW())
+      ON CONFLICT (contract_id) DO NOTHING
+      RETURNING *
+      `,
+      [contract.id, row.job_id]
+    );
+    const chat =
+      chatIns.rows[0] ||
+      (await client.query(`SELECT * FROM chats WHERE contract_id=$1 LIMIT 1`, [contract.id])).rows[0] ||
+      null;
+
+    // 7) ✅ AUTO ESCROW HOLD (Variant A)
+    // balance row create
+    await ensureBalanceRow(client, row.client_id);
+
+    // lock balance
+    const balR = await client.query(
+      `SELECT available_balance, escrow_balance
+       FROM user_balances
+       WHERE user_id = $1
+       FOR UPDATE`,
+      [row.client_id]
+    );
+
+    const available = Number(balR.rows[0]?.available_balance ?? 0);
+    if (available < totalAmount) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        success: false,
+        message: "Balansda yetarli mablag' yo'q. Avval deposit qiling.",
+      });
+    }
+
+    // move to escrow
+    await client.query(
+      `
+      UPDATE user_balances
+      SET available_balance = available_balance - $1,
+          escrow_balance = COALESCE(escrow_balance,0) + $1,
+          updated_at = NOW()
+      WHERE user_id = $2
+      `,
+      [totalAmount, row.client_id]
+    );
+
+    // ledger transaction (escrow_hold)
+    await client.query(
+      `
+      INSERT INTO transactions (user_id, type, amount, currency, gateway, status, metadata, job_id, contract_id, created_at, updated_at)
+      VALUES ($1,'escrow_hold',$2,'UZS','internal','completed',$3,$4,$5,NOW(),NOW())
+      `,
+      [
+        row.client_id,
+        totalAmount,
+        JSON.stringify({
+          contract_id: String(contract.id),
+          job_id: String(row.job_id),
+          proposal_id: String(id),
+          reason: "auto_hold_on_accept",
+        }),
+        row.job_id,
+        contract.id,
+      ]
+    );
+
+    await client.query("COMMIT");
+
+    return res.json({
+      success: true,
+      message: "Taklif qabul qilindi! Contract+Chat yaratildi, escrow avtomatik band qilindi.",
+      data: { contract, chat },
+    });
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {}
+    console.error("Accept proposal error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Taklifni qabul qilishda xato.",
+      error: error.message,
+    });
+  } finally {
+    client.release();
+  }
+};
+
+
+
+/**
+ * POST /proposals/:id/reject
+ * Reject proposal (client/admin)
+ */
+const rejectProposal = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const userRole = req.user.role;
+    const isAdmin = userRole === "admin";
+
+    if (!["client", "admin"].includes(userRole)) {
+      return res.status(403).json({
+        success: false,
+        message: "Faqat client yoki admin taklifni rad etishi mumkin.",
+      });
+    }
+
     const proposalResult = await pool.query(
       `
       SELECT 
-        p.id as proposal_id,
-        p.job_id,
-        p.status as proposal_status,
+        p.id,
+        p.status,
         j.client_id,
-        j.status as job_status
+        j.deleted_at
       FROM proposals p
-      JOIN jobs j ON p.job_id = j.id
+      JOIN jobs j ON j.id = p.job_id
       WHERE p.id = $1
       `,
+      [id]
+    );
+
+    if (proposalResult.rows.length === 0 || proposalResult.rows[0].deleted_at) {
+      return res.status(404).json({ success: false, message: "Taklif topilmadi." });
+    }
+
+    const row = proposalResult.rows[0];
+
+    if (!isAdmin && row.client_id !== userId) {
+      return res.status(403).json({
+        success: false,
+        message: "Siz bu loyihaning egasi emassiz.",
+      });
+    }
+
+    if (row.status !== "pending") {
+      return res.status(400).json({
+        success: false,
+        message: 'Faqat "pending" statusdagi takliflarni rad etish mumkin.',
+      });
+    }
+
+    await pool.query(
+      "UPDATE proposals SET status='rejected', updated_at = CURRENT_TIMESTAMP WHERE id = $1",
+      [id]
+    );
+
+    return res.json({ success: true, message: "Taklif rad etildi!" });
+  } catch (error) {
+    console.error("Reject proposal error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Taklifni rad etishda xato yuz berdi.",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * POST /proposals/:id/ai-writer
+ * AI proposal writer helper (stub)
+ */
+const aiWriter = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+
+    const proposalResult = await pool.query(
+      "SELECT job_id, freelancer_id FROM proposals WHERE id = $1",
       [id]
     );
 
@@ -600,231 +838,77 @@ const acceptProposal = async (req, res) => {
       return res.status(404).json({ success: false, message: "Taklif topilmadi." });
     }
 
-    const row = proposalResult.rows[0];
-
-    // client faqat o'z jobiga
-    if (!isAdmin && row.client_id !== userId) {
-      return res.status(403).json({ success: false, message: "Siz bu loyihaning egasi emassiz." });
-    }
-
-    if (row.proposal_status !== "pending") {
-      return res.status(400).json({ success: false, message: 'Faqat "pending" taklif qabul qilinadi.' });
-    }
-
-    if (row.job_status !== "open") {
-      return res.status(400).json({ success: false, message: 'Faqat "open" loyihada qabul qilish mumkin.' });
-    }
-
-    await pool.query("BEGIN");
-
-    // 1) accepted
-    await pool.query(
-      `UPDATE proposals
-       SET status='accepted', updated_at = CURRENT_TIMESTAMP
-       WHERE id=$1`,
-      [id]
-    );
-
-    // 2) others rejected
-    await pool.query(
-      `UPDATE proposals
-       SET status='rejected', updated_at = CURRENT_TIMESTAMP
-       WHERE job_id=$1 AND id <> $2`,
-      [row.job_id, id]
-    );
-
-    // 3) job => in_progress ✅
-    await pool.query(
-      `UPDATE jobs
-       SET status='in_progress', updated_at = CURRENT_TIMESTAMP
-       WHERE id=$1`,
-      [row.job_id]
-    );
-
-    await pool.query("COMMIT");
-
-    return res.json({
-      success: true,
-      message: 'Taklif qabul qilindi! Loyiha "in_progress" bo‘ldi.',
-    });
-  } catch (error) {
-    await pool.query("ROLLBACK").catch(() => {});
-    console.error("Accept proposal error:", error);
-    return res.status(500).json({ success: false, message: "Xato", error: error.message });
-  }
-};
-
-
-/**
- * POST /proposals/:id/reject
- * Reject proposal (only project owner can reject)
- */
-const rejectProposal = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const userId = req.user.id;
-    const userRole = req.user.role;
-
-    if (userRole !== 'client') {
-      return res.status(403).json({
-        success: false,
-        message: 'Faqat clientlar taklifni rad etishi mumkin.'
-      });
-    }
-
-    // Get proposal with project info
-    const proposalResult = await pool.query(
-      `SELECT 
-        p.*,
-        pr.client_id
-      FROM proposals p
-      JOIN jobs j ON p.job_id = j.id
-      WHERE p.id = $1`,
-      [id]
-    );
-
-    if (proposalResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Taklif topilmadi.'
-      });
-    }
-
-    const proposal = proposalResult.rows[0];
-
-    if (proposal.client_id !== userId) {
-      return res.status(403).json({
-        success: false,
-        message: 'Siz bu loyihaning egasi emassiz.'
-      });
-    }
-
-    if (proposal.status !== 'pending') {
-      return res.status(400).json({
-        success: false,
-        message: 'Faqat "pending" statusdagi takliflarni rad etish mumkin.'
-      });
-    }
-
-    // Update proposal status
-    await pool.query(
-      'UPDATE proposals SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-      ['rejected', id]
-    );
-
-    res.json({
-      success: true,
-      message: 'Taklif rad etildi!'
-    });
-  } catch (error) {
-    console.error('Reject proposal error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Taklifni rad etishda xato yuz berdi.',
-      error: error.message
-    });
-  }
-};
-
-/**
- * POST /proposals/:id/ai-writer
- * AI proposal writer helper
- */
-const aiWriter = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const userId = req.user.id;
-
-    // Check if proposal exists and user is author
-    const proposalResult = await pool.query(
-      'SELECT job_id, freelancer_id FROM proposals WHERE id = $1',
-      [id]
-    );
-
-    if (proposalResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Taklif topilmadi.'
-      });
-    }
-
     if (proposalResult.rows[0].freelancer_id !== userId) {
       return res.status(403).json({
         success: false,
-        message: 'Siz bu taklifning muallifi emassiz.'
+        message: "Siz bu taklifning muallifi emassiz.",
       });
     }
 
-    // Get project details
-    const projectResult = await pool.query(
-      'SELECT title, description, required_skills as skills FROM jobs WHERE id = $1',
+    const jobResult = await pool.query(
+      "SELECT title, description, required_skills FROM jobs WHERE id = $1 AND deleted_at IS NULL",
       [proposalResult.rows[0].job_id]
     );
 
-    // TODO: Integrate with AI service
-    const improvedCoverLetter = `Yaxshilangan taklif matni...`;
+    // TODO: AI servis
+    const improvedCoverLetter = "Yaxshilangan taklif matni...";
 
-    res.json({
+    return res.json({
       success: true,
       data: {
-        improved_cover_letter: improvedCoverLetter
-      }
+        job: jobResult.rows[0] || null,
+        improved_cover_letter: improvedCoverLetter,
+      },
     });
   } catch (error) {
-    console.error('AI writer error:', error);
-    res.status(500).json({
+    console.error("AI writer error:", error);
+    return res.status(500).json({
       success: false,
-      message: 'AI yozuvchi xatosi.',
-      error: error.message
+      message: "AI yozuvchi xatosi.",
+      error: error.message,
     });
   }
 };
 
 /**
  * POST /proposals/:id/score
- * AI proposal scoring
+ * AI proposal scoring (simple)
  */
 const aiScore = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const proposalResult = await pool.query(
-      'SELECT cover_letter FROM proposals WHERE id = $1',
-      [id]
-    );
+    const proposalResult = await pool.query("SELECT cover_letter FROM proposals WHERE id = $1", [id]);
 
     if (proposalResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Taklif topilmadi.'
-      });
+      return res.status(404).json({ success: false, message: "Taklif topilmadi." });
     }
 
-    // Simple scoring (can be enhanced with ML)
-    const coverLetter = proposalResult.rows[0].cover_letter;
+    const coverLetter = proposalResult.rows[0].cover_letter || "";
     let score = 50;
 
     if (coverLetter.length > 100) score += 20;
     if (coverLetter.length > 200) score += 10;
-    if (coverLetter.toLowerCase().includes('tajriba')) score += 10;
-    if (coverLetter.toLowerCase().includes('ko\'nikma')) score += 10;
+    if (coverLetter.toLowerCase().includes("tajriba")) score += 10;
+    if (coverLetter.toLowerCase().includes("ko'nikma") || coverLetter.toLowerCase().includes("konikma"))
+      score += 10;
 
     score = Math.min(100, score);
 
-    res.json({
+    return res.json({
       success: true,
       data: {
         proposal_id: id,
         score,
-        feedback: score > 70 ? 'Yaxshi taklif' : 'Yaxshilash tavsiya etiladi'
-      }
+        feedback: score > 70 ? "Yaxshi taklif" : "Yaxshilash tavsiya etiladi",
+      },
     });
   } catch (error) {
-    console.error('AI score error:', error);
-    res.status(500).json({
+    console.error("AI score error:", error);
+    return res.status(500).json({
       success: false,
-      message: 'Baholashda xato yuz berdi.',
-      error: error.message
+      message: "Baholashda xato yuz berdi.",
+      error: error.message,
     });
   }
 };
@@ -840,7 +924,5 @@ module.exports = {
   acceptProposal,
   rejectProposal,
   aiWriter,
-  aiScore
+  aiScore,
 };
-
-

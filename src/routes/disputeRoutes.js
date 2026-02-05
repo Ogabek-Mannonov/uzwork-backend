@@ -8,7 +8,7 @@ const {
   createDispute,
   getMyDisputes,
   getDisputes,       // admin list
-  getDisputeById,    // detail
+  getDisputeById,    // admin detail
   updateDisputeStatus,
   resolveDispute,
 } = require("../controllers/disputeController");

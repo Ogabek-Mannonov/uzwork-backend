@@ -1,99 +1,113 @@
 // src/controllers/authController.js
-const pool = require('../db/pool');
-const { hashPassword, comparePassword } = require('../utils/hashPassword');
-const { 
-  generateAccessToken, 
-  generateRefreshToken, 
-  verifyRefreshToken
-} = require('../utils/jwt');
+const pool = require("../db/pool");
+const { hashPassword, comparePassword } = require("../utils/hashPassword");
+const {
+  generateAccessToken,
+  generateRefreshToken,
+  verifyRefreshToken,
+} = require("../utils/jwt");
 
-/**
- * POST /auth/signup
- * User registration
- */
+// helper: refresh token exp -> expires_at
+const getTokenExpiryDate = (token) => {
+  // JWT decode without verify (we already verify elsewhere sometimes)
+  const parts = token.split(".");
+  if (parts.length !== 3) return null;
+  const payload = JSON.parse(Buffer.from(parts[1], "base64").toString("utf8"));
+  if (!payload?.exp) return null;
+  return new Date(payload.exp * 1000);
+};
+
 const signup = async (req, res) => {
   const client = await pool.connect();
   try {
     const { email, phone, password, role, first_name, last_name, username, display_name } = req.body;
 
-    // Validation
     if (!email || !phone || !password || !role || !first_name || !last_name || !username) {
       return res.status(400).json({
         success: false,
-        message: 'Barcha maydonlar to\'ldirilishi kerak (email, phone, password, role, first_name, last_name, username).'
+        message: "Majburiy: email, phone, password, role, first_name, last_name, username",
       });
     }
 
-    if (!['freelancer', 'client'].includes(role)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Role "freelancer" yoki "client" bo\'lishi kerak.'
-      });
+    if (!["freelancer", "client"].includes(role)) {
+      return res.status(400).json({ success: false, message: "Role freelancer yoki client bo‘lsin." });
     }
 
-    // Validate username format (alphanumeric and underscore)
     if (!/^[a-zA-Z0-9_]+$/.test(username)) {
       return res.status(400).json({
         success: false,
-        message: 'Username faqat harflar, raqamlar va _ belgisidan iborat bo\'lishi kerak.'
+        message: "Username faqat harf/raqam/_ bo‘lsin.",
       });
     }
 
-    await client.query('BEGIN');
+    await client.query("BEGIN");
 
-    // Check if user already exists
-    const existingUser = await client.query(
-      'SELECT id FROM users WHERE email = $1 OR phone = $2 OR username = $3',
+    const existing = await client.query(
+      "SELECT id FROM users WHERE email = $1 OR phone = $2 OR username = $3",
       [email, phone, username]
     );
 
-    if (existingUser.rows.length > 0) {
-      await client.query('ROLLBACK');
+    if (existing.rowCount > 0) {
+      await client.query("ROLLBACK");
       return res.status(409).json({
         success: false,
-        message: 'Bu email, telefon raqam yoki username allaqachon ro\'yxatdan o\'tgan.'
+        message: "Email/phone/username allaqachon bor.",
       });
     }
 
-    // Hash password
     const passwordHash = await hashPassword(password);
 
-    // Insert user
-    const result = await client.query(
-      `INSERT INTO users (username, email, phone, password_hash, role, first_name, last_name, display_name, is_verified, avatar_url)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    const ins = await client.query(
+      `INSERT INTO users
+        (username, email, phone, password_hash, role, first_name, last_name, display_name, is_verified, avatar_url)
+       VALUES
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
        RETURNING id, username, email, phone, role, first_name, last_name, display_name, is_verified, avatar_url, created_at`,
       [username, email, phone, passwordHash, role, first_name, last_name, display_name || null, false, null]
     );
 
-    const user = result.rows[0];
+    const user = ins.rows[0];
 
-    // ✅ Create role-based profile skeleton row
-    if (role === 'freelancer') {
+    // profiles
+    if (role === "freelancer") {
       await client.query(
         `INSERT INTO freelancer_profiles (user_id)
-         VALUES ($1)
-         ON CONFLICT (user_id) DO NOTHING`,
+         VALUES ($1) ON CONFLICT (user_id) DO NOTHING`,
         [user.id]
       );
     } else {
       await client.query(
         `INSERT INTO client_profiles (user_id)
-         VALUES ($1)
-         ON CONFLICT (user_id) DO NOTHING`,
+         VALUES ($1) ON CONFLICT (user_id) DO NOTHING`,
         [user.id]
       );
     }
 
-    await client.query('COMMIT');
+    // balances
+    await client.query(
+      `INSERT INTO user_balances (user_id, available_balance, reserved_balance, escrow_balance, total_earned, total_spent)
+       VALUES ($1, 0, 0, 0, 0, 0)
+       ON CONFLICT (user_id) DO NOTHING`,
+      [user.id]
+    );
 
-    // Generate tokens
+    await client.query("COMMIT");
+
+    // tokens
     const accessToken = generateAccessToken(user);
     const refreshToken = generateRefreshToken(user);
+    const expiresAt = getTokenExpiryDate(refreshToken);
+
+    // store refresh
+    await pool.query(
+      `INSERT INTO refresh_tokens (user_id, token, expires_at)
+       VALUES ($1, $2, $3)`,
+      [user.id, refreshToken, expiresAt || new Date(Date.now() + 7 * 24 * 3600 * 1000)]
+    );
 
     return res.status(201).json({
       success: true,
-      message: 'Ro\'yxatdan muvaffaqiyatli o\'tdingiz!',
+      message: "Ro‘yxatdan o‘tdingiz!",
       data: {
         user: {
           id: user.id,
@@ -105,270 +119,251 @@ const signup = async (req, res) => {
           last_name: user.last_name,
           display_name: user.display_name || user.username,
           is_verified: user.is_verified,
-          avatar_url: user.avatar_url
+          avatar_url: user.avatar_url,
         },
         accessToken,
-        refreshToken
-      }
+        refreshToken,
+      },
     });
   } catch (error) {
-    console.error('Signup error:', error);
-    try { await client.query('ROLLBACK'); } catch (e) {}
-
-    // Handle unique constraint violations
-    if (error.code === '23505') {
-      return res.status(409).json({
-        success: false,
-        message: 'Bu email, telefon raqam yoki username allaqachon ro\'yxatdan o\'tgan.'
-      });
+    try { await client.query("ROLLBACK"); } catch (e) {}
+    if (error.code === "23505") {
+      return res.status(409).json({ success: false, message: "Unique conflict (email/phone/username)." });
     }
-
     return res.status(500).json({
       success: false,
-      message: 'Ro\'yxatdan o\'tishda xato yuz berdi.',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      message: "Signup xato.",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   } finally {
     client.release();
   }
 };
 
-/**
- * POST /auth/login
- * User login (email/phone + password or SMS code)
- */
 const login = async (req, res) => {
   try {
-    const { email, phone, password, sms_code } = req.body;
+    const { email, phone, password } = req.body;
 
-    // Login with password
-    if (password) {
-      if (!email && !phone) {
-        return res.status(400).json({
-          success: false,
-          message: 'Email yoki telefon raqam kiriting.'
-        });
-      }
-
-      // Find user - improved query with proper NULL handling
-      let query, params;
-      
-      if (email && phone) {
-        query = 'SELECT id, username, email, phone, password_hash, role, first_name, last_name, display_name, is_verified, avatar_url FROM users WHERE (email = $1 OR phone = $2) AND deleted_at IS NULL LIMIT 1';
-        params = [email, phone];
-      } else if (email) {
-        query = 'SELECT id, username, email, phone, password_hash, role, first_name, last_name, display_name, is_verified, avatar_url FROM users WHERE email = $1 AND deleted_at IS NULL LIMIT 1';
-        params = [email];
-      } else {
-        query = 'SELECT id, username, email, phone, password_hash, role, first_name, last_name, display_name, is_verified, avatar_url FROM users WHERE phone = $1 AND deleted_at IS NULL LIMIT 1';
-        params = [phone];
-      }
-
-      const result = await pool.query(query, params);
-
-      if (result.rows.length === 0) {
-        return res.status(401).json({
-          success: false,
-          message: 'Email/telefon yoki parol noto\'g\'ri.'
-        });
-      }
-
-      const user = result.rows[0];
-
-      // Verify password
-      const isPasswordValid = await comparePassword(password, user.password_hash);
-      if (!isPasswordValid) {
-        return res.status(401).json({
-          success: false,
-          message: 'Email/telefon yoki parol noto\'g\'ri.'
-        });
-      }
-
-      // Generate tokens
-      const accessToken = generateAccessToken(user);
-      const refreshToken = generateRefreshToken(user);
-
-      return res.json({
-        success: true,
-        message: 'Muvaffaqiyatli kirildi!',
-        data: {
-          user: {
-            id: user.id,
-            username: user.username,
-            email: user.email,
-            phone: user.phone,
-            role: user.role,
-            first_name: user.first_name,
-            last_name: user.last_name,
-            display_name: user.display_name || user.username,
-            is_verified: user.is_verified,
-            avatar_url: user.avatar_url
-          },
-          accessToken,
-          refreshToken
-        }
-      });
+    if (!password) {
+      return res.status(400).json({ success: false, message: "Parol kiriting." });
+    }
+    if (!email && !phone) {
+      return res.status(400).json({ success: false, message: "Email yoki phone kiriting." });
     }
 
-    // Login with SMS code (not implemented in new schema)
-    if (sms_code) {
-      return res.status(400).json({
-        success: false,
-        message: 'SMS kod bilan kirish hozircha qo\'llab-quvvatlanmaydi. Parol bilan kirishdan foydalaning.'
-      });
+    let q, params;
+    if (email && phone) {
+      q = `SELECT id, username, email, phone, password_hash, role, first_name, last_name, display_name, is_verified, avatar_url, status
+           FROM users
+           WHERE (email=$1 OR phone=$2) AND deleted_at IS NULL
+           LIMIT 1`;
+      params = [email, phone];
+    } else if (email) {
+      q = `SELECT id, username, email, phone, password_hash, role, first_name, last_name, display_name, is_verified, avatar_url, status
+           FROM users
+           WHERE email=$1 AND deleted_at IS NULL
+           LIMIT 1`;
+      params = [email];
+    } else {
+      q = `SELECT id, username, email, phone, password_hash, role, first_name, last_name, display_name, is_verified, avatar_url, status
+           FROM users
+           WHERE phone=$1 AND deleted_at IS NULL
+           LIMIT 1`;
+      params = [phone];
     }
 
-    return res.status(400).json({
-      success: false,
-      message: 'Parol yoki SMS kod kiriting.'
-    });
-  } catch (error) {
-    console.error('Login error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Kirishda xato yuz berdi.',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-};
-
-/**
- * POST /auth/refresh
- * Refresh access token using refresh token
- */
-const refresh = async (req, res) => {
-  try {
-    const { refreshToken } = req.body;
-
-    if (!refreshToken) {
-      return res.status(400).json({
-        success: false,
-        message: 'Refresh token kerak.'
-      });
-    }
-
-    // Verify refresh token
-    let decoded;
-    try {
-      decoded = verifyRefreshToken(refreshToken);
-    } catch (error) {
-      return res.status(401).json({
-        success: false,
-        message: 'Refresh token noto\'g\'ri yoki muddati tugagan.'
-      });
-    }
-
-    // Check if user exists
-    const result = await pool.query(
-      'SELECT id, username, email, phone, role FROM users WHERE id = $1 AND deleted_at IS NULL',
-      [decoded.id]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(401).json({
-        success: false,
-        message: 'Foydalanuvchi topilmadi.'
-      });
+    const result = await pool.query(q, params);
+    if (result.rowCount === 0) {
+      return res.status(401).json({ success: false, message: "Login yoki parol noto‘g‘ri." });
     }
 
     const user = result.rows[0];
 
-    // Generate new tokens
-    const newAccessToken = generateAccessToken(user);
-    const newRefreshToken = generateRefreshToken(user);
+    if (user.status === "blocked") {
+      return res.status(403).json({ success: false, message: "User bloklangan." });
+    }
 
-    res.json({
-      success: true,
-      message: 'Token yangilandi!',
-      data: {
-        accessToken: newAccessToken,
-        refreshToken: newRefreshToken
-      }
-    });
-  } catch (error) {
-    console.error('Refresh token error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Token yangilashda xato yuz berdi.',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
-  }
-};
+    const ok = await comparePassword(password, user.password_hash);
+    if (!ok) {
+      return res.status(401).json({ success: false, message: "Login yoki parol noto‘g‘ri." });
+    }
 
-/**
- * POST /auth/verify
- * Verify SMS code or passport
- */
-const verify = async (req, res) => {
-  try {
-    const userId = req.user.id;
+    const accessToken = generateAccessToken(user);
+    const refreshToken = generateRefreshToken(user);
+    const expiresAt = getTokenExpiryDate(refreshToken);
 
-    // Mark user as verified
+    // rotate: eski tokenlarni tozalab tashlash shart emas, lekin tartibli bo‘lsin:
     await pool.query(
-      'UPDATE users SET is_verified = TRUE WHERE id = $1',
-      [userId]
+      `INSERT INTO refresh_tokens (user_id, token, expires_at)
+       VALUES ($1, $2, $3)`,
+      [user.id, refreshToken, expiresAt || new Date(Date.now() + 7 * 24 * 3600 * 1000)]
     );
 
     return res.json({
       success: true,
-      message: 'Foydalanuvchi tasdiqlandi!'
+      message: "Kirdingiz!",
+      data: {
+        user: {
+          id: user.id,
+          username: user.username,
+          email: user.email,
+          phone: user.phone,
+          role: user.role,
+          first_name: user.first_name,
+          last_name: user.last_name,
+          display_name: user.display_name || user.username,
+          is_verified: user.is_verified,
+          avatar_url: user.avatar_url,
+        },
+        accessToken,
+        refreshToken,
+      },
     });
   } catch (error) {
-    console.error('Verify error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: 'Tasdiqlashda xato yuz berdi.',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      message: "Login xato.",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }
 };
 
-/**
- * POST /auth/kyc
- * KYC verification (admin will approve/reject)
- */
-const kyc = async (req, res) => {
+const refresh = async (req, res) => {
   try {
-    return res.status(501).json({
-      success: false,
-      message: 'KYC funksiyasi hozircha qo\'llab-quvvatlanmaydi. Keyingi versiyada qo\'shiladi.'
+    const { refreshToken } = req.body;
+    if (!refreshToken) {
+      return res.status(400).json({ success: false, message: "refreshToken kerak." });
+    }
+
+    let decoded;
+    try {
+      decoded = verifyRefreshToken(refreshToken);
+    } catch (e) {
+      return res.status(401).json({ success: false, message: "Refresh token noto‘g‘ri yoki expired." });
+    }
+
+    // token DBda bormi + expired emasmi
+    const tokenQ = await pool.query(
+      `SELECT id, user_id, expires_at
+       FROM refresh_tokens
+       WHERE token = $1
+       LIMIT 1`,
+      [refreshToken]
+    );
+
+    if (tokenQ.rowCount === 0) {
+      return res.status(401).json({ success: false, message: "Refresh token DBda topilmadi." });
+    }
+
+    const tokenRow = tokenQ.rows[0];
+    if (tokenRow.user_id !== decoded.id) {
+      return res.status(401).json({ success: false, message: "Refresh token user bilan mos emas." });
+    }
+
+    if (tokenRow.expires_at && new Date(tokenRow.expires_at) < new Date()) {
+      return res.status(401).json({ success: false, message: "Refresh token expired (DB)." });
+    }
+
+    const userQ = await pool.query(
+      `SELECT id, username, email, phone, role, status
+       FROM users
+       WHERE id = $1 AND deleted_at IS NULL
+       LIMIT 1`,
+      [decoded.id]
+    );
+
+    if (userQ.rowCount === 0) {
+      return res.status(401).json({ success: false, message: "User topilmadi." });
+    }
+
+    if (userQ.rows[0].status === "blocked") {
+      return res.status(403).json({ success: false, message: "User bloklangan." });
+    }
+
+    const user = userQ.rows[0];
+
+    // rotate token: eski refreshni delete + yangisini insert
+    const newAccessToken = generateAccessToken(user);
+    const newRefreshToken = generateRefreshToken(user);
+    const expiresAt = getTokenExpiryDate(newRefreshToken);
+
+    await pool.query("BEGIN");
+    await pool.query(`DELETE FROM refresh_tokens WHERE token = $1`, [refreshToken]);
+    await pool.query(
+      `INSERT INTO refresh_tokens (user_id, token, expires_at)
+       VALUES ($1, $2, $3)`,
+      [user.id, newRefreshToken, expiresAt || new Date(Date.now() + 7 * 24 * 3600 * 1000)]
+    );
+    await pool.query("COMMIT");
+
+    return res.json({
+      success: true,
+      message: "Token yangilandi!",
+      data: { accessToken: newAccessToken, refreshToken: newRefreshToken },
     });
   } catch (error) {
-    console.error('KYC error:', error);
-    res.status(500).json({
+    await pool.query("ROLLBACK").catch(() => {});
+    return res.status(500).json({
       success: false,
-      message: 'KYC arizasida xato yuz berdi.',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      message: "Refresh xato.",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }
 };
 
-/**
- * GET /auth/me
- * Get current user information
- */
+const verify = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    await pool.query(`UPDATE users SET is_verified = TRUE, updated_at = NOW() WHERE id = $1`, [userId]);
+    return res.json({ success: true, message: "User verified!" });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: "Verify xato.",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  }
+};
+
+const kyc = async (req, res) => {
+  return res.status(501).json({
+    success: false,
+    message: "KYC hozircha yo‘q (keyin qo‘shamiz).",
+  });
+};
+
 const getMe = async (req, res) => {
   try {
     const userId = req.user.id;
 
-    const result = await pool.query(
-      `SELECT id, username, email, phone, role, first_name, last_name, display_name,
-              is_verified, is_premium, premium_until, balance_uzs, balance_usd,
-              avatar_url, created_at, updated_at 
-       FROM users WHERE id = $1 AND deleted_at IS NULL`,
+    const q = await pool.query(
+      `SELECT
+        u.id, u.username, u.email, u.phone, u.role,
+        u.first_name, u.last_name, u.display_name,
+        u.is_verified, u.is_premium, u.premium_until,
+        u.avatar_url, u.status, u.created_at, u.updated_at,
+
+        ub.available_balance,
+        ub.reserved_balance,
+        ub.escrow_balance,
+        ub.total_earned,
+        ub.total_spent,
+        ub.updated_at AS balance_updated_at
+
+       FROM users u
+       LEFT JOIN user_balances ub ON ub.user_id = u.id
+       WHERE u.id = $1 AND u.deleted_at IS NULL
+       LIMIT 1`,
       [userId]
     );
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Foydalanuvchi topilmadi.'
-      });
+    if (q.rowCount === 0) {
+      return res.status(404).json({ success: false, message: "User topilmadi." });
     }
 
-    const user = result.rows[0];
+    const user = q.rows[0];
 
-    res.json({
+    return res.json({
       success: true,
       data: {
         user: {
@@ -383,40 +378,41 @@ const getMe = async (req, res) => {
           is_verified: user.is_verified,
           is_premium: user.is_premium,
           premium_until: user.premium_until,
-          balance_uzs: user.balance_uzs,
-          balance_usd: user.balance_usd,
           avatar_url: user.avatar_url,
+          status: user.status,
           created_at: user.created_at,
-          updated_at: user.updated_at
-        }
-      }
+          updated_at: user.updated_at,
+          balances: {
+            available_balance: user.available_balance ?? 0,
+            reserved_balance: user.reserved_balance ?? 0,
+            escrow_balance: user.escrow_balance ?? 0,
+            total_earned: user.total_earned ?? 0,
+            total_spent: user.total_spent ?? 0,
+            updated_at: user.balance_updated_at ?? null,
+          },
+        },
+      },
     });
   } catch (error) {
-    console.error('Get me error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: 'Ma\'lumotlarni olishda xato yuz berdi.',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      message: "getMe xato.",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }
 };
 
-/**
- * POST /auth/logout
- * Logout user (invalidate refresh token)
- */
 const logout = async (req, res) => {
   try {
-    res.json({
-      success: true,
-      message: 'Muvaffaqiyatli chiqildi!'
-    });
+    // variant 1: userning hamma refresh tokenlarini o‘chirib yuboramiz (oddiy va ishonchli)
+    await pool.query(`DELETE FROM refresh_tokens WHERE user_id = $1`, [req.user.id]);
+
+    return res.json({ success: true, message: "Chiqildi (logout)!" });
   } catch (error) {
-    console.error('Logout error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: 'Chiqishda xato yuz berdi.',
-      error: process.env.NODE_ENV === 'development' ? error.message : undefined
+      message: "Logout xato.",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
   }
 };
@@ -428,5 +424,5 @@ module.exports = {
   verify,
   kyc,
   getMe,
-  logout
+  logout,
 };

@@ -1,5 +1,7 @@
-const express = require('express');
+// src/routes/messageRoutes.js
+const express = require("express");
 const router = express.Router();
+
 const {
   getChats,
   getChatHistory,
@@ -7,24 +9,38 @@ const {
   sendVoiceMessage,
   startVideoCall,
   markMessagesAsRead,
-  editMessage,      
-  deleteMessage,  
-  updateChatStatus  
-} = require('../controllers/messageController');
-const { authenticate } = require('../middlewares/authMiddleware');
+  editMessage,
+  deleteMessage,
+  updateChatStatus,
+} = require("../controllers/messageController");
+
+const { authenticate, authorize } = require("../middlewares/authMiddleware");
 
 // All routes require authentication
-router.get('/', authenticate, getChats);
-router.get('/:chatId', authenticate, getChatHistory);
-router.post('/', authenticate, sendMessage);
-router.put('/read/:chatId', authenticate, markMessagesAsRead);
-router.post('/:chatId/voice', authenticate, sendVoiceMessage);
-router.post('/:chatId/video-call', authenticate, startVideoCall);
+router.use(authenticate);
 
-// Edit va Delete
-router.put('/:messageId', authenticate, editMessage);       
-router.delete('/:messageId', authenticate, deleteMessage);  
+// Chats list
+router.get("/", getChats);
 
-router.patch('/chats/:id/status', updateChatStatus);
+// Chat history
+router.get("/:chatId", getChatHistory);
+
+// Send message
+router.post("/", sendMessage);
+
+// Mark read
+router.put("/read/:chatId", markMessagesAsRead);
+
+// Voice & Video
+router.post("/:chatId/voice", sendVoiceMessage);
+router.post("/:chatId/video-call", startVideoCall);
+
+// Edit / Delete message
+router.put("/:messageId", editMessage);
+router.delete("/:messageId", deleteMessage);
+
+// Admin: update chat status (block/unblock)
+router.patch("/chats/:id/status", authorize("admin"), authenticate, updateChatStatus);
+
 
 module.exports = router;

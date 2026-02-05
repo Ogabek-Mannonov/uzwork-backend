@@ -1,9 +1,7 @@
-// src/controllers/paymentController.js
 const pool = require("../db/pool");
 
-/**
- * Helper: ensure user_balances row exists
- */
+/* ================= HELPERS ================= */
+
 async function ensureBalanceRow(userId) {
   await pool.query(
     `INSERT INTO user_balances (user_id)
@@ -13,30 +11,20 @@ async function ensureBalanceRow(userId) {
   );
 }
 
-/**
- * Helper: safe numeric
- */
 function toAmount(x) {
   const n = Number(x);
   return Number.isFinite(n) ? n : NaN;
 }
 
-function round2(n) {
-  return Math.round(Number(n) * 100) / 100;
-}
+/* ================= GET PAYMENTS ================= */
 
-/**
- * GET /payments
- * Transaction history (transactions table)
- * Query: ?type=deposit&status=completed&page=1&limit=20
- */
 const getPayments = async (req, res) => {
   try {
     const userId = req.user.id;
     const { type, status, page = 1, limit = 20 } = req.query;
 
-    const p = Math.max(parseInt(page, 10) || 1, 1);
-    const l = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
+    const p = Math.max(+page || 1, 1);
+    const l = Math.min(Math.max(+limit || 20, 1), 100);
     const offset = (p - 1) * l;
 
     let where = "WHERE user_id = $1";
@@ -52,316 +40,264 @@ const getPayments = async (req, res) => {
       params.push(status);
     }
 
-    const countQ = `SELECT COUNT(*)::int AS c FROM transactions ${where}`;
-    const countR = await pool.query(countQ, params);
-    const total = countR.rows[0]?.c ?? 0;
+    const count = await pool.query(
+      `SELECT COUNT(*)::int AS c FROM transactions ${where}`,
+      params
+    );
 
-    const listQ = `
+    const list = await pool.query(
+      `
       SELECT *
       FROM transactions
       ${where}
       ORDER BY created_at DESC
       LIMIT $${i} OFFSET $${i + 1}
-    `;
-    const listR = await pool.query(listQ, params.concat([l, offset]));
+      `,
+      [...params, l, offset]
+    );
 
-    return res.json({
+    res.json({
       success: true,
       data: {
-        transactions: listR.rows,
+        transactions: list.rows,
         pagination: {
           page: p,
           limit: l,
-          total,
-          totalPages: Math.ceil(total / l),
+          total: count.rows[0].c,
+          totalPages: Math.ceil(count.rows[0].c / l),
         },
       },
     });
-  } catch (error) {
-    console.error("Get payments error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "To'lovlarni olishda xato yuz berdi.",
-      error: error.message,
-    });
+  } catch (e) {
+    res.status(500).json({ success: false, message: "Payment list error", error: e.message });
   }
 };
 
-/**
- * GET /payments/balance
- */
+/* ================= BALANCE ================= */
+
 const getBalance = async (req, res) => {
   try {
     const userId = req.user.id;
-
     await ensureBalanceRow(userId);
 
-    const r = await pool.query("SELECT * FROM user_balances WHERE user_id = $1", [userId]);
+    const r = await pool.query(
+      "SELECT * FROM user_balances WHERE user_id = $1",
+      [userId]
+    );
 
-    return res.json({
-      success: true,
-      data: { balance: r.rows[0] },
-    });
-  } catch (error) {
-    console.error("Get balance error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Balansni olishda xato yuz berdi.",
-      error: error.message,
-    });
+    res.json({ success: true, data: { balance: r.rows[0] } });
+  } catch (e) {
+    res.status(500).json({ success: false, message: "Balance error", error: e.message });
   }
 };
 
-/**
- * POST /payments/deposit
- * Creates a pending deposit transaction.
- */
+/* ================= DEPOSIT ================= */
+
+// paymentController.js
 const deposit = async (req, res) => {
+  const client = await pool.connect();
+
   try {
     const userId = req.user.id;
     const { amount, gateway = "payme", currency = "UZS" } = req.body;
 
     const a = toAmount(amount);
     if (!a || a <= 0) {
-      return res.status(400).json({ success: false, message: "To'lov summasi noto'g'ri." });
-    }
-
-    const r = await pool.query(
-      `INSERT INTO transactions (user_id, type, amount, currency, gateway, status, metadata)
-       VALUES ($1, 'deposit', $2, $3, $4, 'pending', $5)
-       RETURNING *`,
-      [userId, a, currency, gateway, JSON.stringify({ note: "deposit initiated" })]
-    );
-
-    return res.status(201).json({
-      success: true,
-      message: "Deposit yaratildi. To'lovni yakunlang.",
-      data: {
-        transaction: r.rows[0],
-        payment_url: `https://payme.uz/checkout/${r.rows[0].id}`,
-      },
-    });
-  } catch (error) {
-    console.error("Deposit error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "To'lov yaratishda xato yuz berdi.",
-      error: error.message,
-    });
-  }
-};
-
-/**
- * POST /payments/withdraw
- * Freelancer only.
- * Creates pending withdrawal transaction + moves available -> reserved
- */
-const withdraw = async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const userRole = req.user.role;
-
-    if (userRole !== "freelancer") {
-      return res.status(403).json({
+      return res.status(400).json({
         success: false,
-        message: "Faqat freelancerlar pul yechib olishi mumkin.",
+        message: "Invalid amount",
       });
     }
 
-    const { amount, gateway = "card", currency = "UZS" } = req.body;
+    await client.query("BEGIN");
+
+    // 1) user_balances row borligiga ishonch
+    await client.query(
+      `INSERT INTO user_balances (user_id)
+       VALUES ($1)
+       ON CONFLICT (user_id) DO NOTHING`,
+      [userId]
+    );
+
+    // 2) transactionni DARROV completed qilib yozamiz
+    const txRes = await client.query(
+      `
+      INSERT INTO transactions (
+        user_id,
+        type,
+        amount,
+        currency,
+        gateway,
+        status,
+        metadata,
+        created_at,
+        updated_at
+      )
+      VALUES ($1,'deposit',$2,$3,$4,'completed',$5,NOW(),NOW())
+      RETURNING *
+      `,
+      [
+        userId,
+        a,
+        currency,
+        gateway,
+        JSON.stringify({
+          auto: true,
+          note: "auto-completed deposit (dev mode)",
+        }),
+      ]
+    );
+
+    const tx = txRes.rows[0];
+
+    // 3) balancega pul qo‘shamiz
+    await client.query(
+      `
+      UPDATE user_balances
+      SET available_balance = COALESCE(available_balance,0) + $1,
+          updated_at = NOW()
+      WHERE user_id = $2
+      `,
+      [a, userId]
+    );
+
+    await client.query("COMMIT");
+
+    return res.status(201).json({
+      success: true,
+      message: "Deposit muvaffaqiyatli amalga oshirildi (auto).",
+      data: {
+        transaction: tx,
+        balance_added: a,
+      },
+    });
+  } catch (e) {
+    await client.query("ROLLBACK").catch(() => {});
+    console.error("Deposit error:", e);
+    return res.status(500).json({
+      success: false,
+      message: "Deposit error",
+      error: e.message,
+    });
+  } finally {
+    client.release();
+  }
+};
+
+
+/* ================= WITHDRAW ================= */
+
+const withdraw = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    if (req.user.role !== "freelancer") {
+      return res.status(403).json({ success: false, message: "Only freelancer" });
+    }
+
+    const { amount, currency = "UZS", gateway = "card" } = req.body;
     const a = toAmount(amount);
 
     if (!a || a <= 0) {
-      return res.status(400).json({ success: false, message: "Summa noto'g'ri." });
+      return res.status(400).json({ success: false, message: "Invalid amount" });
     }
 
     await ensureBalanceRow(userId);
 
-    const balR = await pool.query(
-      "SELECT available_balance, reserved_balance FROM user_balances WHERE user_id = $1",
+    await pool.query("BEGIN");
+
+    const bal = await pool.query(
+      `SELECT available_balance FROM user_balances WHERE user_id = $1 FOR UPDATE`,
       [userId]
     );
-    const available = Number(balR.rows[0]?.available_balance ?? 0);
 
-    if (available < a) {
-      return res.status(400).json({
-        success: false,
-        message: "Balansda yetarli mablag' yo'q.",
-      });
-    }
-
-    await pool.query("BEGIN");
-    try {
-      const txR = await pool.query(
-        `INSERT INTO transactions (user_id, type, amount, currency, gateway, status, metadata)
-         VALUES ($1, 'withdrawal', $2, $3, $4, 'pending', $5)
-         RETURNING *`,
-        [userId, a, currency, gateway, JSON.stringify({ note: "withdrawal requested" })]
-      );
-
-      await pool.query(
-        `UPDATE user_balances
-         SET available_balance = available_balance - $1,
-             reserved_balance  = reserved_balance + $1,
-             updated_at = NOW()
-         WHERE user_id = $2`,
-        [a, userId]
-      );
-
-      await pool.query("COMMIT");
-
-      return res.status(201).json({
-        success: true,
-        message: "Yechib olish so'rovi yuborildi!",
-        data: { transaction: txR.rows[0] },
-      });
-    } catch (err) {
+    if (Number(bal.rows[0].available_balance) < a) {
       await pool.query("ROLLBACK");
-      throw err;
+      return res.status(400).json({ success: false, message: "Insufficient balance" });
     }
-  } catch (error) {
-    console.error("Withdraw error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Pul yechib olishda xato yuz berdi.",
-      error: error.message,
-    });
+
+    const tx = await pool.query(
+      `
+      INSERT INTO transactions (user_id,type,amount,currency,gateway,status,metadata)
+      VALUES ($1,'withdrawal',$2,$3,$4,'pending',$5)
+      RETURNING *
+      `,
+      [userId, a, currency, gateway, { requested: true }]
+    );
+
+    await pool.query(
+      `
+      UPDATE user_balances
+      SET available_balance = available_balance - $1,
+          reserved_balance  = reserved_balance + $1,
+          updated_at = NOW()
+      WHERE user_id = $2
+      `,
+      [a, userId]
+    );
+
+    await pool.query("COMMIT");
+
+    res.status(201).json({ success: true, data: { transaction: tx.rows[0] } });
+  } catch (e) {
+    await pool.query("ROLLBACK").catch(() => {});
+    res.status(500).json({ success: false, message: "Withdraw error", error: e.message });
   }
 };
 
-/**
- * POST /payments/webhook
- * Public webhook: updates transaction status and updates balances for deposit/withdrawal
- */
+/* ================= WEBHOOK ================= */
+
 const paymentWebhook = async (req, res) => {
   try {
-    const { transaction_id, status, gateway, amount, currency } = req.body;
-
+    const { transaction_id, status } = req.body;
     if (!transaction_id || !status) {
-      return res.status(400).json({
-        success: false,
-        message: "transaction_id va status majburiy.",
-      });
+      return res.status(400).json({ success: false, message: "Invalid payload" });
     }
 
-    let txR = await pool.query(
-      "SELECT * FROM transactions WHERE gateway_transaction_id = $1 LIMIT 1",
+    const txR = await pool.query(
+      `SELECT * FROM transactions WHERE id = $1 FOR UPDATE`,
       [transaction_id]
     );
-    if (txR.rows.length === 0) {
-      txR = await pool.query("SELECT * FROM transactions WHERE id = $1 LIMIT 1", [transaction_id]);
-    }
-
-    if (txR.rows.length === 0) {
-      return res.status(404).json({ success: false, message: "Transaction topilmadi." });
+    if (!txR.rows.length) {
+      return res.status(404).json({ success: false, message: "Transaction not found" });
     }
 
     const tx = txR.rows[0];
-
-    await pool.query("BEGIN");
-    try {
-      const lockR = await pool.query(
-        "SELECT status, type, user_id, amount FROM transactions WHERE id = $1 FOR UPDATE",
-        [tx.id]
-      );
-      const current = lockR.rows[0];
-
-      const prevStatus = current.status;
-      const nextStatus = status;
-
-      await pool.query(
-        `UPDATE transactions
-         SET status = $1,
-             gateway = COALESCE($2, gateway),
-             currency = COALESCE($3, currency),
-             amount = COALESCE($4, amount),
-             gateway_transaction_id = COALESCE(gateway_transaction_id, $5),
-             metadata = COALESCE(metadata,'{}'::jsonb) || $6::jsonb
-         WHERE id = $7`,
-        [
-          nextStatus,
-          gateway || null,
-          currency || null,
-          amount != null ? toAmount(amount) : null,
-          transaction_id,
-          JSON.stringify({ webhook_received: true, prev_status: prevStatus }),
-          tx.id,
-        ]
-      );
-
-      if (prevStatus === nextStatus) {
-        await pool.query("COMMIT");
-        return res.json({ success: true, message: "Webhook qabul qilindi (no-op)." });
-      }
-
-      await ensureBalanceRow(current.user_id);
-      const amt = Number(current.amount);
-
-      // deposit
-      if (current.type === "deposit") {
-        if (prevStatus !== "completed" && nextStatus === "completed") {
-          await pool.query(
-            `UPDATE user_balances
-             SET available_balance = available_balance + $1,
-                 updated_at = NOW()
-             WHERE user_id = $2`,
-            [amt, current.user_id]
-          );
-        }
-        if (prevStatus === "completed" && nextStatus === "failed") {
-          await pool.query(
-            `UPDATE user_balances
-             SET available_balance = GREATEST(available_balance - $1, 0),
-                 updated_at = NOW()
-             WHERE user_id = $2`,
-            [amt, current.user_id]
-          );
-        }
-      }
-
-      // withdrawal
-      if (current.type === "withdrawal") {
-        if (prevStatus !== "completed" && nextStatus === "completed") {
-          await pool.query(
-            `UPDATE user_balances
-             SET reserved_balance = GREATEST(reserved_balance - $1, 0),
-                 updated_at = NOW()
-             WHERE user_id = $2`,
-            [amt, current.user_id]
-          );
-        }
-        if (nextStatus === "failed" && prevStatus !== "failed") {
-          await pool.query(
-            `UPDATE user_balances
-             SET reserved_balance = GREATEST(reserved_balance - $1, 0),
-                 available_balance = available_balance + $1,
-                 updated_at = NOW()
-             WHERE user_id = $2`,
-            [amt, current.user_id]
-          );
-        }
-      }
-
-      await pool.query("COMMIT");
-      return res.json({ success: true, message: "Webhook qabul qilindi." });
-    } catch (err) {
-      await pool.query("ROLLBACK");
-      throw err;
+    if (tx.status === status) {
+      return res.json({ success: true, message: "No-op" });
     }
-  } catch (error) {
-    console.error("Payment webhook error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Webhook qayta ishlashda xato yuz berdi.",
-      error: error.message,
-    });
+
+    await ensureBalanceRow(tx.user_id);
+    await pool.query("BEGIN");
+
+    await pool.query(
+      `UPDATE transactions SET status=$1, updated_at=NOW() WHERE id=$2`,
+      [status, tx.id]
+    );
+
+    const amt = Number(tx.amount);
+
+    if (tx.type === "deposit" && status === "completed") {
+      await pool.query(
+        `UPDATE user_balances SET available_balance = available_balance + $1 WHERE user_id = $2`,
+        [amt, tx.user_id]
+      );
+    }
+
+    if (tx.type === "withdrawal" && status === "completed") {
+      await pool.query(
+        `UPDATE user_balances SET reserved_balance = reserved_balance - $1 WHERE user_id = $2`,
+        [amt, tx.user_id]
+      );
+    }
+
+    await pool.query("COMMIT");
+    res.json({ success: true });
+  } catch (e) {
+    await pool.query("ROLLBACK").catch(() => {});
+    res.status(500).json({ success: false, message: "Webhook error", error: e.message });
   }
 };
 
-/**
- * POST /payments/escrow/hold
- * Move client available -> escrow_balance
- */
 const escrowHold = async (req, res) => {
   try {
     const clientId = req.user.id;
@@ -763,6 +699,7 @@ const getPaymentDetail = async (req, res) => {
   }
 };
 
+/* ================= EXPORT ================= */
 
 module.exports = {
   getPayments,

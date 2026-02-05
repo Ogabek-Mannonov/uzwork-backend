@@ -35,7 +35,7 @@ router.post("/:id/reject", authenticate, authorize("client", "admin"), rejectPro
 router.post("/:id/ai-writer", authenticate, authorize("freelancer"), aiWriter);
 router.post("/:id/score", aiScore);
 
-// ✅ Dynamic route LAST (VERY IMPORTANT)
+// ✅ Dynamic route LAST
 router.get("/:id", getProposalById);
 
 module.exports = router;

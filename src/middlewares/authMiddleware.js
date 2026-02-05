@@ -1,76 +1,89 @@
 // src/middlewares/authMiddleware.js
-const { verifyAccessToken } = require('../utils/jwt');
-const pool = require('../db/pool');
+const { verifyAccessToken } = require("../utils/jwt");
+const pool = require("../db/pool");
 
-/**
- * Middleware to verify JWT token and attach user to request
- */
 const authenticate = async (req, res, next) => {
   try {
-    const authHeader = req.headers.authorization;
-    
-    if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    const header = req.headers.authorization || "";
+    if (!header.startsWith("Bearer ")) {
       return res.status(401).json({
         success: false,
-        message: 'Token topilmadi. Authorization header kerak.'
+        message: "Token topilmadi. Authorization: Bearer <token> kerak.",
       });
     }
 
-    const token = authHeader.substring(7); // Remove 'Bearer ' prefix
-    
-    try {
-      const decoded = verifyAccessToken(token);
-      
-      // Get user from database - sizning tableingizga mos (mavjud maydonlar bilan)
-      const result = await pool.query(
-        'SELECT id, username, email, phone, role, first_name, last_name, is_verified FROM users WHERE id = $1',
-        [decoded.id]
-      );
-
-      if (result.rows.length === 0) {
-        return res.status(401).json({
-          success: false,
-          message: 'Foydalanuvchi topilmadi.'
-        });
-      }
-
-      req.user = result.rows[0];
-      next();
-    } catch (error) {
-      if (error.name === 'TokenExpiredError') {
-        return res.status(401).json({
-          success: false,
-          message: 'Token muddati tugagan. Yangi token oling.'
-        });
-      }
-      throw error;
+    const token = header.slice(7).trim();
+    if (!token) {
+      return res.status(401).json({
+        success: false,
+        message: "Token bo‘sh.",
+      });
     }
+
+    let decoded;
+    try {
+      decoded = verifyAccessToken(token);
+    } catch (err) {
+      if (err.name === "TokenExpiredError") {
+        return res.status(401).json({
+          success: false,
+          message: "Token muddati tugagan. Refresh bilan yangilang.",
+        });
+      }
+      return res.status(401).json({
+        success: false,
+        message: "Token noto‘g‘ri.",
+      });
+    }
+
+    const result = await pool.query(
+      `SELECT id, username, email, phone, role, first_name, last_name, is_verified, status
+       FROM users
+       WHERE id = $1 AND deleted_at IS NULL
+       LIMIT 1`,
+      [decoded.id]
+    );
+
+    if (result.rowCount === 0) {
+      return res.status(401).json({
+        success: false,
+        message: "Foydalanuvchi topilmadi.",
+      });
+    }
+
+    const user = result.rows[0];
+
+    if (user.status === "blocked") {
+      return res.status(403).json({
+        success: false,
+        message: "Akkount bloklangan.",
+      });
+    }
+
+    req.user = user;
+    next();
   } catch (error) {
+    console.error("Auth middleware error:", error);
     return res.status(401).json({
       success: false,
-      message: 'Token noto\'g\'ri yoki xato.',
-      error: error.message
+      message: "Auth xato.",
     });
   }
 };
 
-/**
- * Middleware to check if user has specific role
- * @param {string[]} roles - Allowed roles
- */
 const authorize = (...roles) => {
   return (req, res, next) => {
     if (!req.user) {
       return res.status(401).json({
         success: false,
-        message: 'Avtorizatsiya kerak.'
+        message: "Avtorizatsiya kerak.",
       });
     }
 
     if (!roles.includes(req.user.role)) {
       return res.status(403).json({
         success: false,
-        message: 'Bu amalni bajarish uchun ruxsatingiz yo\'q.'
+        message: "Bu amal uchun ruxsat yo‘q.",
       });
     }
 
@@ -78,7 +91,4 @@ const authorize = (...roles) => {
   };
 };
 
-module.exports = {
-  authenticate,
-  authorize
-};
+module.exports = { authenticate, authorize };

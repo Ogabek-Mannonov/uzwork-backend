@@ -1,394 +1,428 @@
 // src/controllers/freelancerController.js
-const pool = require('../db/pool');
+const pool = require("../db/pool");
+
+// helper: skills query -> array
+function normalizeSkills(skills) {
+  if (!skills) return [];
+  if (Array.isArray(skills)) return skills.filter(Boolean).map(String);
+  // "react,nodejs"
+  return String(skills)
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
 
 /**
  * GET /freelancers
- * Get all freelancers with filters
+ * Query: skills, min_rating, location, availability, page, limit
  */
 const getFreelancers = async (req, res) => {
   try {
-    const {
-      skills,
-      min_rating,
-      location,
-      availability,
-      page = 1,
-      limit = 20
-    } = req.query;
+    const { skills, min_rating, location, availability, page = 1, limit = 20 } = req.query;
 
-    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const p = Math.max(parseInt(page, 10) || 1, 1);
+    const l = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
+    const offset = (p - 1) * l;
 
-    // Build WHERE clause
-    let whereConditions = ['u.role = $1'];
-    let queryParams = ['freelancer'];
-    let paramIndex = 2;
+    let where = `WHERE u.role = 'freelancer' AND u.deleted_at IS NULL`;
+    const params = [];
+    let i = 1;
 
-    if (skills) {
-      const skillArray = Array.isArray(skills) ? skills : [skills];
-      whereConditions.push(`up.skills && $${paramIndex}`);
-      queryParams.push(skillArray);
-      paramIndex++;
+    const skillArr = normalizeSkills(skills);
+    if (skillArr.length > 0) {
+      // fp.skills jsonb array bo'lsa: ?| operatori
+      where += ` AND (fp.skills ?| $${i++}::text[])`;
+      params.push(skillArr);
     }
 
     if (location) {
-      whereConditions.push(`fp.location ILIKE $${paramIndex}`);
-      queryParams.push(`%${location}%`);
-      paramIndex++;
+      where += ` AND fp.location ILIKE $${i++}`;
+      params.push(`%${location}%`);
     }
 
     if (availability) {
-      whereConditions.push(`fp.availability_status = $${paramIndex}`);
-      queryParams.push(availability);
-      paramIndex++;
+      where += ` AND fp.availability_status = $${i++}`;
+      params.push(String(availability));
     }
 
-    const whereClause = whereConditions.join(' AND ');
-
-    // Get rating from freelancer_profiles (new schema)
-    const ratingSubquery = `
-      fp.rating as average_rating,
-      0 as total_reviews
-    `;
-
-    // Get total count
-    const countQuery = `
-      SELECT COUNT(DISTINCT u.id)
-      FROM users u
-      LEFT JOIN freelancer_profiles fp ON u.id = fp.user_id
-      WHERE ${whereClause}
-    `;
-    const countResult = await pool.query(countQuery, queryParams);
-    const total = parseInt(countResult.rows[0].count);
-
-    // Apply rating filter after getting results (for performance)
-    let havingClause = '';
     if (min_rating) {
-      havingClause = `HAVING average_rating >= ${parseFloat(min_rating)}`;
+      where += ` AND COALESCE(fp.rating, 0) >= $${i++}`;
+      params.push(Number(min_rating));
     }
 
-    // Get freelancers
-    const freelancersQuery = `
-      SELECT 
+    const countR = await pool.query(
+      `
+      SELECT COUNT(*)::int AS c
+      FROM users u
+      LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
+      ${where}
+      `,
+      params
+    );
+
+    const listR = await pool.query(
+      `
+      SELECT
         u.id,
         u.first_name,
         u.last_name,
+        u.username,
         u.email,
+        u.phone,
         u.is_kyc_verified,
+        u.kyc_status,
+
+        fp.user_id,
+        fp.title,
         fp.bio,
-        fp.avatar_url,
-        fp.location,
         fp.hourly_rate,
+        fp.location,
+        fp.languages,
         fp.skills,
-        fp.availability_status as availability,
-        ${ratingSubquery}
+        fp.portfolio_urls,
+        fp.avatar_url,
+        fp.cover_url,
+        fp.availability_status,
+        fp.rating,
+        fp.completed_jobs,
+        fp.created_at,
+        fp.updated_at
       FROM users u
-      LEFT JOIN freelancer_profiles fp ON u.id = fp.user_id
-      WHERE ${whereClause}
-      GROUP BY u.id, fp.user_id
-      ${havingClause}
-      ORDER BY average_rating DESC NULLS LAST, u.created_at DESC
-      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
-    `;
-    queryParams.push(parseInt(limit), offset);
+      LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
+      ${where}
+      ORDER BY COALESCE(fp.rating, 0) DESC, u.created_at DESC
+      LIMIT $${i} OFFSET $${i + 1}
+      `,
+      [...params, l, offset]
+    );
 
-    const freelancersResult = await pool.query(freelancersQuery, queryParams);
-
-    res.json({
+    return res.json({
       success: true,
       data: {
-        freelancers: freelancersResult.rows,
+        freelancers: listR.rows,
         pagination: {
-          page: parseInt(page),
-          limit: parseInt(limit),
-          total,
-          totalPages: Math.ceil(total / parseInt(limit))
-        }
-      }
+          page: p,
+          limit: l,
+          total: countR.rows[0]?.c || 0,
+          totalPages: Math.ceil((countR.rows[0]?.c || 0) / l),
+        },
+      },
     });
   } catch (error) {
-    console.error('Get freelancers error:', error);
-    res.status(500).json({
+    console.error("Get freelancers error:", error);
+    return res.status(500).json({
       success: false,
-      message: 'Freelancerlarni olishda xato yuz berdi.',
-      error: error.message
+      message: "Freelancerlarni olishda xato yuz berdi.",
+      error: error.message,
     });
   }
 };
 
 /**
- * GET /freelancers/recommended
- * Get recommended freelancers for a project (AI-based)
+ * GET /freelancers/recommended?job_id=...  (yoki project_id)
+ * jobs.required_skills (jsonb) ga qarab mos freelancerlar
  */
 const getRecommendedFreelancers = async (req, res) => {
   try {
-    const { project_id } = req.query;
+    const jobId = req.query.job_id || req.query.project_id;
 
-    if (!project_id) {
+    if (!jobId) {
       return res.status(400).json({
         success: false,
-        message: 'Project_id kerak.'
+        message: "job_id kerak.",
       });
     }
 
-    // Get project details
-    const projectResult = await pool.query(
-      'SELECT skills, category, budget_type, experience_level FROM projects WHERE id = $1',
-      [project_id]
+    const jobR = await pool.query(
+      `SELECT id, title, required_skills
+       FROM jobs
+       WHERE id = $1
+       LIMIT 1`,
+      [jobId]
     );
 
-    if (projectResult.rows.length === 0) {
+    if (jobR.rows.length === 0) {
       return res.status(404).json({
         success: false,
-        message: 'Loyiha topilmadi.'
+        message: "Loyiha (job) topilmadi.",
       });
     }
 
-    const project = projectResult.rows[0];
+    const requiredSkills = jobR.rows[0]?.required_skills || [];
+    const skillArr = Array.isArray(requiredSkills) ? requiredSkills : [];
 
-    // Simple matching algorithm (can be enhanced with AI)
-    // Match by skills, experience level, and rating
-    const freelancersQuery = `
-      SELECT 
+    // agar skillArr bo'sh bo'lsa — top rating bo'yicha qaytaramiz
+    let where = `WHERE u.role = 'freelancer' AND u.deleted_at IS NULL`;
+    const params = [];
+    let i = 1;
+
+    if (skillArr.length > 0) {
+      where += ` AND (fp.skills ?| $${i++}::text[])`;
+      params.push(skillArr);
+    }
+
+    // faqat available bo'lganlarni tavsiya qilamiz
+    where += ` AND fp.availability_status = 'available'`;
+
+    const r = await pool.query(
+      `
+      SELECT
         u.id,
         u.first_name,
         u.last_name,
+        u.username,
         u.email,
-        up.bio,
-        up.avatar_url,
-        up.location,
-        up.hourly_rate,
-        up.skills,
-        fp.rating as average_rating,
-        0 as total_reviews,
-        (SELECT COUNT(*) FROM contracts WHERE freelancer_id = u.id AND status = 'completed') as completed_projects
+        fp.title,
+        fp.bio,
+        fp.hourly_rate,
+        fp.location,
+        fp.skills,
+        fp.avatar_url,
+        fp.availability_status,
+        fp.rating,
+        fp.completed_jobs
       FROM users u
-      LEFT JOIN freelancer_profiles fp ON u.id = fp.user_id
-      WHERE u.role = 'freelancer'
-        AND fp.availability_status = 'available'
-        AND ($1::text[] IS NULL OR fp.skills && $1::text[])
-      ORDER BY 
-        average_rating DESC NULLS LAST,
-        completed_projects DESC,
-        u.created_at DESC
+      LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
+      ${where}
+      ORDER BY COALESCE(fp.rating, 0) DESC, COALESCE(fp.completed_jobs,0) DESC, u.created_at DESC
       LIMIT 5
-    `;
+      `,
+      params
+    );
 
-    const result = await pool.query(freelancersQuery, [project.skills || null]);
-
-    res.json({
+    return res.json({
       success: true,
-      message: 'Tavsiya etilgan freelancerlar',
+      message: "Tavsiya etilgan freelancerlar",
       data: {
-        freelancers: result.rows
-      }
+        job: { id: jobR.rows[0].id, title: jobR.rows[0].title, required_skills: requiredSkills },
+        freelancers: r.rows,
+      },
     });
   } catch (error) {
-    console.error('Get recommended freelancers error:', error);
-    res.status(500).json({
+    console.error("Get recommended freelancers error:", error);
+    return res.status(500).json({
       success: false,
-      message: 'Tavsiya etilgan freelancerlarni olishda xato yuz berdi.',
-      error: error.message
+      message: "Tavsiya etilgan freelancerlarni olishda xato yuz berdi.",
+      error: error.message,
     });
   }
 };
 
 /**
  * GET /freelancers/:id
- * Get freelancer profile by ID
  */
 const getFreelancerById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const result = await pool.query(
-      `SELECT 
+    const r = await pool.query(
+      `
+      SELECT
         u.id,
         u.first_name,
         u.last_name,
+        u.username,
         u.email,
-        u.is_verified,
-        fp.*,
-        fp.rating as average_rating,
-        0 as total_reviews,
-        (SELECT COUNT(*) FROM contracts WHERE freelancer_id = u.id AND status = 'completed') as completed_projects,
-        (SELECT COUNT(*) FROM contracts WHERE freelancer_id = u.id) as total_projects
+        u.phone,
+        u.is_kyc_verified,
+        u.kyc_status,
+
+        fp.user_id,
+        fp.title,
+        fp.bio,
+        fp.hourly_rate,
+        fp.location,
+        fp.languages,
+        fp.skills,
+        fp.portfolio_urls,
+        fp.avatar_url,
+        fp.cover_url,
+        fp.availability_status,
+        fp.rating,
+        fp.completed_jobs,
+        fp.created_at,
+        fp.updated_at
       FROM users u
-      LEFT JOIN freelancer_profiles fp ON u.id = fp.user_id
-      WHERE u.id = $1 AND u.role = 'freelancer'`,
+      LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
+      WHERE u.id = $1
+        AND u.role = 'freelancer'
+        AND u.deleted_at IS NULL
+      LIMIT 1
+      `,
       [id]
     );
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Freelancer topilmadi.'
-      });
+    if (r.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Freelancer topilmadi." });
     }
 
-    res.json({
-      success: true,
-      data: {
-        freelancer: result.rows[0]
-      }
-    });
+    return res.json({ success: true, data: { freelancer: r.rows[0] } });
   } catch (error) {
-    console.error('Get freelancer by ID error:', error);
-    res.status(500).json({
+    console.error("Get freelancer by id error:", error);
+    return res.status(500).json({
       success: false,
-      message: 'Freelancerni olishda xato yuz berdi.',
-      error: error.message
+      message: "Freelancerni olishda xato yuz berdi.",
+      error: error.message,
     });
   }
 };
 
 /**
  * POST /freelancers/premium
- * Activate premium subscription (200,000 UZS/month)
+ * Minimal demo: users.is_premium + premium_until update
  */
 const activatePremium = async (req, res) => {
   try {
     const userId = req.user.id;
-    const userRole = req.user.role;
+    const role = String(req.user.role || "").toLowerCase();
 
-    if (userRole !== 'freelancer') {
+    if (role !== "freelancer") {
       return res.status(403).json({
         success: false,
-        message: 'Faqat freelancerlar premium obuna olishi mumkin.'
+        message: "Faqat freelancerlar premium olishi mumkin.",
       });
     }
 
-    // TODO: Check payment/balance (200,000 UZS/month)
-    // Premium info is in users table (is_premium, premium_until)
-    // For now, just return success
+    // 30 kun qo'shamiz
+    const r = await pool.query(
+      `
+      UPDATE users
+      SET is_premium = TRUE,
+          premium_until = COALESCE(premium_until, NOW()) + INTERVAL '30 days',
+          updated_at = NOW()
+      WHERE id = $1
+      RETURNING id, is_premium, premium_until
+      `,
+      [userId]
+    );
 
-    res.json({
+    return res.json({
       success: true,
-      message: 'Premium obuna faollashtirildi! (200 000 so\'m/oy)'
+      message: "Premium faollashtirildi (30 kun).",
+      data: { premium: r.rows[0] },
     });
   } catch (error) {
-    console.error('Activate premium error:', error);
-    res.status(500).json({
+    console.error("Activate premium error:", error);
+    return res.status(500).json({
       success: false,
-      message: 'Premium obunani faollashtirishda xato yuz berdi.',
-      error: error.message
+      message: "Premium faollashtirishda xato yuz berdi.",
+      error: error.message,
     });
   }
 };
 
 /**
  * POST /freelancers/me/ai-portfolio
- * AI portfolio generation
+ * (placeholder) — keyin AI service ulanadi
  */
 const aiPortfolio = async (req, res) => {
   try {
-    const userId = req.user.id;
     const { skills, experience } = req.body;
 
-    // TODO: Integrate with AI service
     const portfolio = {
-      bio: `Experienced ${skills?.join(', ') || 'developer'} with ${experience || 'extensive'} experience.`,
-      portfolio_items: []
+      bio: `Experienced ${Array.isArray(skills) ? skills.join(", ") : "freelancer"} with ${experience || "solid"} experience.`,
+      items: [],
     };
 
-    res.json({
-      success: true,
-      data: {
-        portfolio
-      }
-    });
+    return res.json({ success: true, data: { portfolio } });
   } catch (error) {
-    console.error('AI portfolio error:', error);
-    res.status(500).json({
+    console.error("AI portfolio error:", error);
+    return res.status(500).json({
       success: false,
-      message: 'Portfolio yaratishda xato yuz berdi.',
-      error: error.message
+      message: "Portfolio yaratishda xato yuz berdi.",
+      error: error.message,
     });
   }
 };
 
 /**
  * GET /freelancers/saved
- * Get saved freelancers (client)
+ * client saved freelancers
  */
 const getSavedFreelancers = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { page = 1, limit = 20 } = req.query;
-    const offset = (parseInt(page) - 1) * parseInt(limit);
 
-    const result = await pool.query(
-      `SELECT 
+    const r = await pool.query(
+      `
+      SELECT
         u.id,
         u.first_name,
         u.last_name,
+        u.username,
         u.email,
-        up.bio,
-        up.avatar_url,
-        up.location,
-        up.skills,
-        fp.rating as average_rating
+        fp.title,
+        fp.bio,
+        fp.location,
+        fp.hourly_rate,
+        fp.skills,
+        fp.avatar_url,
+        fp.rating
       FROM saved_items s
-      JOIN users u ON s.item_id = u.id
-      LEFT JOIN freelancer_profiles fp ON u.id = fp.user_id
-      WHERE s.user_id = $1 AND s.item_type = 'freelancer' AND u.role = 'freelancer'
+      JOIN users u ON u.id = s.item_id
+      LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
+      WHERE s.user_id = $1
+        AND s.item_type = 'freelancer'
+        AND u.role = 'freelancer'
+        AND u.deleted_at IS NULL
       ORDER BY s.created_at DESC
-      LIMIT $2 OFFSET $3`,
-      [userId, parseInt(limit), offset]
+      `,
+      [userId]
     );
 
-    res.json({
-      success: true,
-      data: {
-        freelancers: result.rows
-      }
-    });
+    return res.json({ success: true, data: { freelancers: r.rows } });
   } catch (error) {
-    console.error('Get saved freelancers error:', error);
-    res.status(500).json({
+    console.error("Get saved freelancers error:", error);
+    return res.status(500).json({
       success: false,
-      message: 'Saqlangan freelancerlarni olishda xato yuz berdi.',
-      error: error.message
+      message: "Saqlangan freelancerlarni olishda xato yuz berdi.",
+      error: error.message,
     });
   }
 };
 
 /**
  * POST /freelancers/:id/save
- * Save freelancer
  */
 const saveFreelancer = async (req, res) => {
   try {
-    const { id } = req.params;
     const userId = req.user.id;
+    const { id: freelancerId } = req.params;
 
-    // Check if already saved
+    // freelancer mavjudmi?
+    const fR = await pool.query(
+      `SELECT id FROM users WHERE id = $1 AND role = 'freelancer' AND deleted_at IS NULL LIMIT 1`,
+      [freelancerId]
+    );
+    if (fR.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Freelancer topilmadi." });
+    }
+
     const existing = await pool.query(
-      'SELECT id FROM saved_items WHERE user_id = $1 AND item_type = $2 AND item_id = $3',
-      [userId, 'freelancer', id]
+      `SELECT id FROM saved_items WHERE user_id = $1 AND item_type = 'freelancer' AND item_id = $2 LIMIT 1`,
+      [userId, freelancerId]
     );
 
     if (existing.rows.length > 0) {
       return res.status(409).json({
         success: false,
-        message: 'Freelancer allaqachon saqlangan.'
+        message: "Freelancer allaqachon saqlangan.",
       });
     }
 
     await pool.query(
-      'INSERT INTO saved_items (user_id, item_type, item_id) VALUES ($1, $2, $3)',
-      [userId, 'freelancer', id]
+      `INSERT INTO saved_items (user_id, item_type, item_id, created_at)
+       VALUES ($1, 'freelancer', $2, NOW())`,
+      [userId, freelancerId]
     );
 
-    res.json({
-      success: true,
-      message: 'Freelancer saqlandi!'
-    });
+    return res.json({ success: true, message: "Freelancer saqlandi!" });
   } catch (error) {
-    console.error('Save freelancer error:', error);
-    res.status(500).json({
+    console.error("Save freelancer error:", error);
+    return res.status(500).json({
       success: false,
-      message: 'Saqlashda xato yuz berdi.',
-      error: error.message
+      message: "Saqlashda xato yuz berdi.",
+      error: error.message,
     });
   }
 };
@@ -400,6 +434,5 @@ module.exports = {
   activatePremium,
   aiPortfolio,
   getSavedFreelancers,
-  saveFreelancer
+  saveFreelancer,
 };
-

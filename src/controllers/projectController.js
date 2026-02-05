@@ -1,97 +1,120 @@
 // src/controllers/projectController.js
 const pool = require('../db/pool');
 
+// -------------------------
+// helpers
+// -------------------------
+const normalizeToArray = (v) => {
+  if (v == null) return [];
+  if (Array.isArray(v)) return v.map(String).map(s => s.trim()).filter(Boolean);
+  if (typeof v === 'string') {
+    // "react, node" -> ["react","node"]
+    return v.split(',').map(s => s.trim()).filter(Boolean);
+  }
+  return [];
+};
+
+const safeJsonToString = (v, fallback = []) => {
+  if (v == null) return JSON.stringify(fallback);
+  if (typeof v === 'string') {
+    try { return JSON.stringify(JSON.parse(v)); } catch { return JSON.stringify(fallback); }
+  }
+  return JSON.stringify(v);
+};
+
 /**
  * POST /projects
- * Create a new project (only clients can create)
+ * Create job (client only)
+ * DB: jobs(client_id,title,description,job_type,budget_min,budget_max,currency,deadline,attachments,required_skills,...)
  */
 const createProject = async (req, res) => {
   try {
     const userId = req.user.id;
-    const userRole = req.user.role;
-
-    if (userRole !== 'client') {
-      return res.status(403).json({
-        success: false,
-        message: 'Faqat clientlar loyiha yaratishi mumkin.'
-      });
+    if (req.user.role !== 'client') {
+      return res.status(403).json({ success: false, message: 'Faqat clientlar loyiha yaratishi mumkin.' });
     }
 
     const {
       title,
       description,
-      category,
-      skills,
-      budget_type,
+      budget_type, // frontend eski nom
+      job_type,    // yangi nom
       budget_min,
       budget_max,
-      hourly_rate,
-      duration,
-      experience_level,
-      attachments
+      currency,
+      deadline,
+      duration_days,
+      skills,
+      required_skills,
+      attachments,
+      visibility
     } = req.body;
 
-    // Validation (using new schema: job_type instead of budget_type)
-    if (!title || !description || !budget_type) {
+    const jt = job_type || budget_type;
+
+    if (!title || !description || !jt) {
       return res.status(400).json({
         success: false,
-        message: 'Title, description va budget_type (job_type) majburiy maydonlar.'
+        message: "title, description va job_type (yoki budget_type) majburiy."
       });
     }
 
-    if (!['fixed', 'hourly'].includes(budget_type)) {
+    if (!['fixed', 'hourly'].includes(jt)) {
       return res.status(400).json({
         success: false,
-        message: 'Budget_type (job_type) "fixed" yoki "hourly" bo\'lishi kerak.'
+        message: "job_type (budget_type) faqat 'fixed' yoki 'hourly' bo‘lishi kerak."
       });
     }
 
-    if (budget_type === 'fixed' && (!budget_min || !budget_max)) {
+    // budget_min/budget_max DB’da bor — ikkisi ham bo‘lsin
+    if (budget_min == null || budget_max == null) {
       return res.status(400).json({
         success: false,
-        message: 'Fixed budget uchun budget_min va budget_max kerak.'
+        message: "budget_min va budget_max majburiy."
       });
     }
 
-    // Hourly jobs don't need hourly_rate in new schema - just budget_min/max
-    if (budget_type === 'hourly' && (!budget_min || !budget_max)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Hourly budget uchun budget_min va budget_max kerak.'
-      });
-    }
+    // deadline: to‘g‘ridan yoki duration_days orqali
+    let dl = null;
+    if (deadline) dl = new Date(deadline);
+    else if (duration_days) dl = new Date(Date.now() + Number(duration_days) * 24 * 60 * 60 * 1000);
 
-    // Insert job (using new schema: jobs table with job_type instead of budget_type)
+    const skillsArr = normalizeToArray(required_skills ?? skills);
+    const attachmentsJson = safeJsonToString(attachments, []);
+
     const result = await pool.query(
-      `INSERT INTO jobs (
+      `
+      INSERT INTO jobs (
         client_id, title, description, job_type,
-        budget_min, budget_max, currency, required_skills, attachments, deadline
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-      RETURNING *`,
+        budget_min, budget_max, currency, deadline,
+        required_skills, attachments, visibility
+      )
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11)
+      RETURNING *
+      `,
       [
         userId,
         title,
         description,
-        budget_type, // job_type in new schema
-        budget_min || null,
-        budget_max || null,
-        'UZS', // default currency
-        skills || [], // required_skills in new schema
-        attachments || [],
-        duration ? new Date(Date.now() + duration * 24 * 60 * 60 * 1000) : null // convert duration days to deadline
+        jt,
+        budget_min,
+        budget_max,
+        currency || 'UZS',
+        dl,
+        JSON.stringify(skillsArr),
+        attachmentsJson,
+        visibility || 'public',
       ]
     );
 
-    res.status(201).json({
+    return res.status(201).json({
       success: true,
       message: 'Loyiha muvaffaqiyatli yaratildi!',
-      data: {
-        project: result.rows[0]
-      }
+      data: { project: result.rows[0] }
     });
   } catch (error) {
     console.error('Create project error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Loyiha yaratishda xato yuz berdi.',
       error: error.message
@@ -99,566 +122,104 @@ const createProject = async (req, res) => {
   }
 };
 
+
 /**
  * GET /projects
- * Get all projects with filters and pagination
+ * Filters: status, budget_type(job_type), min_budget, max_budget, search, page, limit
+ * DB: jobs.deleted_at IS NULL
  */
-// GET /projects
 const getProjects = async (req, res) => {
   try {
     const {
-      status = "open", // open | in_progress | completed | cancelled | all
-      category,
+      status = 'open', // open | in_progress | completed | cancelled | all
       budget_type,
-      experience_level,
+      job_type,
       min_budget,
       max_budget,
       search,
       page = 1,
       limit = 20,
-      sort_by = "created_at",
-      order = "DESC",
+      sort_by = 'created_at',
+      order = 'DESC',
     } = req.query;
 
-    const offset = (parseInt(page) - 1) * parseInt(limit);
-    const validSortColumns = ["created_at", "budget_min", "budget_max", "title"];
-    const sortColumn = validSortColumns.includes(sort_by) ? sort_by : "created_at";
-    const sortOrder = order.toUpperCase() === "ASC" ? "ASC" : "DESC";
+    const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
+    const validSortColumns = ['created_at', 'budget_min', 'budget_max', 'title'];
+    const sortColumn = validSortColumns.includes(sort_by) ? sort_by : 'created_at';
+    const sortOrder = String(order).toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
 
-    // ✅ ALWAYS exclude deleted
-    let whereConditions = ["j.deleted_at IS NULL"];
-    let queryParams = [];
-    let paramIndex = 1;
+    let where = ['j.deleted_at IS NULL'];
+    let params = [];
+    let i = 1;
 
-    // ✅ status=all bo'lsa status filter qo‘shmaymiz
-    if (status && status !== "all") {
-      whereConditions.push(`j.status = $${paramIndex}`);
-      queryParams.push(status);
-      paramIndex++;
+    if (status && status !== 'all') {
+      where.push(`j.status = $${i++}`);
+      params.push(status);
     }
 
-    if (category) {
-      whereConditions.push(`j.category = $${paramIndex}`);
-      queryParams.push(category);
-      paramIndex++;
+    const jt = job_type || budget_type;
+    if (jt) {
+      where.push(`j.job_type = $${i++}`);
+      params.push(jt);
     }
 
-    // sizning schema: job_type bo‘lsa shuni ishlating, bo‘lmasa budget_type
-    if (budget_type) {
-      // agar sizda job_type bo‘lsa:
-      whereConditions.push(`j.job_type = $${paramIndex}`);
-      // agar sizda budget_type bo‘lsa, yuqoridagini o‘rniga:
-      // whereConditions.push(`j.budget_type = $${paramIndex}`);
-      queryParams.push(budget_type);
-      paramIndex++;
+    if (min_budget != null) {
+      where.push(`j.budget_max >= $${i++}`);
+      params.push(Number(min_budget));
     }
 
-    if (experience_level) {
-      whereConditions.push(`j.experience_level = $${paramIndex}`);
-      queryParams.push(experience_level);
-      paramIndex++;
-    }
-
-    if (min_budget) {
-      whereConditions.push(`j.budget_max >= $${paramIndex}`);
-      queryParams.push(parseFloat(min_budget));
-      paramIndex++;
-    }
-
-    if (max_budget) {
-      whereConditions.push(`j.budget_min <= $${paramIndex}`);
-      queryParams.push(parseFloat(max_budget));
-      paramIndex++;
+    if (max_budget != null) {
+      where.push(`j.budget_min <= $${i++}`);
+      params.push(Number(max_budget));
     }
 
     if (search) {
-      whereConditions.push(`(j.title ILIKE $${paramIndex} OR j.description ILIKE $${paramIndex})`);
-      queryParams.push(`%${search}%`);
-      paramIndex++;
+      where.push(`(j.title ILIKE $${i} OR j.description ILIKE $${i})`);
+      params.push(`%${search}%`);
+      i++;
     }
 
-    const whereClause = whereConditions.join(" AND ");
+    const whereClause = where.join(' AND ');
 
-    // count
-    const countResult = await pool.query(
-      `SELECT COUNT(*) FROM jobs j WHERE ${whereClause}`,
-      queryParams
+    const countRes = await pool.query(
+      `SELECT COUNT(*)::int AS c FROM jobs j WHERE ${whereClause}`,
+      params
     );
-    const total = parseInt(countResult.rows[0].count, 10);
+    const total = countRes.rows[0]?.c || 0;
 
-    // list
-    const jobsQuery = `
-      SELECT 
+    const listQuery = `
+      SELECT
         j.*,
         u.id as client_id,
         u.first_name as client_first_name,
         u.last_name as client_last_name,
-        u.email as client_email,
-        (SELECT COUNT(*) FROM proposals WHERE job_id = j.id) as proposals_count
+        u.username as client_username,
+        (SELECT COUNT(*)::int FROM proposals pr WHERE pr.job_id = j.id) as proposals_count
       FROM jobs j
-      JOIN users u ON j.client_id = u.id
+      JOIN users u ON u.id = j.client_id
       WHERE ${whereClause}
       ORDER BY j.${sortColumn} ${sortOrder}
-      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
+      LIMIT $${i} OFFSET $${i + 1}
     `;
 
-    queryParams.push(parseInt(limit), offset);
-
-    const jobsResult = await pool.query(jobsQuery, queryParams);
+    params.push(parseInt(limit, 10), offset);
+    const listRes = await pool.query(listQuery, params);
 
     return res.json({
       success: true,
       data: {
-        projects: jobsResult.rows,
+        projects: listRes.rows,
         pagination: {
-          page: parseInt(page),
-          limit: parseInt(limit),
+          page: parseInt(page, 10),
+          limit: parseInt(limit, 10),
           total,
-          totalPages: Math.ceil(total / parseInt(limit)),
-        },
-      },
-    });
-  } catch (error) {
-    console.error("Get projects error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Loyihalarni olishda xato yuz berdi.",
-      error: error.message,
-    });
-  }
-};
-
-
-
-/**
- * GET /projects/:id
- * Get project by ID
- */
-const getProjectById = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const result = await pool.query(
-      `SELECT 
-        j.*,
-        u.id as client_id,
-        u.first_name as client_first_name,
-        u.last_name as client_last_name,
-        u.email as client_email,
-        (SELECT COUNT(*) FROM proposals WHERE job_id = j.id) as proposals_count
-      FROM jobs j
-      JOIN users u ON j.client_id = u.id
-      WHERE j.id = $1`,
-      [id]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Loyiha topilmadi.'
-      });
-    }
-
-    res.json({
-      success: true,
-      data: {
-        project: result.rows[0]
-      }
-    });
-  } catch (error) {
-    console.error('Get project by ID error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Loyihani olishda xato yuz berdi.',
-      error: error.message
-    });
-  }
-};
-
-/**
- * PUT /projects/:id
- * Update project (only owner can update)
- */
-// src/controllers/projectController.js
-const updateProject = async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const userId = req.user.id;
-    const userRole = req.user.role;
-    const isAdmin = userRole === "admin";
-
-    // ✅ faqat client yoki admin
-    if (!["client", "admin"].includes(userRole)) {
-      return res.status(403).json({
-        success: false,
-        message: "Bu amalni bajarish uchun ruxsat yo‘q.",
-      });
-    }
-
-    // ✅ projectni topamiz
-    const projectCheck = await pool.query(
-      "SELECT client_id, status FROM jobs WHERE id = $1",
-      [id]
-    );
-
-    if (projectCheck.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Loyiha topilmadi.",
-      });
-    }
-
-    const project = projectCheck.rows[0];
-
-    // ✅ client bo‘lsa faqat o‘ziniki
-    if (!isAdmin && project.client_id !== userId) {
-      return res.status(403).json({
-        success: false,
-        message: "Siz bu loyihaning egasi emassiz.",
-      });
-    }
-
-    // ✅ client uchun faqat open; admin uchun xohlasangiz cheklash mumkin
-    if (!isAdmin && project.status !== "open") {
-      return res.status(400).json({
-        success: false,
-        message: 'Faqat "open" statusdagi loyihalarni yangilash mumkin.',
-      });
-    }
-
-    // -------------------------
-    // Helpers: JSON normalize
-    // -------------------------
-    const normalizeToArray = (v) => {
-      if (v == null) return [];
-      if (Array.isArray(v)) return v;
-      if (typeof v === "string") {
-        // "react, node" -> ["react","node"]
-        return v
-          .split(",")
-          .map((s) => s.trim())
-          .filter(Boolean);
-      }
-      // object kelib qolsa ham array qilib yubormaymiz
-      return [];
-    };
-
-    const safeJsonValue = (v, fallback) => {
-      if (v == null) return fallback;
-      if (typeof v === "string") {
-        try {
-          return JSON.parse(v);
-        } catch {
-          return fallback;
-        }
-      }
-      return v;
-    };
-
-    // Body
-    const {
-      title,
-      description,
-      category,
-
-      // skills
-      skills,
-      required_skills,
-
-      // type
-      budget_type,
-      job_type,
-
-      budget_min,
-      budget_max,
-      currency,
-
-      // optional fields (schema’da bo‘lmasa olib tashlang)
-      hourly_rate,
-      duration,
-      experience_level,
-
-      attachments,
-
-      // statusni admin o‘zgartirsin
-      status,
-    } = req.body;
-
-    // -------------------------
-    // Dynamic UPDATE builder
-    // -------------------------
-    const updateFields = [];
-    const updateValues = [];
-    let paramIndex = 1;
-
-    const addField = (sqlSetExpr, value) => {
-      updateFields.push(sqlSetExpr.replace("$$", `$${paramIndex++}`));
-      updateValues.push(value);
-    };
-
-    if (title !== undefined) addField(`title = $$`, title);
-    if (description !== undefined) addField(`description = $$`, description);
-    if (category !== undefined) addField(`category = $$`, category);
-
-    // ✅ job_type (fallback budget_type)
-    if (job_type !== undefined) addField(`job_type = $$`, job_type);
-    else if (budget_type !== undefined) addField(`job_type = $$`, budget_type);
-
-    if (budget_min !== undefined) addField(`budget_min = $$`, budget_min);
-    if (budget_max !== undefined) addField(`budget_max = $$`, budget_max);
-    if (currency !== undefined) addField(`currency = $$`, currency);
-
-    // ✅ required_skills json/jsonb
-    if (required_skills !== undefined || skills !== undefined) {
-      const arr =
-        required_skills !== undefined
-          ? normalizeToArray(required_skills)
-          : normalizeToArray(skills);
-
-      // jsonb ga to‘g‘ri formatda yuboramiz
-      addField(`required_skills = $$::jsonb`, JSON.stringify(arr));
-    }
-
-    // ✅ attachments json/jsonb
-    if (attachments !== undefined) {
-      const val = safeJsonValue(attachments, []);
-      addField(`attachments = $$::jsonb`, JSON.stringify(val));
-    }
-
-    // ⚠️ Quyidagilar sizning jobs table’da bo‘lmasa O‘CHIRING
-    if (hourly_rate !== undefined) addField(`hourly_rate = $$`, hourly_rate);
-    if (duration !== undefined) addField(`duration = $$`, duration);
-    if (experience_level !== undefined) addField(`experience_level = $$`, experience_level);
-
-    // ✅ status faqat admin uchun
-    if (status !== undefined && isAdmin) addField(`status = $$`, status);
-
-    if (updateFields.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Yangilanish uchun hech bo‘lmaganda bitta maydon kerak.",
-      });
-    }
-
-    updateFields.push(`updated_at = CURRENT_TIMESTAMP`);
-
-    // WHERE id param
-    updateValues.push(id);
-
-    const updateQuery = `
-      UPDATE jobs
-      SET ${updateFields.join(", ")}
-      WHERE id = $${paramIndex}
-      RETURNING *
-    `;
-
-    const result = await pool.query(updateQuery, updateValues);
-
-    return res.json({
-      success: true,
-      message: "Loyiha muvaffaqiyatli yangilandi!",
-      data: {
-        project: result.rows[0],
-      },
-    });
-  } catch (error) {
-    console.error("Update project error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Loyihani yangilashda xato yuz berdi.",
-      error: error.message,
-    });
-  }
-};
-
-
-/**
- * DELETE /projects/:id
- * Delete project (only owner can delete)
- */
-const deleteProject = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const userId = req.user.id;
-    const userRole = req.user.role;
-    const isAdmin = userRole === "admin";
-
-    if (userRole !== "client" && !isAdmin) {
-      return res.status(403).json({
-        success: false,
-        message: "Faqat clientlar va admin loyihani o‘chirishi mumkin.",
-      });
-    }
-
-    // project exists?
-    const projectCheck = await pool.query(
-      "SELECT client_id, deleted_at FROM jobs WHERE id = $1",
-      [id]
-    );
-
-    if (projectCheck.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Loyiha topilmadi.",
-      });
-    }
-
-    // already deleted -> 200 qaytaramiz (idempotent delete)
-    if (projectCheck.rows[0].deleted_at) {
-      return res.json({
-        success: true,
-        message: "Loyiha allaqachon o‘chirilgan.",
-      });
-    }
-
-    // owner check faqat admin emas bo‘lsa
-    if (!isAdmin && projectCheck.rows[0].client_id !== userId) {
-      return res.status(403).json({
-        success: false,
-        message: "Siz bu loyihaning egasi emassiz.",
-      });
-    }
-
-    await pool.query("UPDATE jobs SET deleted_at = NOW() WHERE id = $1", [id]);
-
-    return res.json({
-      success: true,
-      message: "Loyiha muvaffaqiyatli o‘chirildi!",
-    });
-  } catch (error) {
-    console.error("Delete project error:", error);
-    return res.status(500).json({
-      success: false,
-      message: "Loyihani o‘chirishda xato yuz berdi.",
-      error: error.message,
-    });
-  }
-};
-
-
-
-/**
- * GET /projects/my
- * Get current user's projects
- */
-const getMyProjects = async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const userRole = req.user.role;
-    const { status, page = 1, limit = 20 } = req.query;
-    const offset = (parseInt(page) - 1) * parseInt(limit);
-
-    let query;
-    let params;
-
-    if (userRole === 'client') {
-      // Client sees their own projects
-      if (status) {
-        query = `
-          SELECT 
-            j.*,
-            (SELECT COUNT(*) FROM proposals WHERE job_id = j.id) as proposals_count
-          FROM jobs j
-          WHERE j.client_id = $1 AND j.status = $2
-          ORDER BY j.created_at DESC
-          LIMIT $3 OFFSET $4
-        `;
-        params = [userId, status, parseInt(limit), offset];
-      } else {
-        query = `
-          SELECT 
-            j.*,
-            (SELECT COUNT(*) FROM proposals WHERE job_id = j.id) as proposals_count
-          FROM jobs j
-          WHERE j.client_id = $1
-          ORDER BY j.created_at DESC
-          LIMIT $2 OFFSET $3
-        `;
-        params = [userId, parseInt(limit), offset];
-      }
-    } else {
-      // Freelancer sees projects they have proposals for
-      if (status) {
-        query = `
-          SELECT DISTINCT
-            j.*,
-            pr.status as proposal_status,
-            (SELECT COUNT(*) FROM proposals WHERE job_id = j.id) as proposals_count
-          FROM jobs j
-          JOIN proposals pr ON j.id = pr.job_id
-          WHERE pr.freelancer_id = $1 AND j.status = $2
-          ORDER BY j.created_at DESC
-          LIMIT $3 OFFSET $4
-        `;
-        params = [userId, status, parseInt(limit), offset];
-      } else {
-        query = `
-          SELECT DISTINCT
-            j.*,
-            pr.status as proposal_status,
-            (SELECT COUNT(*) FROM proposals WHERE job_id = j.id) as proposals_count
-          FROM jobs j
-          JOIN proposals pr ON j.id = pr.job_id
-          WHERE pr.freelancer_id = $1
-          ORDER BY j.created_at DESC
-          LIMIT $2 OFFSET $3
-        `;
-        params = [userId, parseInt(limit), offset];
-      }
-    }
-
-    const result = await pool.query(query, params);
-
-    // Get total count
-    let countQuery;
-    let countParams;
-    if (userRole === 'client') {
-      if (status) {
-        countQuery = 'SELECT COUNT(*) FROM jobs WHERE client_id = $1 AND status = $2';
-        countParams = [userId, status];
-      } else {
-        countQuery = 'SELECT COUNT(*) FROM jobs WHERE client_id = $1';
-        countParams = [userId];
-      }
-    } else {
-      if (status) {
-        countQuery = `
-          SELECT COUNT(DISTINCT j.id) 
-          FROM jobs j
-          JOIN proposals pr ON j.id = pr.job_id
-          WHERE pr.freelancer_id = $1 AND p.status = $2
-        `;
-        countParams = [userId, status];
-      } else {
-        countQuery = `
-          SELECT COUNT(DISTINCT j.id) 
-          FROM jobs j
-          JOIN proposals pr ON j.id = pr.job_id
-          WHERE pr.freelancer_id = $1
-        `;
-        countParams = [userId];
-      }
-    }
-
-    const countResult = await pool.query(countQuery, countParams);
-    const total = parseInt(countResult.rows[0].count);
-
-    res.json({
-      success: true,
-      data: {
-        projects: result.rows,
-        pagination: {
-          page: parseInt(page),
-          limit: parseInt(limit),
-          total,
-          totalPages: Math.ceil(total / parseInt(limit))
+          totalPages: Math.ceil(total / parseInt(limit, 10)),
         }
       }
     });
   } catch (error) {
-    console.error('Get my projects error:', error);
-    res.status(500).json({
+    console.error('Get projects error:', error);
+    return res.status(500).json({
       success: false,
       message: 'Loyihalarni olishda xato yuz berdi.',
       error: error.message
@@ -666,61 +227,393 @@ const getMyProjects = async (req, res) => {
   }
 };
 
+
+/**
+ * GET /projects/:id
+ */
+const getProjectById = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const result = await pool.query(
+      `
+      SELECT
+        j.*,
+        u.id as client_id,
+        u.first_name as client_first_name,
+        u.last_name as client_last_name,
+        u.username as client_username,
+        (SELECT COUNT(*)::int FROM proposals pr WHERE pr.job_id = j.id) as proposals_count
+      FROM jobs j
+      JOIN users u ON u.id = j.client_id
+      WHERE j.id = $1 AND j.deleted_at IS NULL
+      `,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Loyiha topilmadi.' });
+    }
+
+    return res.json({ success: true, data: { project: result.rows[0] } });
+  } catch (error) {
+    console.error('Get project by ID error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Loyihani olishda xato yuz berdi.',
+      error: error.message
+    });
+  }
+};
+
+
+/**
+ * PUT /projects/:id
+ * Client (owner) only when status=open, Admin can update anything (including status)
+ */
+const updateProject = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const role = req.user.role;
+    const admin = role === 'admin';
+
+    if (!['client', 'admin'].includes(role)) {
+      return res.status(403).json({ success: false, message: "Ruxsat yo‘q." });
+    }
+
+    const check = await pool.query(
+      "SELECT client_id, status FROM jobs WHERE id = $1 AND deleted_at IS NULL",
+      [id]
+    );
+    if (check.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Loyiha topilmadi." });
+    }
+    const job = check.rows[0];
+
+    if (!admin && job.client_id !== userId) {
+      return res.status(403).json({ success: false, message: "Bu loyihaning egasi emassiz." });
+    }
+
+    if (!admin && job.status !== 'open') {
+      return res.status(400).json({
+        success: false,
+        message: 'Faqat "open" statusdagi loyihani yangilash mumkin.'
+      });
+    }
+
+    const {
+      title,
+      description,
+      budget_type,
+      job_type,
+      budget_min,
+      budget_max,
+      currency,
+      deadline,
+      skills,
+      required_skills,
+      attachments,
+      visibility,
+      status, // admin only
+      is_boosted, // admin only (ixtiyoriy)
+      boosted_until // admin only
+    } = req.body;
+
+    const fields = [];
+    const values = [];
+    let i = 1;
+
+    const add = (sql, val) => { fields.push(sql.replace('$$', `$${i++}`)); values.push(val); };
+
+    if (title !== undefined) add(`title = $$`, title);
+    if (description !== undefined) add(`description = $$`, description);
+
+    const jt = job_type ?? budget_type;
+    if (jt !== undefined) add(`job_type = $$`, jt);
+
+    if (budget_min !== undefined) add(`budget_min = $$`, budget_min);
+    if (budget_max !== undefined) add(`budget_max = $$`, budget_max);
+    if (currency !== undefined) add(`currency = $$`, currency);
+
+    if (deadline !== undefined) add(`deadline = $$`, deadline ? new Date(deadline) : null);
+
+    if (visibility !== undefined) add(`visibility = $$`, visibility);
+
+    if (required_skills !== undefined || skills !== undefined) {
+      const arr = normalizeToArray(required_skills ?? skills);
+      add(`required_skills = $$::jsonb`, JSON.stringify(arr));
+    }
+
+    if (attachments !== undefined) {
+      add(`attachments = $$::jsonb`, safeJsonToString(attachments, []));
+    }
+
+    // admin only fields
+    if (admin) {
+      if (status !== undefined) add(`status = $$`, status);
+      if (is_boosted !== undefined) add(`is_boosted = $$`, is_boosted);
+      if (boosted_until !== undefined) add(`boosted_until = $$`, boosted_until ? new Date(boosted_until) : null);
+    }
+
+    if (fields.length === 0) {
+      return res.status(400).json({ success: false, message: "Yangilash uchun maydon yuboring." });
+    }
+
+    fields.push(`updated_at = NOW()`);
+
+    values.push(id);
+
+    const q = `
+      UPDATE jobs
+      SET ${fields.join(', ')}
+      WHERE id = $${i}
+      RETURNING *
+    `;
+
+    const result = await pool.query(q, values);
+
+    return res.json({
+      success: true,
+      message: "Loyiha yangilandi!",
+      data: { project: result.rows[0] }
+    });
+  } catch (error) {
+    console.error("Update project error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Loyihani yangilashda xato yuz berdi.",
+      error: error.message
+    });
+  }
+};
+
+
+/**
+ * DELETE /projects/:id
+ * Soft delete: deleted_at
+ */
+const deleteProject = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const userId = req.user.id;
+    const role = req.user.role;
+    const admin = role === 'admin';
+
+    if (role !== 'client' && !admin) {
+      return res.status(403).json({ success: false, message: "Faqat client yoki admin o‘chiradi." });
+    }
+
+    const check = await pool.query("SELECT client_id, deleted_at FROM jobs WHERE id = $1", [id]);
+    if (check.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Loyiha topilmadi." });
+    }
+
+    if (check.rows[0].deleted_at) {
+      return res.json({ success: true, message: "Loyiha allaqachon o‘chirilgan." });
+    }
+
+    if (!admin && check.rows[0].client_id !== userId) {
+      return res.status(403).json({ success: false, message: "Bu loyihaning egasi emassiz." });
+    }
+
+    await pool.query("UPDATE jobs SET deleted_at = NOW(), updated_at = NOW() WHERE id = $1", [id]);
+
+    return res.json({ success: true, message: "Loyiha o‘chirildi!" });
+  } catch (error) {
+    console.error("Delete project error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Loyihani o‘chirishda xato yuz berdi.",
+      error: error.message
+    });
+  }
+};
+
+
+/**
+ * GET /projects/my
+ * Client: own jobs
+ * Freelancer: jobs where freelancer has proposals
+ */
+const getMyProjects = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const role = req.user.role;
+    const { status, page = 1, limit = 20 } = req.query;
+    const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
+
+    let query = '';
+    let params = [];
+
+    if (role === 'client') {
+      query = `
+        SELECT
+          j.*,
+          (SELECT COUNT(*)::int FROM proposals pr WHERE pr.job_id = j.id) as proposals_count
+        FROM jobs j
+        WHERE j.client_id = $1
+          AND j.deleted_at IS NULL
+          ${status ? `AND j.status = $2` : ''}
+        ORDER BY j.created_at DESC
+        LIMIT $${status ? 3 : 2} OFFSET $${status ? 4 : 3}
+      `;
+
+      params = status
+        ? [userId, status, parseInt(limit, 10), offset]
+        : [userId, parseInt(limit, 10), offset];
+    } else {
+      // freelancer
+      query = `
+        SELECT DISTINCT
+          j.*,
+          pr.status as proposal_status,
+          (SELECT COUNT(*)::int FROM proposals pr2 WHERE pr2.job_id = j.id) as proposals_count
+        FROM proposals pr
+        JOIN jobs j ON j.id = pr.job_id
+        WHERE pr.freelancer_id = $1
+          AND j.deleted_at IS NULL
+          ${status ? `AND j.status = $2` : ''}
+        ORDER BY j.created_at DESC
+        LIMIT $${status ? 3 : 2} OFFSET $${status ? 4 : 3}
+      `;
+
+      params = status
+        ? [userId, status, parseInt(limit, 10), offset]
+        : [userId, parseInt(limit, 10), offset];
+    }
+
+    const result = await pool.query(query, params);
+
+    // count
+    let countQuery = '';
+    let countParams = [];
+
+    if (role === 'client') {
+      countQuery = `
+        SELECT COUNT(*)::int AS c
+        FROM jobs
+        WHERE client_id = $1
+          AND deleted_at IS NULL
+          ${status ? `AND status = $2` : ''}
+      `;
+      countParams = status ? [userId, status] : [userId];
+    } else {
+      countQuery = `
+        SELECT COUNT(DISTINCT j.id)::int AS c
+        FROM proposals pr
+        JOIN jobs j ON j.id = pr.job_id
+        WHERE pr.freelancer_id = $1
+          AND j.deleted_at IS NULL
+          ${status ? `AND j.status = $2` : ''}
+      `;
+      countParams = status ? [userId, status] : [userId];
+    }
+
+    const countRes = await pool.query(countQuery, countParams);
+    const total = countRes.rows[0]?.c || 0;
+
+    return res.json({
+      success: true,
+      data: {
+        projects: result.rows,
+        pagination: {
+          page: parseInt(page, 10),
+          limit: parseInt(limit, 10),
+          total,
+          totalPages: Math.ceil(total / parseInt(limit, 10)),
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Get my projects error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Loyihalarni olishda xato yuz berdi.',
+      error: error.message
+    });
+  }
+};
+
+
 /**
  * GET /projects/recommended
- * Get recommended projects for current freelancer (AI-based)
+ * DB: freelancer_profiles.skills (jsonb array), jobs.required_skills (jsonb array)
  */
 const getRecommendedProjects = async (req, res) => {
   try {
     const userId = req.user.id;
-    const userRole = req.user.role;
 
-    if (userRole !== 'freelancer') {
-      return res.status(403).json({
-        success: false,
-        message: 'Faqat freelancerlar uchun.'
-      });
+    if (req.user.role !== 'freelancer') {
+      return res.status(403).json({ success: false, message: 'Faqat freelancerlar uchun.' });
     }
 
-    // Get freelancer skills
-    const freelancerResult = await pool.query(
-      'SELECT skills FROM user_profiles WHERE user_id = $1',
+    const fr = await pool.query(
+      `SELECT COALESCE(skills, '[]'::jsonb) AS skills
+       FROM freelancer_profiles
+       WHERE user_id = $1`,
       [userId]
     );
 
-    const freelancerSkills = freelancerResult.rows[0]?.skills || [];
+    const skillsArr = normalizeToArray(fr.rows[0]?.skills || []);
 
-    // Get recommended projects based on skills match
-    const projectsQuery = `
-      SELECT 
+    // skills bo‘lmasa: oddiy top open jobs
+    if (skillsArr.length === 0) {
+      const r = await pool.query(`
+        SELECT
+          j.*,
+          u.first_name as client_first_name,
+          u.last_name as client_last_name,
+          u.username as client_username,
+          (SELECT COUNT(*)::int FROM proposals pr WHERE pr.job_id = j.id) as proposals_count
+        FROM jobs j
+        JOIN users u ON u.id = j.client_id
+        WHERE j.status='open' AND j.deleted_at IS NULL
+        ORDER BY j.is_boosted DESC, j.created_at DESC
+        LIMIT 10
+      `);
+
+      return res.json({
+        success: true,
+        message: 'Tavsiya etilgan loyihalar',
+        data: { projects: r.rows }
+      });
+    }
+
+    // skill overlap: required_skills ?| array['a','b']
+    const r = await pool.query(
+      `
+      SELECT
         j.*,
         u.first_name as client_first_name,
         u.last_name as client_last_name,
-        (SELECT COUNT(*) FROM proposals WHERE job_id = j.id) as proposals_count,
-        CASE 
-          WHEN p.skills && $1::text[] THEN 1
-          ELSE 0
-        END as skill_match
+        u.username as client_username,
+        (SELECT COUNT(*)::int FROM proposals pr WHERE pr.job_id = j.id) as proposals_count,
+        -- match count (ixtiyoriy)
+        (
+          SELECT COUNT(*)::int
+          FROM jsonb_array_elements_text(COALESCE(j.required_skills,'[]'::jsonb)) s
+          WHERE s.value = ANY($1::text[])
+        ) AS skill_match_count
       FROM jobs j
-      JOIN users u ON j.client_id = u.id
-      WHERE p.status = 'open'
-        AND ($1::text[] IS NULL OR p.skills && $1::text[])
-      ORDER BY skill_match DESC, p.created_at DESC
+      JOIN users u ON u.id = j.client_id
+      WHERE j.status='open'
+        AND j.deleted_at IS NULL
+        AND (COALESCE(j.required_skills,'[]'::jsonb) ?| $1::text[])
+      ORDER BY j.is_boosted DESC, skill_match_count DESC, j.created_at DESC
       LIMIT 10
-    `;
+      `,
+      [skillsArr]
+    );
 
-    const result = await pool.query(projectsQuery, [freelancerSkills.length > 0 ? freelancerSkills : null]);
-
-    res.json({
+    return res.json({
       success: true,
       message: 'Tavsiya etilgan loyihalar',
-      data: {
-        projects: result.rows
-      }
+      data: { projects: r.rows }
     });
   } catch (error) {
     console.error('Get recommended projects error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Tavsiya etilgan loyihalarni olishda xato yuz berdi.',
       error: error.message
@@ -728,71 +621,73 @@ const getRecommendedProjects = async (req, res) => {
   }
 };
 
+
 /**
  * POST /projects/:id/boost
- * Boost project (paid feature - 150,000 UZS)
+ * DB: jobs.is_boosted, jobs.boosted_until
  */
 const boostProject = async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user.id;
-    const userRole = req.user.role;
 
-    if (userRole !== 'client') {
-      return res.status(403).json({
-        success: false,
-        message: 'Faqat clientlar loyihani boost qilishi mumkin.'
-      });
+    if (req.user.role !== 'client') {
+      return res.status(403).json({ success: false, message: 'Faqat client boost qiladi.' });
     }
 
-    // Check if project exists and user is owner
-    const projectCheck = await pool.query(
-      'SELECT client_id, status FROM jobs WHERE id = $1',
+    const check = await pool.query(
+      `SELECT id, client_id, status, is_boosted, boosted_until
+       FROM jobs
+       WHERE id = $1 AND deleted_at IS NULL`,
       [id]
     );
 
-    if (projectCheck.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Loyiha topilmadi.'
-      });
+    if (check.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Loyiha topilmadi.' });
     }
 
-    if (projectCheck.rows[0].client_id !== userId) {
-      return res.status(403).json({
-        success: false,
-        message: 'Siz bu loyihaning egasi emassiz.'
-      });
+    const job = check.rows[0];
+
+    if (job.client_id !== userId) {
+      return res.status(403).json({ success: false, message: 'Bu loyihaning egasi emassiz.' });
     }
 
-    if (projectCheck.rows[0].status !== 'open') {
-      return res.status(400).json({
-        success: false,
-        message: 'Faqat "open" statusdagi loyihalarni boost qilish mumkin.'
-      });
+    if (job.status !== 'open') {
+      return res.status(400).json({ success: false, message: 'Faqat "open" loyihani boost qilish mumkin.' });
     }
 
-    // TODO: Check payment/balance (150,000 UZS)
-    // TODO: Add boost_expires_at field to projects table
-    // For now, just return success
+    // 7 kunlik boost (hozircha)
+    const updated = await pool.query(
+      `
+      UPDATE jobs
+      SET is_boosted = TRUE,
+          boosted_until = NOW() + INTERVAL '7 days',
+          updated_at = NOW()
+      WHERE id = $1
+      RETURNING id, is_boosted, boosted_until
+      `,
+      [id]
+    );
 
-    res.json({
+    return res.json({
       success: true,
-      message: 'Loyiha boost qilindi! (150 000 so\'m)'
+      message: "Loyiha boost qilindi (7 kun).",
+      data: { boost: updated.rows[0] }
     });
   } catch (error) {
     console.error('Boost project error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: 'Loyihani boost qilishda xato yuz berdi.',
+      message: 'Boost qilishda xato yuz berdi.',
       error: error.message
     });
   }
 };
 
+
 /**
  * POST /projects/:id/ai-translate
- * Auto translate project description
+ * stub
  */
 const aiTranslate = async (req, res) => {
   try {
@@ -800,37 +695,30 @@ const aiTranslate = async (req, res) => {
     const { to_lang = 'ru' } = req.query;
 
     const projectResult = await pool.query(
-      'SELECT title, description FROM jobs WHERE id = $1',
+      'SELECT title, description FROM jobs WHERE id = $1 AND deleted_at IS NULL',
       [id]
     );
 
     if (projectResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Loyiha topilmadi.'
-      });
+      return res.status(404).json({ success: false, message: 'Loyiha topilmadi.' });
     }
 
-    // TODO: Integrate with translation API
     const translated = {
       title: projectResult.rows[0].title,
       description: projectResult.rows[0].description
     };
 
-    res.json({
+    return res.json({
       success: true,
       data: {
-        original: {
-          title: projectResult.rows[0].title,
-          description: projectResult.rows[0].description
-        },
+        original: projectResult.rows[0],
         translated,
         to_lang
       }
     });
   } catch (error) {
     console.error('AI translate error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Tarjima qilishda xato yuz berdi.',
       error: error.message
@@ -838,116 +726,38 @@ const aiTranslate = async (req, res) => {
   }
 };
 
+
 /**
  * GET /projects/saved
- * Get saved projects (freelancer)
+ * DB’da saved_items yo‘q -> 501
  */
 const getSavedProjects = async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const { page = 1, limit = 20 } = req.query;
-    const offset = (parseInt(page) - 1) * parseInt(limit);
-
-    const result = await pool.query(
-      `SELECT 
-        j.*,
-        u.first_name as client_first_name,
-        u.last_name as client_last_name
-      FROM saved_items s
-      JOIN jobs j ON s.item_id = j.id
-      JOIN users u ON j.client_id = u.id
-      WHERE s.user_id = $1 AND s.item_type = 'project'
-      ORDER BY s.created_at DESC
-      LIMIT $2 OFFSET $3`,
-      [userId, parseInt(limit), offset]
-    );
-
-    res.json({
-      success: true,
-      data: {
-        projects: result.rows
-      }
-    });
-  } catch (error) {
-    console.error('Get saved projects error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Saqlangan loyihalarni olishda xato yuz berdi.',
-      error: error.message
-    });
-  }
+  return res.status(501).json({
+    success: false,
+    message: "Saved projects funksiyasi hali yo‘q (saved_items jadvali DB’da yo‘q)."
+  });
 };
 
 /**
  * POST /projects/:id/save
- * Save project
+ * DB’da saved_items yo‘q -> 501
  */
 const saveProject = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const userId = req.user.id;
-
-    const existing = await pool.query(
-      'SELECT id FROM saved_items WHERE user_id = $1 AND item_type = $2 AND item_id = $3',
-      [userId, 'project', id]
-    );
-
-    if (existing.rows.length > 0) {
-      return res.status(409).json({
-        success: false,
-        message: 'Loyiha allaqachon saqlangan.'
-      });
-    }
-
-    await pool.query(
-      'INSERT INTO saved_items (user_id, item_type, item_id) VALUES ($1, $2, $3)',
-      [userId, 'project', id]
-    );
-
-    res.json({
-      success: true,
-      message: 'Loyiha saqlandi!'
-    });
-  } catch (error) {
-    console.error('Save project error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Saqlashda xato yuz berdi.',
-      error: error.message
-    });
-  }
+  return res.status(501).json({
+    success: false,
+    message: "Save funksiyasi hali yo‘q (saved_items jadvali DB’da yo‘q)."
+  });
 };
 
 /**
  * POST /projects/:id/report
- * Report project
+ * report jadvali yo‘q -> 501
  */
 const reportProject = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const userId = req.user.id;
-    const { reason, description } = req.body;
-
-    if (!reason || !description) {
-      return res.status(400).json({
-        success: false,
-        message: 'Reason va description kerak.'
-      });
-    }
-
-    // TODO: Create reports table or use support_tickets
-    res.json({
-      success: true,
-      message: 'Shikoyat yuborildi!'
-    });
-  } catch (error) {
-    console.error('Report project error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Shikoyat yuborishda xato yuz berdi.',
-      error: error.message
-    });
-  }
+  return res.status(501).json({
+    success: false,
+    message: "Report funksiyasi hali yo‘q (reports/support jadvali keyin qo‘shiladi)."
+  });
 };
 
 module.exports = {
@@ -964,5 +774,3 @@ module.exports = {
   saveProject,
   reportProject
 };
-
-

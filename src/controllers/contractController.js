@@ -1,198 +1,268 @@
 // src/controllers/contractController.js
 const pool = require('../db/pool');
 
+
 /**
  * POST /contracts
  * Create a contract from accepted proposal
+ * DB: proposals(job_id, freelancer_id, proposed_price, status), jobs(client_id, job_type, status)
+ * DB: contracts(job_id, freelancer_id, client_id, total_amount, platform_fee, status, signed_at)
+ * DB: milestones(contract_id, title, amount, status)
  */
-const createContract = async (req, res) => {
-  try {
-    const userId = req.user.id;
-    const userRole = req.user.role;
 
-    if (userRole !== 'client') {
-      return res.status(403).json({
-        success: false,
-        message: 'Faqat clientlar shartnoma yaratishi mumkin.'
-      });
-    }
 
-    const { proposal_id } = req.body;
+// const createContract = async (req, res) => {
+//   const client = await pool.connect();
 
-    if (!proposal_id) {
-      return res.status(400).json({
-        success: false,
-        message: 'Proposal_id kerak.'
-      });
-    }
+//   try {
+//     const userId = req.user.id;
+//     const { proposal_id } = req.body;
 
-    // Get proposal with project info
-    const proposalResult = await pool.query(
-      `SELECT 
-        p.*,
-        pr.client_id,
-        pr.budget_type,
-        pr.status as project_status
-      FROM proposals p
-      JOIN projects pr ON p.project_id = pr.id
-      WHERE p.id = $1`,
-      [proposal_id]
-    );
+//     if (!proposal_id) {
+//       return res.status(400).json({ success: false, message: "proposal_id kerak." });
+//     }
 
-    if (proposalResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Taklif topilmadi.'
-      });
-    }
+//     await client.query("BEGIN");
 
-    const proposal = proposalResult.rows[0];
+//     // 1) Proposal + Job ni olib kelamiz (FOR UPDATE - parallel requestlar muammo qilmasin)
+//     const pr = await client.query(
+//       `
+//       SELECT
+//         p.id AS proposal_id,
+//         p.job_id,
+//         p.freelancer_id,
+//         p.proposed_price,
+//         p.status AS proposal_status,
+//         p.milestones AS proposal_milestones,
 
-    if (proposal.client_id !== userId) {
-      return res.status(403).json({
-        success: false,
-        message: 'Siz bu loyihaning egasi emassiz.'
-      });
-    }
+//         j.client_id,
+//         j.job_type,
+//         j.status AS job_status,
+//         j.deleted_at
+//       FROM proposals p
+//       JOIN jobs j ON j.id = p.job_id
+//       WHERE p.id = $1
+//       FOR UPDATE
+//       `,
+//       [proposal_id]
+//     );
 
-    if (proposal.status !== 'accepted') {
-      return res.status(400).json({
-        success: false,
-        message: 'Faqat "accepted" statusdagi takliflar uchun shartnoma yaratish mumkin.'
-      });
-    }
+//     if (pr.rows.length === 0) {
+//       await client.query("ROLLBACK");
+//       return res.status(404).json({ success: false, message: "Taklif (proposal) topilmadi." });
+//     }
 
-    // Check if contract already exists
-    const existingContract = await pool.query(
-      'SELECT id FROM contracts WHERE proposal_id = $1',
-      [proposal_id]
-    );
+//     const row = pr.rows[0];
 
-    if (existingContract.rows.length > 0) {
-      return res.status(409).json({
-        success: false,
-        message: 'Bu taklif uchun shartnoma allaqachon yaratilgan.'
-      });
-    }
+//     if (row.deleted_at) {
+//       await client.query("ROLLBACK");
+//       return res.status(400).json({ success: false, message: "Bu job o‘chirilgan." });
+//     }
 
-    // Create contract
-    const contractType = proposal.budget_type;
-    const totalAmount = contractType === 'fixed' 
-      ? proposal.proposed_amount 
-      : proposal.proposed_rate * proposal.estimated_hours;
-    const hourlyRate = contractType === 'hourly' ? proposal.proposed_rate : null;
+//     // Faqat job egasi contract yaratsin
+//     if (row.client_id !== userId) {
+//       await client.query("ROLLBACK");
+//       return res.status(403).json({ success: false, message: "Siz bu job egasi emassiz." });
+//     }
 
-    const result = await pool.query(
-      `INSERT INTO contracts (
-        project_id, client_id, freelancer_id, proposal_id,
-        contract_type, total_amount, hourly_rate, status
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-      RETURNING *`,
-      [
-        proposal.project_id,
-        proposal.client_id,
-        proposal.freelancer_id,
-        proposal_id,
-        contractType,
-        totalAmount,
-        hourlyRate,
-        'active'
-      ]
-    );
+//     // Proposal accepted bo‘lishi shart
+//     if (normalizeStatus(row.proposal_status) !== "accepted") {
+//       await client.query("ROLLBACK");
+//       return res.status(400).json({
+//         success: false,
+//         message: 'Faqat "accepted" statusdagi proposal uchun contract yaratish mumkin.',
+//       });
+//     }
 
-    res.status(201).json({
-      success: true,
-      message: 'Shartnoma muvaffaqiyatli yaratildi!',
-      data: {
-        contract: result.rows[0]
-      }
-    });
-  } catch (error) {
-    console.error('Create contract error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Shartnoma yaratishda xato yuz berdi.',
-      error: error.message
-    });
-  }
-};
+//     // Job holati tekshiruvi
+//     if (!["open", "in_progress"].includes(normalizeStatus(row.job_status))) {
+//       await client.query("ROLLBACK");
+//       return res.status(400).json({
+//         success: false,
+//         message: "Bu job holatida contract yaratib bo‘lmaydi.",
+//       });
+//     }
+
+//     // 2) Job uchun active/disputed contract bor-yo‘qligini tekshiramiz
+//     const existing = await client.query(
+//       `
+//       SELECT id
+//       FROM contracts
+//       WHERE job_id = $1
+//         AND status IN ('active','disputed')
+//       LIMIT 1
+//       `,
+//       [row.job_id]
+//     );
+
+//     if (existing.rows.length > 0) {
+//       await client.query("ROLLBACK");
+//       return res.status(409).json({
+//         success: false,
+//         message: "Bu job uchun allaqachon active/disputed contract bor.",
+//       });
+//     }
+
+//     const totalAmount = Number(row.proposed_price) || 0;
+//     if (totalAmount <= 0) {
+//       await client.query("ROLLBACK");
+//       return res.status(400).json({
+//         success: false,
+//         message: "proposed_price noto‘g‘ri (0 dan katta bo‘lishi kerak).",
+//       });
+//     }
+
+//     const platformFee = calcFee(totalAmount);
+
+//     // 3) Contract yaratamiz
+//     const ins = await client.query(
+//       `
+//       INSERT INTO contracts (
+//         job_id, freelancer_id, client_id,
+//         total_amount, platform_fee,
+//         status, signed_at, created_at, updated_at
+//       )
+//       VALUES ($1, $2, $3, $4, $5, 'active', NOW(), NOW(), NOW())
+//       RETURNING *
+//       `,
+//       [row.job_id, row.freelancer_id, row.client_id, totalAmount, platformFee]
+//     );
+
+//     const contract = ins.rows[0];
+
+//     // 4) ✅ Chatni avtomatik yaratamiz (contract_id bilan)
+//     // UNIQUE index bo'lsa dublikat bo'lib ketmaydi
+//     const chatInsert = await client.query(
+//       `
+//       INSERT INTO chats (contract_id, job_id, status, created_at)
+//       VALUES ($1, $2, 'active', NOW())
+//       ON CONFLICT (contract_id) DO NOTHING
+//       RETURNING *
+//       `,
+//       [contract.id, row.job_id]
+//     );
+
+//     let chat = chatInsert.rows[0] || null;
+//     if (!chat) {
+//       const exChat = await client.query(
+//         `SELECT * FROM chats WHERE contract_id = $1 LIMIT 1`,
+//         [contract.id]
+//       );
+//       chat = exChat.rows[0] || null;
+//     }
+
+//     // 5) Job status -> in_progress
+//     await client.query(
+//       `UPDATE jobs SET status='in_progress', updated_at=NOW() WHERE id=$1`,
+//       [row.job_id]
+//     );
+
+//     // 6) Proposal milestones jsonb bo‘lsa -> milestones table ga yozamiz
+//     let createdMilestones = [];
+//     try {
+//       const ms = row.proposal_milestones;
+//       const arr = Array.isArray(ms) ? ms : typeof ms === "string" ? JSON.parse(ms) : [];
+
+//       if (Array.isArray(arr) && arr.length > 0) {
+//         for (const m of arr) {
+//           const title = (m?.title || "").toString().trim();
+//           const amount = Number(m?.amount) || 0;
+//           if (!title || amount <= 0) continue;
+
+//           const mRes = await client.query(
+//             `
+//             INSERT INTO milestones (contract_id, title, amount, status)
+//             VALUES ($1, $2, $3, 'pending')
+//             RETURNING *
+//             `,
+//             [contract.id, title, amount]
+//           );
+//           createdMilestones.push(mRes.rows[0]);
+//         }
+//       }
+//     } catch (e) {
+//       // parse xato bo'lsa ham contract/chat yiqilmasin
+//     }
+
+//     await client.query("COMMIT");
+
+//     return res.status(201).json({
+//       success: true,
+//       message: "Shartnoma muvaffaqiyatli yaratildi! Chat ham yaratildi.",
+//       data: {
+//         contract,
+//         chat,
+//         milestones: createdMilestones,
+//       },
+//     });
+//   } catch (error) {
+//     try {
+//       await client.query("ROLLBACK");
+//     } catch {}
+
+//     console.error("Create contract error:", error);
+//     return res.status(500).json({
+//       success: false,
+//       message: "Shartnoma yaratishda xato yuz berdi.",
+//       error: error.message,
+//     });
+//   } finally {
+//     client.release();
+//   }
+// };
 
 /**
- * GET /contracts
- * Get all contracts with filters
+ * GET /contracts (public)
+ * contracts + users + job
  */
 const getContracts = async (req, res) => {
   try {
-    const {
-      project_id,
-      client_id,
-      freelancer_id,
-      status,
-      page = 1,
-      limit = 20
-    } = req.query;
-
+    const { job_id, client_id, freelancer_id, status, page = 1, limit = 20 } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
 
-    // Build WHERE clause
-    let whereConditions = [];
-    let queryParams = [];
-    let paramIndex = 1;
+    const where = [];
+    const params = [];
+    let i = 1;
 
-    if (project_id) {
-      whereConditions.push(`c.project_id = $${paramIndex++}`);
-      queryParams.push(project_id);
-    }
+    if (job_id) { where.push(`c.job_id = $${i++}`); params.push(job_id); }
+    if (client_id) { where.push(`c.client_id = $${i++}`); params.push(client_id); }
+    if (freelancer_id) { where.push(`c.freelancer_id = $${i++}`); params.push(freelancer_id); }
+    if (status) { where.push(`c.status = $${i++}`); params.push(status); }
 
-    if (client_id) {
-      whereConditions.push(`c.client_id = $${paramIndex++}`);
-      queryParams.push(client_id);
-    }
+    const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
-    if (freelancer_id) {
-      whereConditions.push(`c.freelancer_id = $${paramIndex++}`);
-      queryParams.push(freelancer_id);
-    }
+    const countRes = await pool.query(
+      `SELECT COUNT(*) FROM contracts c ${whereClause}`,
+      params
+    );
+    const total = parseInt(countRes.rows[0].count, 10);
 
-    if (status) {
-      whereConditions.push(`c.status = $${paramIndex++}`);
-      queryParams.push(status);
-    }
-
-    const whereClause = whereConditions.length > 0
-      ? 'WHERE ' + whereConditions.join(' AND ')
-      : '';
-
-    // Get total count
-    const countQuery = `SELECT COUNT(*) FROM contracts c ${whereClause}`;
-    const countResult = await pool.query(countQuery, queryParams);
-    const total = parseInt(countResult.rows[0].count);
-
-    // Get contracts with user and project info
-    const contractsQuery = `
-      SELECT 
+    const listRes = await pool.query(
+      `
+      SELECT
         c.*,
-        u_client.first_name as client_first_name,
-        u_client.last_name as client_last_name,
-        u_freelancer.first_name as freelancer_first_name,
-        u_freelancer.last_name as freelancer_last_name,
-        pr.title as project_title
+        j.title AS job_title,
+        j.status AS job_status,
+
+        uc.first_name AS client_first_name,
+        uc.last_name  AS client_last_name,
+        uf.first_name AS freelancer_first_name,
+        uf.last_name  AS freelancer_last_name
       FROM contracts c
-      JOIN users u_client ON c.client_id = u_client.id
-      JOIN users u_freelancer ON c.freelancer_id = u_freelancer.id
-      JOIN projects pr ON c.project_id = pr.id
+      JOIN jobs j ON j.id = c.job_id
+      JOIN users uc ON uc.id = c.client_id
+      JOIN users uf ON uf.id = c.freelancer_id
       ${whereClause}
       ORDER BY c.created_at DESC
-      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
-    `;
-    queryParams.push(parseInt(limit), offset);
+      LIMIT $${i} OFFSET $${i + 1}
+      `,
+      [...params, parseInt(limit), offset]
+    );
 
-    const contractsResult = await pool.query(contractsQuery, queryParams);
-
-    res.json({
+    return res.json({
       success: true,
       data: {
-        contracts: contractsResult.rows,
+        contracts: listRes.rows,
         pagination: {
           page: parseInt(page),
           limit: parseInt(limit),
@@ -203,7 +273,7 @@ const getContracts = async (req, res) => {
     });
   } catch (error) {
     console.error('Get contracts error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Shartnomalarni olishda xato yuz berdi.',
       error: error.message
@@ -212,59 +282,79 @@ const getContracts = async (req, res) => {
 };
 
 /**
- * GET /contracts/:id
- * Get contract by ID
+ * GET /contracts/:id (protected)
+ * contract + job + users + milestones + last disputes
  */
 const getContractById = async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user.id;
+    const role = req.user.role;
 
-    const result = await pool.query(
-      `SELECT 
+    const cRes = await pool.query(
+      `
+      SELECT
         c.*,
-        u_client.first_name as client_first_name,
-        u_client.last_name as client_last_name,
-        u_client.email as client_email,
-        u_freelancer.first_name as freelancer_first_name,
-        u_freelancer.last_name as freelancer_last_name,
-        u_freelancer.email as freelancer_email,
-        pr.title as project_title,
-        pr.description as project_description
+        j.title AS job_title,
+        j.description AS job_description,
+        j.job_type,
+        j.status AS job_status,
+
+        uc.first_name AS client_first_name,
+        uc.last_name  AS client_last_name,
+        uc.email      AS client_email,
+
+        uf.first_name AS freelancer_first_name,
+        uf.last_name  AS freelancer_last_name,
+        uf.email      AS freelancer_email
       FROM contracts c
-      JOIN users u_client ON c.client_id = u_client.id
-      JOIN users u_freelancer ON c.freelancer_id = u_freelancer.id
-      JOIN projects pr ON c.project_id = pr.id
-      WHERE c.id = $1`,
+      JOIN jobs j ON j.id = c.job_id
+      JOIN users uc ON uc.id = c.client_id
+      JOIN users uf ON uf.id = c.freelancer_id
+      WHERE c.id = $1
+      LIMIT 1
+      `,
       [id]
     );
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Shartnoma topilmadi.'
-      });
+    if (cRes.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Shartnoma topilmadi.' });
     }
 
-    const contract = result.rows[0];
+    const contract = cRes.rows[0];
 
-    // Check if user is part of this contract
-    if (contract.client_id !== userId && contract.freelancer_id !== userId) {
-      return res.status(403).json({
-        success: false,
-        message: 'Siz bu shartnomaning qismi emassiz.'
-      });
+    const isMember = contract.client_id === userId || contract.freelancer_id === userId;
+    if (!isMember && role !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Ruxsat yo‘q.' });
     }
 
-    res.json({
+    const mRes = await pool.query(
+      `SELECT * FROM milestones WHERE contract_id = $1 ORDER BY created_at ASC`,
+      [id]
+    );
+
+    const dRes = await pool.query(
+      `
+      SELECT id, status, reason, created_at, raised_by, against_user, amount, currency
+      FROM disputes
+      WHERE contract_id = $1
+      ORDER BY created_at DESC
+      LIMIT 20
+      `,
+      [id]
+    );
+
+    return res.json({
       success: true,
       data: {
-        contract: result.rows[0]
+        contract,
+        milestones: mRes.rows,
+        disputes: dRes.rows
       }
     });
   } catch (error) {
     console.error('Get contract by ID error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Shartnomani olishda xato yuz berdi.',
       error: error.message
@@ -273,57 +363,70 @@ const getContractById = async (req, res) => {
 };
 
 /**
- * GET /contracts/my
- * Get current user's contracts
+ * GET /contracts/my (protected)
  */
 const getMyContracts = async (req, res) => {
   try {
     const userId = req.user.id;
-    const userRole = req.user.role;
+    const role = req.user.role;
     const { status, page = 1, limit = 20 } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
 
-    let whereClause = userRole === 'client' 
-      ? 'WHERE c.client_id = $1'
-      : 'WHERE c.freelancer_id = $1';
-    let queryParams = [userId];
-    let paramIndex = 2;
+    const where = [];
+    const params = [];
+    let i = 1;
 
-    if (status) {
-      whereClause += ` AND c.status = $${paramIndex++}`;
-      queryParams.push(status);
+    if (role === 'client') {
+      where.push(`c.client_id = $${i++}`);
+      params.push(userId);
+    } else if (role === 'freelancer') {
+      where.push(`c.freelancer_id = $${i++}`);
+      params.push(userId);
+    } else if (role === 'admin') {
+      // admin ko‘rsa ham bo‘ladi
+      where.push(`1=1`);
+    } else {
+      return res.status(403).json({ success: false, message: 'Role noto‘g‘ri.' });
     }
 
-    // Get total count
-    const countQuery = `SELECT COUNT(*) FROM contracts c ${whereClause}`;
-    const countResult = await pool.query(countQuery, queryParams);
-    const total = parseInt(countResult.rows[0].count);
+    if (status) {
+      where.push(`c.status = $${i++}`);
+      params.push(status);
+    }
 
-    // Get contracts
-    const contractsQuery = `
-      SELECT 
+    const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+    const countRes = await pool.query(
+      `SELECT COUNT(*) FROM contracts c ${whereClause}`,
+      params
+    );
+    const total = parseInt(countRes.rows[0].count, 10);
+
+    const listRes = await pool.query(
+      `
+      SELECT
         c.*,
-        u_client.first_name as client_first_name,
-        u_client.last_name as client_last_name,
-        u_freelancer.first_name as freelancer_first_name,
-        u_freelancer.last_name as freelancer_last_name,
-        pr.title as project_title
+        j.title AS job_title,
+        j.status AS job_status,
+        uc.first_name AS client_first_name,
+        uc.last_name  AS client_last_name,
+        uf.first_name AS freelancer_first_name,
+        uf.last_name  AS freelancer_last_name
       FROM contracts c
-      JOIN users u_client ON c.client_id = u_client.id
-      JOIN users u_freelancer ON c.freelancer_id = u_freelancer.id
-      JOIN projects pr ON c.project_id = pr.id
+      JOIN jobs j ON j.id = c.job_id
+      JOIN users uc ON uc.id = c.client_id
+      JOIN users uf ON uf.id = c.freelancer_id
       ${whereClause}
       ORDER BY c.created_at DESC
-      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
-    `;
-    queryParams.push(parseInt(limit), offset);
+      LIMIT $${i} OFFSET $${i + 1}
+      `,
+      [...params, parseInt(limit), offset]
+    );
 
-    const contractsResult = await pool.query(contractsQuery, queryParams);
-
-    res.json({
+    return res.json({
       success: true,
       data: {
-        contracts: contractsResult.rows,
+        contracts: listRes.rows,
         pagination: {
           page: parseInt(page),
           limit: parseInt(limit),
@@ -334,7 +437,7 @@ const getMyContracts = async (req, res) => {
     });
   } catch (error) {
     console.error('Get my contracts error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Shartnomalarni olishda xato yuz berdi.',
       error: error.message
@@ -344,97 +447,53 @@ const getMyContracts = async (req, res) => {
 
 /**
  * PUT /contracts/:id
- * Update contract (milestones, dates, etc.)
+ * Sizning schema’da contract’da start_date/end_date/milestones JSON yo‘q.
+ * Shu sabab: faqat ADMIN status o‘zgartirsin (xavfsiz).
  */
 const updateContract = async (req, res) => {
   try {
     const { id } = req.params;
-    const userId = req.user.id;
-    const userRole = req.user.role;
+    const role = req.user.role;
 
-    // Check if contract exists
-    const contractCheck = await pool.query(
-      'SELECT client_id, freelancer_id, status FROM contracts WHERE id = $1',
-      [id]
-    );
-
-    if (contractCheck.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Shartnoma topilmadi.'
-      });
-    }
-
-    const contract = contractCheck.rows[0];
-
-    // Check if user is part of contract
-    if (contract.client_id !== userId && contract.freelancer_id !== userId) {
+    if (role !== 'admin') {
       return res.status(403).json({
         success: false,
-        message: 'Siz bu shartnomaning qismi emassiz.'
+        message: 'Contractni update qilish (manual) faqat admin uchun.'
       });
     }
 
-    if (contract.status !== 'active') {
-      return res.status(400).json({
-        success: false,
-        message: 'Faqat "active" statusdagi shartnomalarni yangilash mumkin.'
-      });
+    const { status } = req.body;
+    if (!status) {
+      return res.status(400).json({ success: false, message: 'status yuboring.' });
     }
 
-    const {
-      start_date,
-      end_date,
-      milestones
-    } = req.body;
-
-    // Build update query
-    const updateFields = [];
-    const updateValues = [];
-    let paramIndex = 1;
-
-    if (start_date !== undefined) {
-      updateFields.push(`start_date = $${paramIndex++}`);
-      updateValues.push(start_date);
-    }
-    if (end_date !== undefined) {
-      updateFields.push(`end_date = $${paramIndex++}`);
-      updateValues.push(end_date);
-    }
-    if (milestones !== undefined) {
-      updateFields.push(`milestones = $${paramIndex++}`);
-      updateValues.push(JSON.stringify(milestones));
+    const allowed = ['active', 'completed', 'cancelled', 'disputed'];
+    if (!allowed.includes(normalizeStatus(status))) {
+      return res.status(400).json({ success: false, message: 'status noto‘g‘ri.' });
     }
 
-    if (updateFields.length === 0) {
-      return res.status(400).json({
-        success: false,
-        message: 'Yangilanish uchun hech bo\'lmaganda bitta maydon kerak.'
-      });
-    }
-
-    updateFields.push(`updated_at = CURRENT_TIMESTAMP`);
-    updateValues.push(id);
-
-    const updateQuery = `
-      UPDATE contracts 
-      SET ${updateFields.join(', ')}
-      WHERE id = $${paramIndex}
+    const r = await pool.query(
+      `
+      UPDATE contracts
+      SET status = $1
+      WHERE id = $2
       RETURNING *
-    `;
+      `,
+      [normalizeStatus(status), id]
+    );
 
-    const result = await pool.query(updateQuery, updateValues);
+    if (r.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Shartnoma topilmadi.' });
+    }
 
-    res.json({
+    return res.json({
       success: true,
-      message: 'Shartnoma muvaffaqiyatli yangilandi!',
-      data: {
-        contract: result.rows[0]
-      }
+      message: 'Contract yangilandi.',
+      data: { contract: r.rows[0] }
     });
   } catch (error) {
     console.error('Update contract error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Shartnomani yangilashda xato yuz berdi.',
       error: error.message
@@ -443,248 +502,361 @@ const updateContract = async (req, res) => {
 };
 
 /**
- * POST /contracts/:id/complete
- * Mark contract as completed
+ * POST /contracts/:id/complete (client)
  */
-const completeContract = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const userId = req.user.id;
-    const userRole = req.user.role;
+// contractController.js
+const normalizeStatus = (s) => (s ? String(s).toLowerCase() : null);
 
-    // Get contract
-    const contractResult = await pool.query(
-      'SELECT client_id, freelancer_id, status FROM contracts WHERE id = $1',
-      [id]
+const PLATFORM_USER_ID = process.env.PLATFORM_USER_ID; // platform balance uchun
+const PLATFORM_FEE_PCT = Number(process.env.PLATFORM_FEE_PCT || 10);
+
+async function ensureBalanceRow(qClient, userId) {
+  await qClient.query(
+    `INSERT INTO user_balances (user_id)
+     VALUES ($1)
+     ON CONFLICT (user_id) DO NOTHING`,
+    [userId]
+  );
+}
+
+const completeContract = async (req, res) => {
+  const client = await pool.connect();
+  try {
+    const { id: contractId } = req.params;
+    const userId = req.user.id;
+
+    if (!PLATFORM_USER_ID) {
+      return res.status(500).json({
+        success: false,
+        message: "PLATFORM_USER_ID .env da yo‘q (fee uchun kerak).",
+      });
+    }
+
+    await client.query("BEGIN");
+
+    // contract lock
+    const cRes = await client.query(
+      `SELECT id, job_id, client_id, freelancer_id, total_amount, status
+       FROM contracts
+       WHERE id=$1
+       FOR UPDATE`,
+      [contractId]
     );
 
-    if (contractResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Shartnoma topilmadi.'
-      });
+    if (!cRes.rows.length) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ success: false, message: "Shartnoma topilmadi." });
     }
 
-    const contract = contractResult.rows[0];
+    const c = cRes.rows[0];
 
-    // Only client can complete contract
-    if (userRole !== 'client' || contract.client_id !== userId) {
-      return res.status(403).json({
-        success: false,
-        message: 'Faqat client shartnomani yakunlashi mumkin.'
-      });
+    if (String(c.client_id) !== String(userId)) {
+      await client.query("ROLLBACK");
+      return res.status(403).json({ success: false, message: "Faqat client yakunlay oladi." });
     }
 
-    if (contract.status !== 'active') {
+    if (normalizeStatus(c.status) !== "active") {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ success: false, message: "Faqat active contract yakunlanadi." });
+    }
+
+    const gross = Number(c.total_amount) || 0;
+    if (gross <= 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ success: false, message: "Contract total_amount noto‘g‘ri." });
+    }
+
+    const fee = Math.max(0, Math.round((gross * PLATFORM_FEE_PCT) / 100));
+    const net = Math.max(0, gross - fee);
+
+    // balances ensure
+    await ensureBalanceRow(client, c.client_id);
+    await ensureBalanceRow(client, c.freelancer_id);
+    await ensureBalanceRow(client, PLATFORM_USER_ID);
+
+    // client escrow lock
+    const escrowR = await client.query(
+      `SELECT escrow_balance
+       FROM user_balances
+       WHERE user_id = $1
+       FOR UPDATE`,
+      [c.client_id]
+    );
+
+    const escrowBal = Number(escrowR.rows[0]?.escrow_balance ?? 0);
+    if (escrowBal < gross) {
+      await client.query("ROLLBACK");
       return res.status(400).json({
         success: false,
-        message: 'Faqat "active" statusdagi shartnomalarni yakunlash mumkin.'
+        message: "Escrowda yetarli mablag‘ yo‘q. Accept paytida hold bo‘lishi kerak edi.",
       });
     }
 
-    // Start transaction
-    await pool.query('BEGIN');
+    // ✅ 1) client escrowdan yechamiz
+    await client.query(
+      `UPDATE user_balances
+       SET escrow_balance = escrow_balance - $1,
+           total_spent = COALESCE(total_spent,0) + $1,
+           updated_at = NOW()
+       WHERE user_id = $2`,
+      [gross, c.client_id]
+    );
 
-    try {
-      // Update contract status
-      await pool.query(
-        'UPDATE contracts SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-        ['completed', id]
+    // ✅ 2) freelancergа net qo‘shamiz
+    if (net > 0) {
+      await client.query(
+        `UPDATE user_balances
+         SET available_balance = available_balance + $1,
+             total_earned = COALESCE(total_earned,0) + $1,
+             updated_at = NOW()
+         WHERE user_id = $2`,
+        [net, c.freelancer_id]
       );
-
-      // Update project status
-      await pool.query(
-        `UPDATE projects SET status = $1, updated_at = CURRENT_TIMESTAMP 
-         WHERE id = (SELECT project_id FROM contracts WHERE id = $2)`,
-        ['completed', id]
-      );
-
-      await pool.query('COMMIT');
-
-      res.json({
-        success: true,
-        message: 'Shartnoma yakunlandi!'
-      });
-    } catch (error) {
-      await pool.query('ROLLBACK');
-      throw error;
     }
-  } catch (error) {
-    console.error('Complete contract error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Shartnomani yakunlashda xato yuz berdi.',
-      error: error.message
+
+    // ✅ 3) platform fee
+    if (fee > 0) {
+      await client.query(
+        `UPDATE user_balances
+         SET available_balance = available_balance + $1,
+             updated_at = NOW()
+         WHERE user_id = $2`,
+        [fee, PLATFORM_USER_ID]
+      );
+    }
+
+    // ✅ 4) ledger tx: escrow_release (freelancer user_id bilan)
+    const releaseTxR = await client.query(
+      `
+      INSERT INTO transactions (user_id, type, amount, currency, gateway, status, metadata, job_id, contract_id, created_at, updated_at)
+      VALUES ($1,'escrow_release',$2,'UZS','internal','completed',$3,$4,$5,NOW(),NOW())
+      RETURNING *
+      `,
+      [
+        c.freelancer_id,
+        net,
+        JSON.stringify({
+          contract_id: String(contractId),
+          job_id: String(c.job_id),
+          from_client: String(c.client_id),
+          gross_amount: gross,
+          fee_amount: fee,
+          fee_pct: PLATFORM_FEE_PCT,
+          reason: "auto_release_on_complete",
+        }),
+        c.job_id,
+        contractId,
+      ]
+    );
+
+    const releaseTx = releaseTxR.rows[0];
+
+    // ✅ 5) fee tx
+    let feeTx = null;
+    if (fee > 0) {
+      const feeTxR = await client.query(
+        `
+        INSERT INTO transactions (user_id, type, amount, currency, gateway, status, metadata, job_id, contract_id, created_at, updated_at)
+        VALUES ($1,'fee',$2,'UZS','internal','completed',$3,$4,$5,NOW(),NOW())
+        RETURNING *
+        `,
+        [
+          PLATFORM_USER_ID,
+          fee,
+          JSON.stringify({
+            release_tx_id: String(releaseTx.id),
+            contract_id: String(contractId),
+            job_id: String(c.job_id),
+            from_client: String(c.client_id),
+            freelancer_id: String(c.freelancer_id),
+            gross_amount: gross,
+            fee_pct: PLATFORM_FEE_PCT,
+          }),
+          c.job_id,
+          contractId,
+        ]
+      );
+      feeTx = feeTxR.rows[0];
+    }
+
+    // ✅ 6) contract & job completed
+    await client.query(`UPDATE contracts SET status='completed', completed_at=NOW(), updated_at=NOW() WHERE id=$1`, [
+      contractId,
+    ]);
+
+    await client.query(`UPDATE jobs SET status='completed', updated_at=NOW() WHERE id=$1`, [c.job_id]);
+
+    await client.query("COMMIT");
+
+    return res.json({
+      success: true,
+      message: "Shartnoma yakunlandi! Escrow freelancerga o‘tdi, fee platformaga yechildi.",
+      data: {
+        gross_amount: gross,
+        net_to_freelancer: net,
+        fee_amount: fee,
+        release_tx: releaseTx,
+        fee_tx: feeTx,
+      },
     });
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {}
+    console.error("Complete contract error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Shartnomani yakunlashda xato yuz berdi.",
+      error: error.message,
+    });
+  } finally {
+    client.release();
   }
 };
 
+
+
 /**
- * POST /contracts/:id/cancel
- * Cancel contract
+ * POST /contracts/:id/cancel (client yoki freelancer)
  */
 const cancelContract = async (req, res) => {
+  const client = await pool.connect();
   try {
     const { id } = req.params;
     const userId = req.user.id;
 
-    // Get contract
-    const contractResult = await pool.query(
-      'SELECT client_id, freelancer_id, status FROM contracts WHERE id = $1',
+    await client.query('BEGIN');
+
+    const cRes = await client.query(
+      `SELECT id, job_id, client_id, freelancer_id, status FROM contracts WHERE id=$1 LIMIT 1`,
       [id]
     );
 
-    if (contractResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Shartnoma topilmadi.'
-      });
+    if (cRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ success: false, message: 'Shartnoma topilmadi.' });
     }
 
-    const contract = contractResult.rows[0];
+    const c = cRes.rows[0];
+    const isMember = c.client_id === userId || c.freelancer_id === userId;
 
-    // Check if user is part of contract
-    if (contract.client_id !== userId && contract.freelancer_id !== userId) {
-      return res.status(403).json({
-        success: false,
-        message: 'Siz bu shartnomaning qismi emassiz.'
-      });
+    if (!isMember) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ success: false, message: 'Ruxsat yo‘q.' });
     }
 
-    if (contract.status !== 'active') {
-      return res.status(400).json({
-        success: false,
-        message: 'Faqat "active" statusdagi shartnomalarni bekor qilish mumkin.'
-      });
+    if (normalizeStatus(c.status) !== 'active') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ success: false, message: 'Faqat active contract bekor qilinadi.' });
     }
 
-    // Start transaction
-    await pool.query('BEGIN');
+    await client.query(
+      `UPDATE contracts SET status='cancelled' WHERE id=$1`,
+      [id]
+    );
 
-    try {
-      // Update contract status
-      await pool.query(
-        'UPDATE contracts SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2',
-        ['cancelled', id]
-      );
+    // jobni cancelled qilamiz (xohlasangiz open qilib qaytarsangiz ham bo‘ladi)
+    await client.query(
+      `UPDATE jobs SET status='cancelled', updated_at=NOW() WHERE id=$1`,
+      [c.job_id]
+    );
 
-      // Update project status back to open
-      await pool.query(
-        `UPDATE projects SET status = $1, updated_at = CURRENT_TIMESTAMP 
-         WHERE id = (SELECT project_id FROM contracts WHERE id = $2)`,
-        ['open', id]
-      );
+    await client.query('COMMIT');
 
-      await pool.query('COMMIT');
-
-      res.json({
-        success: true,
-        message: 'Shartnoma bekor qilindi!'
-      });
-    } catch (error) {
-      await pool.query('ROLLBACK');
-      throw error;
-    }
+    return res.json({ success: true, message: 'Shartnoma bekor qilindi!' });
   } catch (error) {
+    try { await pool.query('ROLLBACK'); } catch {}
     console.error('Cancel contract error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Shartnomani bekor qilishda xato yuz berdi.',
       error: error.message
     });
+  } finally {
+    client.release();
   }
 };
 
 /**
  * PUT /contracts/:id/milestone
- * Update milestone status
+ * DB: milestones(id, contract_id, status, submitted_at, approved_at)
+ * Rule:
+ * - freelancer -> submitted
+ * - client -> approved / released
  */
 const updateMilestone = async (req, res) => {
   try {
-    const { id } = req.params;
-    const { milestone_id, status } = req.body;
+    const { id: contractId } = req.params;
     const userId = req.user.id;
-    const userRole = req.user.role;
+
+    const { milestone_id, status } = req.body;
 
     if (!milestone_id || !status) {
-      return res.status(400).json({
-        success: false,
-        message: 'Milestone_id va status kerak.'
-      });
+      return res.status(400).json({ success: false, message: 'milestone_id va status kerak.' });
     }
 
-    // Check milestone exists
-    const milestoneResult = await pool.query(
-      'SELECT * FROM contract_milestones WHERE id = $1 AND contract_id = $2',
-      [milestone_id, id]
+    const newStatus = normalizeStatus(status);
+    const allowed = ['pending', 'submitted', 'approved', 'released'];
+    if (!allowed.includes(newStatus)) {
+      return res.status(400).json({ success: false, message: 'Milestone status noto‘g‘ri.' });
+    }
+
+    // contract member check
+    const cRes = await pool.query(
+      `SELECT client_id, freelancer_id FROM contracts WHERE id=$1 LIMIT 1`,
+      [contractId]
+    );
+    if (cRes.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Shartnoma topilmadi.' });
+    }
+
+    const c = cRes.rows[0];
+
+    // milestone exists?
+    const mRes = await pool.query(
+      `SELECT id, status FROM milestones WHERE id=$1 AND contract_id=$2 LIMIT 1`,
+      [milestone_id, contractId]
+    );
+    if (mRes.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Milestone topilmadi.' });
+    }
+
+    // permissions
+    if (newStatus === 'submitted' && c.freelancer_id !== userId) {
+      return res.status(403).json({ success: false, message: 'Faqat freelancer submit qila oladi.' });
+    }
+    if (['approved', 'released'].includes(newStatus) && c.client_id !== userId) {
+      return res.status(403).json({ success: false, message: 'Faqat client approve/release qila oladi.' });
+    }
+
+    const sets = [`status=$1`];
+    const params = [newStatus];
+    let i = 2;
+
+    if (newStatus === 'submitted') sets.push(`submitted_at = NOW()`);
+    if (newStatus === 'approved') sets.push(`approved_at = NOW()`);
+    // released uchun alohida timestamp sizda yo‘q — kerak bo‘lsa qo‘shasiz
+
+    params.push(milestone_id, contractId);
+
+    const upd = await pool.query(
+      `
+      UPDATE milestones
+      SET ${sets.join(', ')}
+      WHERE id = $${i++} AND contract_id = $${i}
+      RETURNING *
+      `,
+      params
     );
 
-    if (milestoneResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Milestone topilmadi.'
-      });
-    }
-
-    // Check contract
-    const contractResult = await pool.query(
-      'SELECT client_id, freelancer_id FROM contracts WHERE id = $1',
-      [id]
-    );
-
-    if (contractResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Shartnoma topilmadi.'
-      });
-    }
-
-    const contract = contractResult.rows[0];
-
-    // Freelancer can deliver, client can accept/reject
-    if (status === 'delivered' && contract.freelancer_id !== userId) {
-      return res.status(403).json({
-        success: false,
-        message: 'Faqat freelancer deliver qilishi mumkin.'
-      });
-    }
-
-    if (['accepted', 'rejected'].includes(status) && contract.client_id !== userId) {
-      return res.status(403).json({
-        success: false,
-        message: 'Faqat client accept/reject qilishi mumkin.'
-      });
-    }
-
-    const updateFields = ['status = $1', 'updated_at = CURRENT_TIMESTAMP'];
-    const updateValues = [status];
-    let paramIndex = 2;
-
-    if (status === 'delivered') {
-      updateFields.push('delivered_at = CURRENT_TIMESTAMP');
-    }
-
-    if (status === 'accepted') {
-      updateFields.push('accepted_at = CURRENT_TIMESTAMP');
-    }
-
-    updateValues.push(milestone_id, id);
-    paramIndex += 2;
-
-    await pool.query(
-      `UPDATE contract_milestones 
-       SET ${updateFields.join(', ')}
-       WHERE id = $${paramIndex - 1} AND contract_id = $${paramIndex}`,
-      updateValues
-    );
-
-    res.json({
+    return res.json({
       success: true,
-      message: 'Milestone yangilandi!'
+      message: 'Milestone yangilandi!',
+      data: { milestone: upd.rows[0] }
     });
   } catch (error) {
     console.error('Update milestone error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Milestoneni yangilashda xato yuz berdi.',
       error: error.message
@@ -694,89 +866,132 @@ const updateMilestone = async (req, res) => {
 
 /**
  * POST /contracts/:id/dispute
- * Create dispute
+ * DB: disputes(raised_by, against_user, reason, evidence_files, status, raised_by_role, amount, currency, chat_id, contract_id)
  */
 const createDispute = async (req, res) => {
+  const client = await pool.connect();
   try {
-    const { id } = req.params;
+    const { id: contractId } = req.params;
     const userId = req.user.id;
-    const { reason, description } = req.body;
+    const role = req.user.role; // client | freelancer | admin
 
-    if (!reason || !description) {
-      return res.status(400).json({
-        success: false,
-        message: 'Reason va description kerak.'
-      });
+    const { reason, evidence_files, amount, currency } = req.body;
+
+    if (!reason) {
+      return res.status(400).json({ success: false, message: 'reason kerak.' });
     }
 
-    // Check contract
-    const contractResult = await pool.query(
-      'SELECT client_id, freelancer_id, status FROM contracts WHERE id = $1',
-      [id]
+    await client.query('BEGIN');
+
+    const cRes = await client.query(
+      `SELECT id, client_id, freelancer_id, status FROM contracts WHERE id=$1 LIMIT 1`,
+      [contractId]
     );
 
-    if (contractResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'Shartnoma topilmadi.'
-      });
+    if (cRes.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ success: false, message: 'Shartnoma topilmadi.' });
     }
 
-    const contract = contractResult.rows[0];
+    const c = cRes.rows[0];
+    const isMember = c.client_id === userId || c.freelancer_id === userId;
 
-    if (contract.client_id !== userId && contract.freelancer_id !== userId) {
-      return res.status(403).json({
-        success: false,
-        message: 'Siz bu shartnomaning qismi emassiz.'
-      });
+    // admin ham dispute ochmasin (odatda userlar ochadi)
+    if (!isMember) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ success: false, message: 'Ruxsat yo‘q.' });
     }
 
-    // Check if dispute already exists
-    const existingDispute = await pool.query(
-      'SELECT id FROM disputes WHERE contract_id = $1 AND status = $2',
-      [id, 'open']
+    // existing open/in_review dispute on contract
+    const existing = await client.query(
+      `
+      SELECT id
+      FROM disputes
+      WHERE contract_id = $1
+        AND status IN ('open','in_review')
+      LIMIT 1
+      `,
+      [contractId]
     );
 
-    if (existingDispute.rows.length > 0) {
+    if (existing.rows.length > 0) {
+      await client.query('ROLLBACK');
       return res.status(409).json({
         success: false,
-        message: 'Bu shartnoma uchun nizo allaqachon ochilgan.'
+        message: 'Bu contract uchun allaqachon dispute ochilgan.'
       });
     }
 
-    const result = await pool.query(
-      `INSERT INTO disputes (
-        contract_id, initiator_id, reason, description
-      ) VALUES ($1, $2, $3, $4)
-      RETURNING *`,
-      [id, userId, reason, description]
+    const againstUser = c.client_id === userId ? c.freelancer_id : c.client_id;
+
+    // chat_id (agar bor bo‘lsa)
+    const chatRes = await client.query(
+      `SELECT id FROM chats WHERE contract_id=$1 LIMIT 1`,
+      [contractId]
+    );
+    const chatId = chatRes.rows[0]?.id || null;
+
+    const filesJson = Array.isArray(evidence_files) ? evidence_files : [];
+
+    const dIns = await client.query(
+      `
+      INSERT INTO disputes (
+        raised_by,
+        against_user,
+        raised_by_role,
+        reason,
+        evidence_files,
+        status,
+        amount,
+        currency,
+        chat_id,
+        contract_id,
+        updated_at
+      )
+      VALUES ($1,$2,$3,$4,$5::jsonb,'open',$6,$7,$8,$9,NOW())
+      RETURNING *
+      `,
+      [
+        userId,
+        againstUser,
+        role,
+        reason,
+        JSON.stringify(filesJson),
+        amount != null ? Number(amount) : null,
+        currency || 'UZS',
+        chatId,
+        contractId
+      ]
     );
 
-    // Update contract status
-    await pool.query(
-      'UPDATE contracts SET status = $1 WHERE id = $2',
-      ['disputed', id]
+    // contract -> disputed
+    await client.query(
+      `UPDATE contracts SET status='disputed' WHERE id=$1`,
+      [contractId]
     );
 
-    res.status(201).json({
+    await client.query('COMMIT');
+
+    return res.status(201).json({
       success: true,
-      message: 'Nizo ochildi!',
-      data: {
-        dispute: result.rows[0]
-      }
+      message: 'Dispute ochildi!',
+      data: { dispute: dIns.rows[0] }
     });
   } catch (error) {
+    try { await pool.query('ROLLBACK'); } catch {}
     console.error('Create dispute error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
-      message: 'Nizo ochishda xato yuz berdi.',
+      message: 'Dispute ochishda xato yuz berdi.',
       error: error.message
     });
+  } finally {
+    client.release();
   }
 };
 
 module.exports = {
-  createContract,
+  // createContract,
   getContracts,
   getContractById,
   getMyContracts,
@@ -786,5 +1001,3 @@ module.exports = {
   updateMilestone,
   createDispute
 };
-
-

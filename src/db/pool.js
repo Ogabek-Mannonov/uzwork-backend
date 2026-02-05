@@ -1,27 +1,24 @@
+// src/db/pool.js
 require("dotenv").config();
 const { Pool } = require("pg");
 
+const isProd = process.env.NODE_ENV === "production";
+
+// Render / Neon / Supabase: ko‘pincha SSL kerak bo‘ladi.
+// Local: SSL kerak emas.
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: false, // LOCALDA SSL KERAK EMAS
+  ssl: isProd
+    ? { rejectUnauthorized: false }
+    : false,
 });
 
 pool.on("connect", () => {
-  console.log("✅ Local Postgres ulandi");
+  console.log("✅ Postgres ulandi");
 });
 
 pool.on("error", (err) => {
-  console.error("❌ Local DB error:", err.message);
+  console.error("❌ DB error:", err.message);
 });
-
-// Local test
-(async () => {
-  try {
-    const res = await pool.query("SELECT NOW()");
-    console.log("✅ Local DB test OK:", res.rows[0].now);
-  } catch (e) {
-    console.error("❌ Local DB test FAILED:", e.message);
-  }
-})();
 
 module.exports = pool;

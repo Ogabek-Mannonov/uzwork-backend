@@ -1,16 +1,94 @@
 // src/controllers/profileController.js
 const pool = require("../db/pool");
 
+// ---------------- helpers ----------------
+const isUUID = (v) =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+    String(v || "")
+  );
+
+const toJsonbOrNull = (val) => {
+  // undefined -> null (COALESCE bilan eski qiymat qoladi)
+  if (val === undefined) return null;
+  if (val === null) return null;
+  const arr = Array.isArray(val) ? val : [val];
+  return JSON.stringify(arr);
+};
+const toStrOrNull = (val) => (val === undefined ? null : val === null ? null : String(val));
+const toNumOrNull = (val) => {
+  if (val === undefined || val === null || val === "") return null;
+  const n = Number(val);
+  return Number.isFinite(n) ? n : null;
+};
+
+// -------- schema cache (1 marta tekshiradi) --------
+let schemaCache = null;
+
+async function loadSchemaCache() {
+  if (schemaCache) return schemaCache;
+
+  // users columns
+  const usersColsR = await pool.query(
+    `
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_schema='public' AND table_name='users'
+    `
+  );
+  const usersCols = new Set(usersColsR.rows.map((r) => r.column_name));
+
+  // reviews table exists?
+  const reviewsR = await pool.query(`SELECT to_regclass('public.reviews') AS t`);
+  const hasReviews = !!reviewsR.rows[0]?.t;
+
+  schemaCache = {
+    usersCols,
+    hasReviews,
+  };
+  return schemaCache;
+}
+
+function hasUserColumn(cache, col) {
+  return cache.usersCols.has(col);
+}
+
+// ---------------- controllers ----------------
 const getMyProfile = async (req, res) => {
   try {
-    const userId = req.user.id;
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: "Auth kerak." });
 
-    // user asosiy info
+    const cache = await loadSchemaCache();
+
+    // users select (faqat mavjud columnlarni qo‘shamiz)
+    const selectCols = [
+      "id",
+      "email",
+      "phone",
+      "first_name",
+      "last_name",
+      "role",
+      "username",
+      "avatar_url",
+      "is_email_verified",
+      "is_phone_verified",
+      "created_at",
+      "updated_at",
+    ];
+
+    if (hasUserColumn(cache, "is_kyc_verified")) selectCols.push("is_kyc_verified");
+    if (hasUserColumn(cache, "kyc_status")) selectCols.push("kyc_status");
+
+    // deleted_at column bo‘lmasa ham ketadi (WHERE ni shartli qilamiz)
+    const hasDeletedAt = hasUserColumn(cache, "deleted_at");
+
     const userRes = await pool.query(
-      `SELECT id, email, phone, first_name, last_name, role,
-              is_email_verified, is_phone_verified, is_kyc_verified, kyc_status
-       FROM users
-       WHERE id = $1`,
+      `
+      SELECT ${selectCols.join(", ")}
+      FROM users
+      WHERE id = $1
+      ${hasDeletedAt ? "AND deleted_at IS NULL" : ""}
+      `,
       [userId]
     );
 
@@ -19,43 +97,63 @@ const getMyProfile = async (req, res) => {
     }
 
     const user = userRes.rows[0];
-
     let roleProfile = null;
 
     if (user.role === "freelancer") {
       const fp = await pool.query(
-        `SELECT user_id, title, bio, hourly_rate, location, languages, skills, portfolio_urls,
-                rating, completed_jobs, avatar_url, cover_url, availability_status,
-                created_at, updated_at
-         FROM freelancer_profiles
-         WHERE user_id = $1`,
+        `
+        SELECT
+          user_id, title, bio, hourly_rate, location,
+          languages, skills, portfolio_urls,
+          rating, completed_jobs,
+          avatar_url, cover_url, availability_status,
+          created_at, updated_at
+        FROM freelancer_profiles
+        WHERE user_id = $1
+        `,
         [userId]
       );
       roleProfile = fp.rows[0] || null;
     } else if (user.role === "client") {
       const cp = await pool.query(
-        `SELECT user_id, company_name, company_website, company_size, rating, spent_total,
-                created_at, updated_at
-         FROM client_profiles
-         WHERE user_id = $1`,
+        `
+        SELECT
+          user_id, company_name, company_website, company_size,
+          rating, spent_total,
+          created_at, updated_at
+        FROM client_profiles
+        WHERE user_id = $1
+        `,
         [userId]
       );
       roleProfile = cp.rows[0] || null;
     }
 
-    // freelancer bo‘lsa review average
+    // reviews bo‘lmasa ham yiqilmaydi:
     let averageRating = null;
     let totalReviews = 0;
 
     if (user.role === "freelancer") {
-      const r = await pool.query(
-        `SELECT AVG(rating) AS avg_rating, COUNT(*) AS total_reviews
-         FROM reviews
-         WHERE reviewee_id = $1`,
-        [userId]
-      );
-      totalReviews = parseInt(r.rows[0].total_reviews, 10);
-      if (totalReviews > 0) averageRating = Number(r.rows[0].avg_rating).toFixed(2);
+      if (cache.hasReviews) {
+        const r = await pool.query(
+          `
+          SELECT
+            COALESCE(AVG(rating), 0) AS avg_rating,
+            COUNT(*)::int AS total_reviews
+          FROM reviews
+          WHERE reviewee_id = $1
+          `,
+          [userId]
+        );
+        totalReviews = r.rows[0]?.total_reviews ?? 0;
+        if (totalReviews > 0) averageRating = Number(r.rows[0].avg_rating).toFixed(2);
+      } else {
+        // fallback: freelancer_profiles.rating bo‘lsa shuni qaytaramiz
+        if (roleProfile?.rating != null) {
+          averageRating = Number(roleProfile.rating).toFixed(2);
+        }
+        totalReviews = 0;
+      }
     }
 
     return res.json({
@@ -64,15 +162,15 @@ const getMyProfile = async (req, res) => {
         user,
         profile: roleProfile,
         average_rating: averageRating,
-        total_reviews: totalReviews
-      }
+        total_reviews: totalReviews,
+      },
     });
   } catch (error) {
     console.error("Get my profile error:", error);
     return res.status(500).json({
       success: false,
       message: "Profilni olishda xato yuz berdi.",
-      error: error.message
+      error: error.message,
     });
   }
 };
@@ -81,10 +179,26 @@ const getUserProfile = async (req, res) => {
   try {
     const { userId } = req.params;
 
+    if (!isUUID(userId)) {
+      return res.status(400).json({ success: false, message: "Noto‘g‘ri userId (UUID)." });
+    }
+
+    const cache = await loadSchemaCache();
+
+    // Public profile => email/phone yo‘q
+    const selectCols = ["id", "first_name", "last_name", "role", "username", "avatar_url", "created_at"];
+
+    if (hasUserColumn(cache, "is_kyc_verified")) selectCols.push("is_kyc_verified");
+
+    const hasDeletedAt = hasUserColumn(cache, "deleted_at");
+
     const userRes = await pool.query(
-      `SELECT id, email, first_name, last_name, role, is_kyc_verified
-       FROM users
-       WHERE id = $1`,
+      `
+      SELECT ${selectCols.join(", ")}
+      FROM users
+      WHERE id = $1
+      ${hasDeletedAt ? "AND deleted_at IS NULL" : ""}
+      `,
       [userId]
     );
 
@@ -97,20 +211,29 @@ const getUserProfile = async (req, res) => {
 
     if (user.role === "freelancer") {
       const fp = await pool.query(
-        `SELECT user_id, title, bio, hourly_rate, location, languages, skills, portfolio_urls,
-                rating, completed_jobs, avatar_url, cover_url, availability_status,
-                created_at, updated_at
-         FROM freelancer_profiles
-         WHERE user_id = $1`,
+        `
+        SELECT
+          user_id, title, bio, hourly_rate, location,
+          languages, skills, portfolio_urls,
+          rating, completed_jobs,
+          avatar_url, cover_url, availability_status,
+          created_at, updated_at
+        FROM freelancer_profiles
+        WHERE user_id = $1
+        `,
         [userId]
       );
       roleProfile = fp.rows[0] || null;
     } else if (user.role === "client") {
       const cp = await pool.query(
-        `SELECT user_id, company_name, company_website, company_size, rating, spent_total,
-                created_at, updated_at
-         FROM client_profiles
-         WHERE user_id = $1`,
+        `
+        SELECT
+          user_id, company_name, company_website, company_size,
+          rating, spent_total,
+          created_at, updated_at
+        FROM client_profiles
+        WHERE user_id = $1
+        `,
         [userId]
       );
       roleProfile = cp.rows[0] || null;
@@ -120,14 +243,25 @@ const getUserProfile = async (req, res) => {
     let totalReviews = 0;
 
     if (user.role === "freelancer") {
-      const r = await pool.query(
-        `SELECT AVG(rating) AS avg_rating, COUNT(*) AS total_reviews
-         FROM reviews
-         WHERE reviewee_id = $1`,
-        [userId]
-      );
-      totalReviews = parseInt(r.rows[0].total_reviews, 10);
-      if (totalReviews > 0) averageRating = Number(r.rows[0].avg_rating).toFixed(2);
+      if (cache.hasReviews) {
+        const r = await pool.query(
+          `
+          SELECT
+            COALESCE(AVG(rating), 0) AS avg_rating,
+            COUNT(*)::int AS total_reviews
+          FROM reviews
+          WHERE reviewee_id = $1
+          `,
+          [userId]
+        );
+        totalReviews = r.rows[0]?.total_reviews ?? 0;
+        if (totalReviews > 0) averageRating = Number(r.rows[0].avg_rating).toFixed(2);
+      } else {
+        if (roleProfile?.rating != null) {
+          averageRating = Number(roleProfile.rating).toFixed(2);
+        }
+        totalReviews = 0;
+      }
     }
 
     return res.json({
@@ -136,23 +270,25 @@ const getUserProfile = async (req, res) => {
         user,
         profile: roleProfile,
         average_rating: averageRating,
-        total_reviews: totalReviews
-      }
+        total_reviews: totalReviews,
+      },
     });
   } catch (error) {
     console.error("Get user profile error:", error);
     return res.status(500).json({
       success: false,
       message: "Profilni olishda xato yuz berdi.",
-      error: error.message
+      error: error.message,
     });
   }
 };
 
 const updateMyProfile = async (req, res) => {
   try {
-    const userId = req.user.id;
-    const role = req.user.role;
+    const userId = req.user?.id;
+    const role = req.user?.role;
+
+    if (!userId) return res.status(401).json({ success: false, message: "Auth kerak." });
 
     if (role === "freelancer") {
       const {
@@ -165,15 +301,20 @@ const updateMyProfile = async (req, res) => {
         portfolio_urls,
         avatar_url,
         cover_url,
-        availability_status
+        availability_status,
       } = req.body;
 
       const result = await pool.query(
-        `INSERT INTO freelancer_profiles (
-          user_id, title, bio, hourly_rate, location, languages, skills, portfolio_urls,
+        `
+        INSERT INTO freelancer_profiles (
+          user_id, title, bio, hourly_rate, location,
+          languages, skills, portfolio_urls,
           avatar_url, cover_url, availability_status
-        ) VALUES (
-          $1, $2, $3, $4, $5, $6::jsonb, $7::jsonb, $8::jsonb, $9, $10, $11
+        )
+        VALUES (
+          $1, $2, $3, $4, $5,
+          $6::jsonb, $7::jsonb, $8::jsonb,
+          $9, $10, $11
         )
         ON CONFLICT (user_id) DO UPDATE SET
           title = COALESCE(EXCLUDED.title, freelancer_profiles.title),
@@ -187,51 +328,66 @@ const updateMyProfile = async (req, res) => {
           cover_url = COALESCE(EXCLUDED.cover_url, freelancer_profiles.cover_url),
           availability_status = COALESCE(EXCLUDED.availability_status, freelancer_profiles.availability_status),
           updated_at = NOW()
-        RETURNING *`,
+        RETURNING *
+        `,
         [
           userId,
-          title ?? null,
-          bio ?? null,
-          hourly_rate ?? null,
-          location ?? null,
-          JSON.stringify(languages ?? []),
-          JSON.stringify(skills ?? []),
-          JSON.stringify(portfolio_urls ?? []),
-          avatar_url ?? null,
-          cover_url ?? null,
-          availability_status ?? null
+          toStrOrNull(title),
+          toStrOrNull(bio),
+          toNumOrNull(hourly_rate),
+          toStrOrNull(location),
+          toJsonbOrNull(languages),
+          toJsonbOrNull(skills),
+          toJsonbOrNull(portfolio_urls),
+          toStrOrNull(avatar_url),
+          toStrOrNull(cover_url),
+          toStrOrNull(availability_status),
         ]
       );
 
-      return res.json({ success: true, message: "Freelancer profili yangilandi!", data: { profile: result.rows[0] } });
+      return res.json({
+        success: true,
+        message: "Freelancer profili yangilandi!",
+        data: { profile: result.rows[0] },
+      });
     }
 
     if (role === "client") {
       const { company_name, company_website, company_size } = req.body;
 
       const result = await pool.query(
-        `INSERT INTO client_profiles (
+        `
+        INSERT INTO client_profiles (
           user_id, company_name, company_website, company_size
-        ) VALUES ($1, $2, $3, $4)
+        )
+        VALUES ($1, $2, $3, $4)
         ON CONFLICT (user_id) DO UPDATE SET
           company_name = COALESCE(EXCLUDED.company_name, client_profiles.company_name),
           company_website = COALESCE(EXCLUDED.company_website, client_profiles.company_website),
           company_size = COALESCE(EXCLUDED.company_size, client_profiles.company_size),
           updated_at = NOW()
-        RETURNING *`,
-        [userId, company_name ?? null, company_website ?? null, company_size ?? null]
+        RETURNING *
+        `,
+        [userId, toStrOrNull(company_name), toStrOrNull(company_website), toStrOrNull(company_size)]
       );
 
-      return res.json({ success: true, message: "Client profili yangilandi!", data: { profile: result.rows[0] } });
+      return res.json({
+        success: true,
+        message: "Client profili yangilandi!",
+        data: { profile: result.rows[0] },
+      });
     }
 
-    return res.status(400).json({ success: false, message: "Role noto‘g‘ri yoki qo‘llab-quvvatlanmagan." });
+    return res.status(400).json({
+      success: false,
+      message: "Role noto‘g‘ri yoki qo‘llab-quvvatlanmagan.",
+    });
   } catch (error) {
     console.error("Update profile error:", error);
     return res.status(500).json({
       success: false,
       message: "Profilni yangilashda xato yuz berdi.",
-      error: error.message
+      error: error.message,
     });
   }
 };
