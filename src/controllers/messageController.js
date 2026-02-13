@@ -69,7 +69,10 @@ const ensureChatMemberOrAdmin = async (chatId, user) => {
   }
 
   // neither contract_id nor job_id
-  throw { status: 400, message: "Chat noto'g'ri konfiguratsiya qilingan (job_id/contract_id yo'q)." };
+  throw {
+    status: 400,
+    message: "Chat noto'g'ri konfiguratsiya qilingan (job_id/contract_id yo'q).",
+  };
 };
 
 const getPartnerForChat = async (chatRow, userId) => {
@@ -143,6 +146,122 @@ const getPartnerForChat = async (chatRow, userId) => {
   return null;
 };
 
+// ✅ NEW: get both participants + job info
+const getParticipantsForChat = async (chatRow) => {
+  const empty = { client: null, freelancer: null, job: null };
+
+  // 1) Contract chat
+  if (chatRow.contract_id) {
+    const res = await pool.query(
+      `
+      SELECT
+        ct.job_id,
+        j.title AS job_title,
+
+        cu.id AS client_id,
+        cu.first_name AS client_first_name,
+        cu.last_name AS client_last_name,
+        cu.username AS client_username,
+        cu.avatar_url AS client_avatar_url,
+
+        fu.id AS freelancer_id,
+        fu.first_name AS freelancer_first_name,
+        fu.last_name AS freelancer_last_name,
+        fu.username AS freelancer_username,
+        fu.avatar_url AS freelancer_avatar_url
+      FROM contracts ct
+      LEFT JOIN jobs j ON j.id = ct.job_id
+      JOIN users cu ON cu.id = ct.client_id
+      JOIN users fu ON fu.id = ct.freelancer_id
+      WHERE ct.id = $1
+      LIMIT 1
+      `,
+      [chatRow.contract_id]
+    );
+
+    const r = res.rows[0];
+    if (!r) return empty;
+
+    return {
+      client: {
+        id: r.client_id,
+        first_name: r.client_first_name,
+        last_name: r.client_last_name,
+        username: r.client_username,
+        avatar_url: r.client_avatar_url,
+        role: "client",
+      },
+      freelancer: {
+        id: r.freelancer_id,
+        first_name: r.freelancer_first_name,
+        last_name: r.freelancer_last_name,
+        username: r.freelancer_username,
+        avatar_url: r.freelancer_avatar_url,
+        role: "freelancer",
+      },
+      job: r.job_id ? { id: r.job_id, title: r.job_title || "" } : null,
+    };
+  }
+
+  // 2) Job chat
+  if (chatRow.job_id) {
+    const res = await pool.query(
+      `
+      SELECT
+        j.id AS job_id,
+        j.title AS job_title,
+
+        cu.id AS client_id,
+        cu.first_name AS client_first_name,
+        cu.last_name AS client_last_name,
+        cu.username AS client_username,
+        cu.avatar_url AS client_avatar_url,
+
+        fu.id AS freelancer_id,
+        fu.first_name AS freelancer_first_name,
+        fu.last_name AS freelancer_last_name,
+        fu.username AS freelancer_username,
+        fu.avatar_url AS freelancer_avatar_url
+      FROM jobs j
+      JOIN users cu ON cu.id = j.client_id
+      LEFT JOIN proposals p
+        ON p.job_id = j.id AND p.status = 'accepted'
+      LEFT JOIN users fu ON fu.id = p.freelancer_id
+      WHERE j.id = $1
+      LIMIT 1
+      `,
+      [chatRow.job_id]
+    );
+
+    const r = res.rows[0];
+    if (!r) return empty;
+
+    return {
+      client: {
+        id: r.client_id,
+        first_name: r.client_first_name,
+        last_name: r.client_last_name,
+        username: r.client_username,
+        avatar_url: r.client_avatar_url,
+        role: "client",
+      },
+      freelancer: r.freelancer_id
+        ? {
+            id: r.freelancer_id,
+            first_name: r.freelancer_first_name,
+            last_name: r.freelancer_last_name,
+            username: r.freelancer_username,
+            avatar_url: r.freelancer_avatar_url,
+            role: "freelancer",
+          }
+        : null,
+      job: { id: r.job_id, title: r.job_title || "" },
+    };
+  }
+
+  return empty;
+};
+
 // ---------- controllers ----------
 
 /**
@@ -154,8 +273,6 @@ const getChats = async (req, res) => {
     const userId = req.user.id;
     const isAdmin = req.user.role === "admin";
 
-    // Admin: all chats
-    // User: chats where user is contract participant OR job client OR accepted freelancer
     const chatsQuery = isAdmin
       ? `
         SELECT
@@ -245,7 +362,13 @@ const getChats = async (req, res) => {
         const partner = await getPartnerForChat(chat, userId);
         return {
           ...chat,
-          partner: partner || { first_name: "Noma'lum", last_name: "", username: null, avatar_url: null },
+          partner:
+            partner || {
+              first_name: "Noma'lum",
+              last_name: "",
+              username: null,
+              avatar_url: null,
+            },
         };
       })
     );
@@ -266,19 +389,21 @@ const getChats = async (req, res) => {
 
 /**
  * GET /messages/:chatId
- * Get chat history
+ * Get chat history + participants (client/freelancer) + job
  */
 const getChatHistory = async (req, res) => {
   try {
     const { chatId } = req.params;
     if (!isUuid(chatId)) {
-      return res.status(400).json({ success: false, message: "Noto'g'ri chat ID" });
+      return res
+        .status(400)
+        .json({ success: false, message: "Noto'g'ri chat ID" });
     }
 
     // ✅ membership check
     const chat = await ensureChatMemberOrAdmin(chatId, req.user);
 
-    // messages
+    // ✅ messages (ALIAS for frontend)
     const messagesQuery = `
       SELECT 
         m.id,
@@ -292,11 +417,12 @@ const getChatHistory = async (req, res) => {
         m.created_at,
         m.updated_at,
         m.deleted_at,
-        u.first_name,
-        u.last_name,
-        u.username,
-        u.avatar_url,
-        u.role AS sender_role
+
+        u.first_name  AS sender_first_name,
+        u.last_name   AS sender_last_name,
+        u.username    AS sender_username,
+        u.avatar_url  AS sender_avatar_url,
+        u.role        AS sender_role
       FROM messages m
       JOIN users u ON m.sender_id = u.id
       WHERE m.chat_id = $1
@@ -316,7 +442,8 @@ const getChatHistory = async (req, res) => {
       [chatId, req.user.id]
     );
 
-    const partner = await getPartnerForChat(chat, req.user.id);
+    // ✅ participants
+    const participants = await getParticipantsForChat(chat);
 
     return res.json({
       success: true,
@@ -331,7 +458,12 @@ const getChatHistory = async (req, res) => {
           job_id: chat.job_id,
           contract_id: chat.contract_id,
         },
-        partner: partner || null,
+        client: participants.client,
+        freelancer: participants.freelancer,
+        job: participants.job,
+
+        // optional
+        partner: await getPartnerForChat(chat, req.user.id),
       },
     });
   } catch (error) {
@@ -398,16 +530,17 @@ const sendMessage = async (req, res) => {
 
     const sender = senderRes.rows[0] || {};
 
+    // ✅ keep names consistent for frontend
     const enrichedMessage = {
       ...newMessage,
       sender_role: sender.role,
       sender_first_name: sender.first_name,
       sender_last_name: sender.last_name,
       sender_username: sender.username,
-      sender_avatar: sender.avatar_url,
+      sender_avatar_url: sender.avatar_url,
+      sender_is_admin: sender.role === "admin",
     };
 
-    // Socket.io
     const io = req.app.get("io");
     if (io) io.to(chat_id).emit("newMessage", enrichedMessage);
 
@@ -438,7 +571,6 @@ const markMessagesAsRead = async (req, res) => {
       return res.status(400).json({ success: false, message: "Noto'g'ri chat ID" });
     }
 
-    // ✅ membership check
     await ensureChatMemberOrAdmin(chatId, req.user);
 
     await pool.query(
@@ -481,7 +613,6 @@ const sendVoiceMessage = async (req, res) => {
       return res.status(400).json({ success: false, message: "voice_url kerak" });
     }
 
-    // ✅ membership + chat status
     const chat = await ensureChatMemberOrAdmin(chatId, req.user);
     if (chat.status === "blocked" && req.user.role !== "admin") {
       return res.status(403).json({ success: false, message: "Bu chat admin tomonidan bloklangan" });
@@ -509,7 +640,8 @@ const sendVoiceMessage = async (req, res) => {
       sender_first_name: sender.first_name,
       sender_last_name: sender.last_name,
       sender_username: sender.username,
-      sender_avatar: sender.avatar_url,
+      sender_avatar_url: sender.avatar_url,
+      sender_is_admin: sender.role === "admin",
     };
 
     const io = req.app.get("io");
@@ -532,7 +664,7 @@ const sendVoiceMessage = async (req, res) => {
 
 /**
  * POST /messages/:chatId/video-call
- * Video call: type='video_call', content = link (yoki file_url)
+ * Video call: type='video_call', content = link
  */
 const startVideoCall = async (req, res) => {
   try {
@@ -546,13 +678,11 @@ const startVideoCall = async (req, res) => {
       return res.status(400).json({ success: false, message: "video_call_link kerak." });
     }
 
-    // ✅ membership + chat status
     const chat = await ensureChatMemberOrAdmin(chatId, req.user);
     if (chat.status === "blocked" && req.user.role !== "admin") {
       return res.status(403).json({ success: false, message: "Bu chat admin tomonidan bloklangan" });
     }
 
-    // DBga mos: type='video_call', content=link
     const insertRes = await pool.query(
       `INSERT INTO messages (chat_id, sender_id, type, content, is_read, created_at)
        VALUES ($1, $2, 'video_call', $3, FALSE, NOW())
@@ -613,7 +743,6 @@ const editMessage = async (req, res) => {
       return res.status(400).json({ success: false, message: "O‘chirilgan xabarni edit qilib bo‘lmaydi" });
     }
 
-    // membership for safety (admin bypass inside ensure)
     await ensureChatMemberOrAdmin(msg.chat_id, req.user);
 
     const isAdmin = req.user.role === "admin";
@@ -688,7 +817,6 @@ const deleteMessage = async (req, res) => {
       return res.status(200).json({ success: true, message: "Xabar allaqachon o'chirilgan" });
     }
 
-    // membership check
     await ensureChatMemberOrAdmin(msg.chat_id, req.user);
 
     const isAdmin = req.user.role === "admin";
@@ -747,7 +875,6 @@ const updateChatStatus = async (req, res) => {
       return res.status(404).json({ success: false, message: "Chat topilmadi" });
     }
 
-    // optional socket broadcast
     const io = req.app.get("io");
     if (io) io.to(id).emit("chatStatusUpdated", { chatId: id, status });
 
@@ -761,7 +888,6 @@ const updateChatStatus = async (req, res) => {
     });
   }
 };
-
 
 module.exports = {
   getChats,
