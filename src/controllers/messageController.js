@@ -740,7 +740,7 @@ const editMessage = async (req, res) => {
     const msg = msgRes.rows[0];
 
     if (msg.deleted_at) {
-      return res.status(400).json({ success: false, message: "O‘chirilgan xabarni edit qilib bo‘lmaydi" });
+      return res.status(400).json({ success: false, message: "O'chirilgan xabarni edit qilib bo'lmaydi" });
     }
 
     await ensureChatMemberOrAdmin(msg.chat_id, req.user);
@@ -860,7 +860,7 @@ const updateChatStatus = async (req, res) => {
 
     const { status } = req.body; // active | blocked
     if (!["active", "blocked"].includes(status)) {
-      return res.status(400).json({ success: false, message: "Noto‘g‘ri status" });
+      return res.status(400).json({ success: false, message: "Noto'g'ri status" });
     }
 
     const result = await pool.query(
@@ -883,7 +883,7 @@ const updateChatStatus = async (req, res) => {
     console.error("Chat status update error:", err.stack || err);
     return res.status(500).json({
       success: false,
-      message: "Chat statusini o‘zgartirishda xato",
+      message: "Chat statusini o'zgartirishda xato",
       error: err.message,
     });
   }
