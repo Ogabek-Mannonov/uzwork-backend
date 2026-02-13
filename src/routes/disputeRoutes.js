@@ -7,8 +7,8 @@ const { isAdmin } = require("../controllers/adminController");
 const {
   createDispute,
   getMyDisputes,
-  getDisputes,       // admin list
-  getDisputeById,    // admin detail
+  getDisputes,
+  getDisputeById,
   updateDisputeStatus,
   resolveDispute,
 } = require("../controllers/disputeController");

@@ -17,18 +17,34 @@ const safeJsonArray = (v) => {
   return [];
 };
 
+const logDisputeAction = async (client, { dispute_id, actor_id, action, meta, from_status, to_status }) => {
+  // dispute_actions: dispute_id NOT NULL, actor_id NOT NULL, meta NOT NULL DEFAULT {}
+  await client.query(
+    `
+    INSERT INTO dispute_actions (dispute_id, actor_id, action, meta, from_status, to_status, created_at)
+    VALUES ($1, $2, $3, $4::jsonb, $5, $6, NOW())
+    `,
+    [
+      dispute_id,
+      actor_id,
+      action,
+      JSON.stringify(meta || {}),
+      from_status || null,
+      to_status || null,
+    ]
+  );
+};
+
 // =========================
 // POST /disputes
 // Body: { chat_id, reason, evidence_files?: [], amount?: number, currency?: "UZS" }
-// contract_id ni chatdan olamiz
-// against_user ni contractdan topamiz
 // =========================
 const createDispute = async (req, res) => {
+  const client = await pool.connect();
   try {
     const userId = req.user?.id;
     const role = normalizeRole(req.user?.role);
 
-    // faqat client/freelancer
     if (!["client", "freelancer"].includes(role)) {
       return res.status(403).json({
         success: false,
@@ -45,77 +61,55 @@ const createDispute = async (req, res) => {
       });
     }
 
-    // 1) chatni topamiz: contract_id, job_id
-    const chatQ = await pool.query(
-      `SELECT id, contract_id, job_id
-       FROM chats
-       WHERE id = $1`,
+    await client.query("BEGIN");
+
+    // 1) chatni topamiz
+    const chatQ = await client.query(
+      `SELECT id, contract_id, job_id FROM chats WHERE id = $1`,
       [chat_id]
     );
-
     if (chatQ.rowCount === 0) {
+      await client.query("ROLLBACK");
       return res.status(404).json({ success: false, message: "Chat topilmadi." });
     }
 
-    const chat = chatQ.rows[0];
-    const contractId = chat.contract_id;
-
+    const contractId = chatQ.rows[0].contract_id;
     if (!contractId) {
+      await client.query("ROLLBACK");
       return res.status(400).json({
         success: false,
         message: "Bu chat contractga ulangan emas (chats.contract_id NULL).",
       });
     }
 
-    // 2) contractdan client/freelancer ni olamiz
-    const contractQ = await pool.query(
-      `SELECT id, client_id, freelancer_id, total_amount
-       FROM contracts
-       WHERE id = $1`,
+    // 2) contractdan client/freelancer
+    const contractQ = await client.query(
+      `SELECT id, client_id, freelancer_id, total_amount FROM contracts WHERE id = $1`,
       [contractId]
     );
-
     if (contractQ.rowCount === 0) {
+      await client.query("ROLLBACK");
       return res.status(404).json({ success: false, message: "Contract topilmadi." });
     }
 
     const contract = contractQ.rows[0];
 
-    // 3) bu user shu contract ishtirokchisimi?
     const isParticipant =
       String(contract.client_id) === String(userId) ||
       String(contract.freelancer_id) === String(userId);
 
     if (!isParticipant) {
+      await client.query("ROLLBACK");
       return res.status(403).json({
         success: false,
         message: "Siz bu chat/contract ishtirokchisi emassiz.",
       });
     }
 
-    // 4) against_user aniqlaymiz
-    const againstUser =
-      role === "client" ? contract.freelancer_id : contract.client_id;
+    const againstUser = role === "client" ? contract.freelancer_id : contract.client_id;
 
-    // 5) shu contract uchun open dispute bor-yo‘qligini tekshiramiz
-    const existing = await pool.query(
-      `SELECT id
-       FROM disputes
-       WHERE contract_id = $1
-         AND status IN ('open','in_review')
-       LIMIT 1`,
-      [contractId]
-    );
-
-    if (existing.rowCount > 0) {
-      return res.status(409).json({
-        success: false,
-        message: "Bu contract uchun dispute allaqachon ochilgan.",
-      });
-    }
-
-    // amount/currency: yuborilmasa contract.total_amount
-    const finalCurrency = currency || "UZS";
+    // amount/currency
+    const finalCurrency = (currency && String(currency).trim()) ? String(currency).trim() : "UZS";
     const finalAmount =
       amount != null
         ? Number(amount)
@@ -123,25 +117,26 @@ const createDispute = async (req, res) => {
         ? Math.round(Number(contract.total_amount))
         : null;
 
+    if (finalAmount != null && (!Number.isFinite(finalAmount) || finalAmount <= 0)) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({ success: false, message: "amount noto'g'ri." });
+    }
+
     const evidenceArr = safeJsonArray(evidence_files);
 
-    const ins = await pool.query(
-      `INSERT INTO disputes (
-        raised_by,
-        raised_by_role,
-        against_user,
-        chat_id,
-        contract_id,
-        reason,
-        evidence_files,
-        status,
-        amount,
-        currency,
-        created_at,
-        updated_at
+    // ✅ Insert (unique partial index contract bo'yicha bitta aktiv dispute ushlab qoladi)
+    const ins = await client.query(
+      `
+      INSERT INTO disputes (
+        raised_by, raised_by_role, against_user,
+        chat_id, contract_id,
+        reason, evidence_files,
+        status, amount, currency,
+        created_at, updated_at
       )
       VALUES ($1,$2,$3,$4,$5,$6,$7::jsonb,'open',$8,$9,NOW(),NOW())
-      RETURNING *`,
+      RETURNING *
+      `,
       [
         userId,
         role,
@@ -155,17 +150,43 @@ const createDispute = async (req, res) => {
       ]
     );
 
+    const dispute = ins.rows[0];
+
+    // audit log
+    await logDisputeAction(client, {
+      dispute_id: dispute.id,
+      actor_id: userId,
+      action: "status_changed", // yoki "opened" deb kengaytirasiz (check constraintga qarab)
+      meta: { reason: "dispute_created" },
+      from_status: null,
+      to_status: "open",
+    });
+
+    await client.query("COMMIT");
+
     return res.status(201).json({
       success: true,
-      data: { dispute: ins.rows[0] },
+      data: { dispute },
     });
   } catch (error) {
+    await client.query("ROLLBACK");
+
+    // unique violation => allaqachon open/in_review dispute bor
+    if (error.code === "23505") {
+      return res.status(409).json({
+        success: false,
+        message: "Bu contract uchun dispute allaqachon ochilgan (active).",
+      });
+    }
+
     console.error("Create dispute error:", error);
     return res.status(500).json({
       success: false,
       message: "Nizo yaratishda xato.",
       error: error.message,
     });
+  } finally {
+    client.release();
   }
 };
 
@@ -190,14 +211,12 @@ const getDisputes = async (req, res) => {
       params.push(status);
     }
 
-    // total count
     const countQ = await pool.query(
       `SELECT COUNT(*)::int AS c FROM disputes d ${where}`,
       params
     );
     const total = countQ.rows[0]?.c ?? 0;
 
-    // list (client/freelancer ni contractdan olamiz)
     const q = await pool.query(
       `
       SELECT
@@ -254,7 +273,7 @@ const getDisputes = async (req, res) => {
 
 // =========================
 // GET /disputes/my (client/freelancer)
-// user ishtirok etgan hammasi: raised_by yoki against_user
+// ✅ (keyin pagination qo'shasiz)
 // =========================
 const getMyDisputes = async (req, res) => {
   try {
@@ -283,14 +302,12 @@ const getMyDisputes = async (req, res) => {
 
 // =========================
 // GET /disputes/:id (admin detail)
-// Return: dispute + client + freelancer + last 30 messages + milestones
-// NOTE: messages.sender_role ishlatilmaydi (schema’da bo‘lmasa ham)
+// ✅ endi dispute_actions timeline ham qo'shamiz
 // =========================
 const getDisputeById = async (req, res) => {
   try {
     const { id } = req.params;
 
-    // 1) dispute + chat + contract + users
     const dQ = await pool.query(
       `
       SELECT
@@ -328,11 +345,9 @@ const getDisputeById = async (req, res) => {
     }
 
     const row = dQ.rows[0];
-
     const contractId = row.contract_id || row.chat_contract_id || null;
     const chatId = row.chat_id;
 
-    // 2) last 30 messages (deleted_at IS NULL) + sender role users’dan olinadi
     let chatHistory = [];
     if (chatId) {
       const mQ = await pool.query(
@@ -362,11 +377,9 @@ const getDisputeById = async (req, res) => {
         `,
         [chatId]
       );
-
       chatHistory = (mQ.rows || []).reverse();
     }
 
-    // 3) milestones by contract_id
     let milestones = [];
     if (contractId) {
       const msQ = await pool.query(
@@ -380,6 +393,24 @@ const getDisputeById = async (req, res) => {
       );
       milestones = msQ.rows || [];
     }
+
+    // ✅ actions timeline
+    const aQ = await pool.query(
+      `
+      SELECT
+        a.id, a.dispute_id, a.actor_id, a.action, a.meta, a.from_status, a.to_status, a.created_at,
+        u.username AS actor_username,
+        u.first_name AS actor_first_name,
+        u.last_name  AS actor_last_name,
+        u.avatar_url AS actor_avatar_url,
+        u.role       AS actor_role
+      FROM dispute_actions a
+      LEFT JOIN users u ON u.id = a.actor_id AND u.deleted_at IS NULL
+      WHERE a.dispute_id = $1
+      ORDER BY a.created_at ASC
+      `,
+      [id]
+    );
 
     const client = row.client_id_full
       ? {
@@ -402,32 +433,15 @@ const getDisputeById = async (req, res) => {
       : null;
 
     const dispute = {
-      id: row.id,
-      chat_id: row.chat_id,
+      ...row,
       contract_id: contractId,
       job_id: row.job_id || null,
-
-      raised_by: row.raised_by,
-      raised_by_role: row.raised_by_role,
-      against_user: row.against_user,
-
-      reason: row.reason,
       evidence_files: safeJsonArray(row.evidence_files),
-      status: row.status,
-
-      amount: row.amount,
-      currency: row.currency,
-
-      resolution: row.resolution,
-      admin_notes: row.admin_notes,
-      created_at: row.created_at,
-      updated_at: row.updated_at,
-      resolved_at: row.resolved_at,
-
       client,
       freelancer,
       chatHistory,
       milestones,
+      actions: aQ.rows || [],
     };
 
     return res.json({ success: true, data: { dispute } });
@@ -443,23 +457,38 @@ const getDisputeById = async (req, res) => {
 
 // =========================
 // PATCH /disputes/:id/status  (admin)
-// allowed: open, in_review, resolved
+// ✅ resolved endi bu endpointdan bo'lmaydi
+// Body: { status: "open"|"in_review" }
 // =========================
 const updateDisputeStatus = async (req, res) => {
+  const client = await pool.connect();
   try {
+    const adminId = req.user?.id;
     const { id } = req.params;
     const { status } = req.body;
 
-    const allowed = ["open", "in_review", "resolved"];
+    const allowed = ["open", "in_review"];
     if (!allowed.includes(status)) {
-      return res.status(400).json({ success: false, message: "Status noto'g'ri." });
+      return res.status(400).json({
+        success: false,
+        message: "Status faqat 'open' yoki 'in_review' bo'lishi mumkin.",
+      });
     }
 
-    const q = await pool.query(
+    await client.query("BEGIN");
+
+    const curQ = await client.query(`SELECT id, status FROM disputes WHERE id = $1`, [id]);
+    if (curQ.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ success: false, message: "Dispute topilmadi." });
+    }
+
+    const fromStatus = curQ.rows[0].status;
+
+    const q = await client.query(
       `
       UPDATE disputes
       SET status = $1::varchar,
-          resolved_at = CASE WHEN $1 = 'resolved' THEN NOW() ELSE resolved_at END,
           updated_at = NOW()
       WHERE id = $2
       RETURNING *
@@ -467,65 +496,156 @@ const updateDisputeStatus = async (req, res) => {
       [status, id]
     );
 
-    if (q.rowCount === 0) {
-      return res.status(404).json({ success: false, message: "Dispute topilmadi." });
-    }
+    await logDisputeAction(client, {
+      dispute_id: id,
+      actor_id: adminId,
+      action: "status_changed",
+      meta: { by: "admin" },
+      from_status: fromStatus,
+      to_status: status,
+    });
+
+    await client.query("COMMIT");
 
     res.json({ success: true, data: { dispute: q.rows[0] } });
   } catch (error) {
+    await client.query("ROLLBACK");
     console.error("Update dispute status error:", error);
     res.status(500).json({
       success: false,
       message: "Status yangilashda xato.",
       error: error.message,
     });
+  } finally {
+    client.release();
   }
 };
 
 // =========================
 // POST /disputes/:id/resolve (admin)
-// Body: { resolution: "approved"|"rejected", admin_notes?: string }
-// status=resolved bo‘ladi
+// Body: {
+//   resolution: "approved"|"rejected",
+//   admin_notes?: string,
+//   payout_action?: "refund_to_client"|"release_to_freelancer"|"split"|"no_action",
+//   payout_amount?: number,
+//   payout_currency?: "UZS",
+//   winner_user_id?: uuid
+// }
 // =========================
 const resolveDispute = async (req, res) => {
+  const client = await pool.connect();
   try {
+    const adminId = req.user?.id;
     const { id } = req.params;
-    const { resolution, admin_notes } = req.body;
 
-    const allowed = ["approved", "rejected"];
-    if (!allowed.includes(resolution)) {
+    const {
+      resolution, // approved/rejected (legacy)
+      admin_notes,
+      payout_action,
+      payout_amount,
+      payout_currency,
+      winner_user_id,
+    } = req.body;
+
+    const allowedResolution = ["approved", "rejected"];
+    if (!allowedResolution.includes(resolution)) {
       return res.status(400).json({
         success: false,
         message: "resolution 'approved' yoki 'rejected' bo‘lishi kerak.",
       });
     }
 
-    const q = await pool.query(
+    const allowedActions = ["refund_to_client", "release_to_freelancer", "split", "no_action", null, undefined];
+    if (!allowedActions.includes(payout_action)) {
+      return res.status(400).json({
+        success: false,
+        message: "payout_action noto'g'ri.",
+      });
+    }
+
+    const pa =
+      payout_amount == null ? null : Number(payout_amount);
+
+    if (pa != null && (!Number.isFinite(pa) || pa <= 0)) {
+      return res.status(400).json({ success: false, message: "payout_amount noto'g'ri." });
+    }
+
+    const pc =
+      payout_currency == null ? null : String(payout_currency).trim();
+
+    await client.query("BEGIN");
+
+    const curQ = await client.query(
+      `SELECT id, status FROM disputes WHERE id = $1`,
+      [id]
+    );
+    if (curQ.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ success: false, message: "Dispute topilmadi." });
+    }
+
+    const fromStatus = curQ.rows[0].status;
+    if (fromStatus === "resolved") {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ success: false, message: "Dispute allaqachon resolved." });
+    }
+
+    const q = await client.query(
       `
       UPDATE disputes
       SET status = 'resolved',
           resolution = $1,
           admin_notes = $2,
           resolved_at = NOW(),
-          updated_at = NOW()
-      WHERE id = $3
+          updated_at = NOW(),
+          resolved_by = $3,
+          winner_user_id = $4,
+          payout_action = $5,
+          payout_amount = $6,
+          payout_currency = COALESCE($7, payout_currency, currency)
+      WHERE id = $8
       RETURNING *
       `,
-      [resolution, admin_notes || null, id]
+      [
+        resolution,
+        admin_notes || null,
+        adminId,
+        winner_user_id || null,
+        payout_action || null,
+        pa,
+        pc,
+        id,
+      ]
     );
 
-    if (q.rowCount === 0) {
-      return res.status(404).json({ success: false, message: "Dispute topilmadi." });
-    }
+    await logDisputeAction(client, {
+      dispute_id: id,
+      actor_id: adminId,
+      action: resolution === "approved" ? "approved" : "rejected",
+      meta: {
+        admin_notes: admin_notes || null,
+        payout_action: payout_action || null,
+        payout_amount: pa,
+        payout_currency: pc || null,
+        winner_user_id: winner_user_id || null,
+      },
+      from_status: fromStatus,
+      to_status: "resolved",
+    });
+
+    await client.query("COMMIT");
 
     res.json({ success: true, data: { dispute: q.rows[0] } });
   } catch (error) {
+    await client.query("ROLLBACK");
     console.error("Resolve dispute error:", error);
     res.status(500).json({
       success: false,
       message: "Resolve qilishda xato.",
       error: error.message,
     });
+  } finally {
+    client.release();
   }
 };
 
