@@ -193,6 +193,7 @@ const createDispute = async (req, res) => {
 // =========================
 // GET /disputes (admin list)
 // Query: status, page, limit
+// ✅ now includes raised_by_user object
 // =========================
 const getDisputes = async (req, res) => {
   try {
@@ -206,7 +207,8 @@ const getDisputes = async (req, res) => {
     const params = [];
     let i = 1;
 
-    if (status) {
+    // ✅ frontend status=all yuboradi — buni filter qilmaymiz
+    if (status && status !== "all") {
       where += ` AND d.status = $${i++}`;
       params.push(status);
     }
@@ -225,11 +227,21 @@ const getDisputes = async (req, res) => {
         c.client_id,
         c.freelancer_id,
 
+        -- ✅ Disputeni kim ochgan (raised_by)
+        ur.id AS raised_by_user_id,
+        ur.role AS raised_by_user_role,
+        ur.username AS raised_by_username,
+        ur.first_name AS raised_by_first_name,
+        ur.last_name AS raised_by_last_name,
+        ur.avatar_url AS raised_by_avatar_url,
+
+        -- client (contract participant)
         uc.username  AS client_username,
         uc.first_name AS client_first_name,
         uc.last_name  AS client_last_name,
         uc.avatar_url AS client_avatar_url,
 
+        -- freelancer (contract participant)
         uf.username  AS freelancer_username,
         uf.first_name AS freelancer_first_name,
         uf.last_name  AS freelancer_last_name,
@@ -238,6 +250,9 @@ const getDisputes = async (req, res) => {
       FROM disputes d
       LEFT JOIN chats ch ON ch.id = d.chat_id
       LEFT JOIN contracts c ON c.id = COALESCE(d.contract_id, ch.contract_id)
+
+      -- ✅ raised_by user
+      LEFT JOIN users ur ON ur.id = d.raised_by AND ur.deleted_at IS NULL
 
       LEFT JOIN users uc ON uc.id = c.client_id AND uc.deleted_at IS NULL
       LEFT JOIN users uf ON uf.id = c.freelancer_id AND uf.deleted_at IS NULL
@@ -249,10 +264,25 @@ const getDisputes = async (req, res) => {
       [...params, l, offset]
     );
 
-    res.json({
+    // ✅ rows ni normalize qilib, raised_by_user object yasab beramiz
+    const disputes = (q.rows || []).map((r) => ({
+      ...r,
+      raised_by_user: r.raised_by_user_id
+        ? {
+            id: r.raised_by_user_id,
+            role: r.raised_by_user_role || r.raised_by_role || null,
+            username: r.raised_by_username || null,
+            first_name: r.raised_by_first_name || null,
+            last_name: r.raised_by_last_name || null,
+            avatar_url: r.raised_by_avatar_url || null,
+          }
+        : null,
+    }));
+
+    return res.json({
       success: true,
       data: {
-        disputes: q.rows,
+        disputes,
         pagination: {
           page: p,
           limit: l,
@@ -263,13 +293,14 @@ const getDisputes = async (req, res) => {
     });
   } catch (error) {
     console.error("Get disputes error:", error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: "Nizolarni olishda xato.",
       error: error.message,
     });
   }
 };
+
 
 // =========================
 // GET /disputes/my (client/freelancer)
