@@ -97,7 +97,7 @@ const timeAgoUz = (date) => {
  * Dashboard uchun real statistika
  */
 const getDashboardStats = async (req, res) => {
-  const range = String(req.query.range || '30d');
+  const range = String(req.query.range || "30d");
   const rangeStart = getRangeStart(range);
   const prevStart = getPrevRangeStart(range);
 
@@ -111,9 +111,14 @@ const getDashboardStats = async (req, res) => {
   let topFreelancers = [];
   let recentActivity = [];
 
+  // ✅ NEW
+  let trends = null;
+  let funnel = null;
+  let alerts = [];
+
   try {
     // ===== TOTAL COUNTS =====
-    const totalUsersRes = await pool.query('SELECT COUNT(*)::int AS c FROM users');
+    const totalUsersRes = await pool.query("SELECT COUNT(*)::int AS c FROM users");
     stats.totalUsers = totalUsersRes.rows[0]?.c ?? 0;
 
     const freelancersRes = await pool.query("SELECT COUNT(*)::int AS c FROM users WHERE role='freelancer'");
@@ -136,25 +141,25 @@ const getDashboardStats = async (req, res) => {
 
     // ===== RANGE: new users/jobs =====
     const newUsersRes = await pool.query(
-      'SELECT COUNT(*)::int AS c FROM users WHERE created_at >= $1',
+      "SELECT COUNT(*)::int AS c FROM users WHERE created_at >= $1",
       [toIso(rangeStart)]
     );
     const newUsers = newUsersRes.rows[0]?.c ?? 0;
 
     const prevNewUsersRes = await pool.query(
-      'SELECT COUNT(*)::int AS c FROM users WHERE created_at >= $1 AND created_at < $2',
+      "SELECT COUNT(*)::int AS c FROM users WHERE created_at >= $1 AND created_at < $2",
       [toIso(prevStart), toIso(rangeStart)]
     );
     const prevNewUsers = prevNewUsersRes.rows[0]?.c ?? 0;
 
     const newJobsRes = await pool.query(
-      'SELECT COUNT(*)::int AS c FROM jobs WHERE created_at >= $1 AND deleted_at IS NULL',
+      "SELECT COUNT(*)::int AS c FROM jobs WHERE created_at >= $1 AND deleted_at IS NULL",
       [toIso(rangeStart)]
     );
     const newJobs = newJobsRes.rows[0]?.c ?? 0;
 
     const prevNewJobsRes = await pool.query(
-      'SELECT COUNT(*)::int AS c FROM jobs WHERE created_at >= $1 AND created_at < $2 AND deleted_at IS NULL',
+      "SELECT COUNT(*)::int AS c FROM jobs WHERE created_at >= $1 AND created_at < $2 AND deleted_at IS NULL",
       [toIso(prevStart), toIso(rangeStart)]
     );
     const prevNewJobs = prevNewJobsRes.rows[0]?.c ?? 0;
@@ -166,7 +171,6 @@ const getDashboardStats = async (req, res) => {
     stats.jobsGrowthPct = pct(newJobs, prevNewJobs);
 
     // ===== FINANCIAL METRICS =====
-    // GMV = escrow_release, Platform Revenue = fee, Deposit Volume = deposit
     const gmvRes = await pool.query(
       `SELECT COALESCE(SUM(amount),0)::numeric AS s
        FROM transactions
@@ -256,7 +260,9 @@ const getDashboardStats = async (req, res) => {
       GROUP BY status
     `);
     const map = {};
-    jobBreakRes.rows.forEach((x) => { map[x.status] = x.c; });
+    jobBreakRes.rows.forEach((x) => {
+      map[x.status] = x.c;
+    });
     breakdown.jobs = {
       open: map.open || 0,
       in_progress: map.in_progress || 0,
@@ -298,7 +304,7 @@ const getDashboardStats = async (req, res) => {
     finance.pendingWithdrawalsAmountLabel = formatMoneyUZS(finance.pendingWithdrawalsAmount);
 
     // ===== CHAT MONITORING =====
-    const totalChatsRes = await pool.query('SELECT COUNT(*)::int AS c FROM chats');
+    const totalChatsRes = await pool.query("SELECT COUNT(*)::int AS c FROM chats");
     chatStats.totalChats = totalChatsRes.rows[0]?.c ?? 0;
 
     const blockedChatsRes = await pool.query("SELECT COUNT(*)::int AS c FROM chats WHERE status='blocked'");
@@ -311,7 +317,6 @@ const getDashboardStats = async (req, res) => {
     `);
     chatStats.messagesLast24h = msg24Res.rows[0]?.c ?? 0;
 
-    // ⚠️ flagged column yo‘q → 0
     chatStats.suspiciousChats = 0;
 
     // ===== TOP CLIENTS =====
@@ -332,7 +337,8 @@ const getDashboardStats = async (req, res) => {
     topClients = topClientsRes.rows || [];
 
     // ===== TOP FREELANCERS =====
-    const topFreeRes = await pool.query(`
+    const topFreeRes = await pool.query(
+      `
       SELECT
         u.id,
         u.first_name,
@@ -346,7 +352,9 @@ const getDashboardStats = async (req, res) => {
       GROUP BY u.id
       ORDER BY messages_count DESC
       LIMIT 5
-    `, [toIso(rangeStart)]);
+    `,
+      [toIso(rangeStart)]
+    );
     topFreelancers = topFreeRes.rows || [];
 
     // ===== RECENT ACTIVITY =====
@@ -359,8 +367,8 @@ const getDashboardStats = async (req, res) => {
       LIMIT 5
     `);
     lastUsersRes.rows.forEach((u) => {
-      const name = `${u.first_name || ''} ${u.last_name || ''}`.trim() || u.username || 'User';
-      activities.push({ type: 'user_created', name, action: "Ro‘yxatdan o‘tdi", at: u.created_at });
+      const name = `${u.first_name || ""} ${u.last_name || ""}`.trim() || u.username || "User";
+      activities.push({ type: "user_created", name, action: "Ro‘yxatdan o‘tdi", at: u.created_at });
     });
 
     const lastJobsRes = await pool.query(`
@@ -372,11 +380,11 @@ const getDashboardStats = async (req, res) => {
       LIMIT 5
     `);
     lastJobsRes.rows.forEach((row) => {
-      const name = `${row.first_name || ''} ${row.last_name || ''}`.trim() || row.username || 'Client';
+      const name = `${row.first_name || ""} ${row.last_name || ""}`.trim() || row.username || "Client";
       activities.push({
-        type: 'job_created',
+        type: "job_created",
         name,
-        action: row.title ? `Yangi loyiha joylashtirdi (${row.title})` : 'Yangi loyiha joylashtirdi',
+        action: row.title ? `Yangi loyiha joylashtirdi (${row.title})` : "Yangi loyiha joylashtirdi",
         at: row.created_at,
       });
     });
@@ -388,7 +396,7 @@ const getDashboardStats = async (req, res) => {
       LIMIT 5
     `);
     lastDispRes.rows.forEach((row) => {
-      activities.push({ type: 'dispute_opened', name: 'Dispute', action: 'Yangi dispute ochildi', at: row.created_at });
+      activities.push({ type: "dispute_opened", name: "Dispute", action: "Yangi dispute ochildi", at: row.created_at });
     });
 
     const lastMilRes = await pool.query(`
@@ -399,9 +407,9 @@ const getDashboardStats = async (req, res) => {
     `);
     lastMilRes.rows.forEach((row) => {
       activities.push({
-        type: 'milestone',
-        name: 'Milestone',
-        action: row.status === 'pending' ? 'Milestone kutilmoqda (pending)' : `Milestone status: ${row.status}`,
+        type: "milestone",
+        name: "Milestone",
+        action: row.status === "pending" ? "Milestone kutilmoqda (pending)" : `Milestone status: ${row.status}`,
         at: row.created_at,
       });
     });
@@ -415,8 +423,8 @@ const getDashboardStats = async (req, res) => {
     `);
     lastTxRes.rows.forEach((row) => {
       activities.push({
-        type: 'payment',
-        name: 'Payment',
+        type: "payment",
+        name: "Payment",
         action: `${row.type} yakunlandi (${formatMoneyUZS(row.amount)})`,
         at: row.created_at,
       });
@@ -430,7 +438,7 @@ const getDashboardStats = async (req, res) => {
       LIMIT 5
     `);
     lastBlockedChatsRes.rows.forEach((row) => {
-      activities.push({ type: 'chat_blocked', name: 'Chat', action: 'Chat admin tomonidan bloklandi', at: row.created_at });
+      activities.push({ type: "chat_blocked", name: "Chat", action: "Chat admin tomonidan bloklandi", at: row.created_at });
     });
 
     recentActivity = activities
@@ -444,6 +452,143 @@ const getDashboardStats = async (req, res) => {
         type: a.type,
         at: a.at,
       }));
+
+    // =========================================================
+    // ✅ NEW: TRENDS (Charts uchun time-series)
+    // =========================================================
+    try {
+      const seriesRes = await pool.query(
+        `
+        WITH days AS (
+          SELECT generate_series(date_trunc('day', $1::timestamp),
+                                 date_trunc('day', NOW()),
+                                 interval '1 day') AS d
+        ),
+        gmv AS (
+          SELECT date_trunc('day', created_at) AS d, COALESCE(SUM(amount),0)::numeric AS s
+          FROM transactions
+          WHERE status='completed'
+            AND type='escrow_release'
+            AND created_at >= $1
+          GROUP BY 1
+        ),
+        rev AS (
+          SELECT date_trunc('day', created_at) AS d, COALESCE(SUM(amount),0)::numeric AS s
+          FROM transactions
+          WHERE status='completed'
+            AND type='fee'
+            AND created_at >= $1
+          GROUP BY 1
+        ),
+        dep AS (
+          SELECT date_trunc('day', created_at) AS d, COALESCE(SUM(amount),0)::numeric AS s
+          FROM transactions
+          WHERE status='completed'
+            AND type='deposit'
+            AND created_at >= $1
+          GROUP BY 1
+        ),
+        usr AS (
+          SELECT date_trunc('day', created_at) AS d, COUNT(*)::int AS c
+          FROM users
+          WHERE created_at >= $1
+          GROUP BY 1
+        )
+        SELECT
+          to_char(days.d, 'DD Mon') AS label,
+          COALESCE(gmv.s,0)::numeric AS gmv,
+          COALESCE(rev.s,0)::numeric AS revenue,
+          COALESCE(dep.s,0)::numeric AS deposits,
+          COALESCE(usr.c,0)::int AS users
+        FROM days
+        LEFT JOIN gmv ON gmv.d = days.d
+        LEFT JOIN rev ON rev.d = days.d
+        LEFT JOIN dep ON dep.d = days.d
+        LEFT JOIN usr ON usr.d = days.d
+        ORDER BY days.d ASC
+        `,
+        [toIso(rangeStart)]
+      );
+
+      const rows = seriesRes.rows || [];
+      trends = {
+        gmv: rows.map((r) => ({ label: r.label, value: Number(r.gmv) || 0 })),
+        platformRevenue: rows.map((r) => ({ label: r.label, value: Number(r.revenue) || 0 })),
+        deposits: rows.map((r) => ({ label: r.label, value: Number(r.deposits) || 0 })),
+        users: rows.map((r) => ({ label: r.label, value: Number(r.users) || 0 })),
+        // optional:
+        withdrawals: [],
+      };
+    } catch (e) {
+      // chart yo‘q bo‘lsa ham dashboard ishlayversin
+      trends = null;
+    }
+
+    // =========================================================
+    // ✅ NEW: FUNNEL (table nomlari boshqacha bo‘lsa yiqilmasin)
+    // =========================================================
+    try {
+      // Agar sizda proposals/contracts table bo‘lmasa: shu try error bo‘ladi va funnel=null qoladi
+      const postedRes = await pool.query(
+        `SELECT COUNT(*)::int AS c FROM jobs WHERE created_at >= $1 AND deleted_at IS NULL`,
+        [toIso(rangeStart)]
+      );
+
+      // ⚠️ bu ikki jadval nomi sizda boshqa bo‘lishi mumkin
+      const proposalsRes = await pool.query(
+        `SELECT COUNT(*)::int AS c FROM proposals WHERE created_at >= $1`,
+        [toIso(rangeStart)]
+      );
+      const contractsRes = await pool.query(
+        `SELECT COUNT(*)::int AS c FROM contracts WHERE created_at >= $1`,
+        [toIso(rangeStart)]
+      );
+
+      const completedRes = await pool.query(
+        `SELECT COUNT(*)::int AS c FROM jobs WHERE status='completed' AND created_at >= $1 AND deleted_at IS NULL`,
+        [toIso(rangeStart)]
+      );
+
+      funnel = {
+        posted: postedRes.rows[0]?.c ?? 0,
+        proposals: proposalsRes.rows[0]?.c ?? 0,
+        contracts: contractsRes.rows[0]?.c ?? 0,
+        completed: completedRes.rows[0]?.c ?? 0,
+      };
+    } catch (e) {
+      funnel = null;
+    }
+
+    // =========================================================
+    // ✅ NEW: ALERTS (Admin ogohlantirishlari)
+    // =========================================================
+    alerts = [];
+
+    if ((finance.pendingWithdrawals || 0) > 0) {
+      alerts.push({
+        type: "warning",
+        title: "Withdraw pending mavjud",
+        desc: `${finance.pendingWithdrawals} ta so‘rov • ${finance.pendingWithdrawalsAmountLabel}`,
+      });
+    }
+
+    if ((moderation.openDisputes || 0) > 0) {
+      alerts.push({
+        type: "danger",
+        title: "Ochiq nizolar bor",
+        desc: `${moderation.openDisputes} ta dispute open holatda`,
+      });
+    }
+
+    if ((chatStats.blockedChats || 0) > 0) {
+      alerts.push({
+        type: "info",
+        title: "Blocked chatlar",
+        desc: `${chatStats.blockedChats} ta chat bloklangan`,
+      });
+    }
+
+    // =========================================================
 
     return res.json({
       success: true,
@@ -467,10 +612,15 @@ const getDashboardStats = async (req, res) => {
         topClients,
         topFreelancers,
         recentActivity,
+
+        // ✅ NEW
+        trends,  // Dashboard charts
+        funnel,  // Job→Proposal→Contract→Completed
+        alerts,  // health alerts
       },
     });
   } catch (error) {
-    console.error('Dashboard error:', error);
+    console.error("Dashboard error:", error);
     return res.status(500).json({
       success: false,
       message: "Dashboard ma'lumotlarini olishda xato yuz berdi.",
@@ -478,6 +628,7 @@ const getDashboardStats = async (req, res) => {
     });
   }
 };
+
 
 /**
  * GET /admin/users
