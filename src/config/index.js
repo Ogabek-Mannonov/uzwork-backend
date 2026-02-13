@@ -16,7 +16,7 @@ module.exports = {
       process.env.JWT_SECRET || process.env.ACCESS_TOKEN_SECRET,
     refreshSecret:
       process.env.JWT_REFRESH_SECRET || process.env.REFRESH_TOKEN_SECRET,
-    expiry: process.env.JWT_EXPIRY || "15m",
+    expiry: process.env.JWT_EXPIRY || "40m",
     refreshExpiry: process.env.JWT_REFRESH_EXPIRY || "7d",
   },
 

@@ -31,6 +31,7 @@ const currencyRoutes = require("./routes/currencyRoutes");
 const fileRoutes = require("./routes/fileRoutes");
 const uploadRoutes = require("./routes/uploadRoutes");
 const disputeRoutes = require("./routes/disputeRoutes");
+const milestoneRoutes = require("./routes/milestoneRoutes");
 
 const localeMiddleware = require("./middlewares/localeMiddleware");
 
@@ -204,6 +205,7 @@ app.use("/currencies", currencyRoutes);
 app.use("/files", fileRoutes);
 app.use("/upload", uploadRoutes);
 app.use("/disputes", disputeRoutes);
+app.use("/milestones", milestoneRoutes);
 
 // 404
 app.use((req, res) => {

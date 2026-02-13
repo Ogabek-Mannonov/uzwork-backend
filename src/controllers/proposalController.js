@@ -630,8 +630,11 @@ const acceptProposal = async (req, res) => {
       return res.status(400).json({ success: false, message: "proposed_price noto‘g‘ri." });
     }
 
-    // 3) ✅ Proposal ACCEPT + boshqalar REJECT
-    await client.query(`UPDATE proposals SET status='accepted', updated_at=NOW() WHERE id=$1`, [id]);
+    // 3) Proposal ACCEPT + boshqalar REJECT
+    await client.query(
+      `UPDATE proposals SET status='accepted', updated_at=NOW() WHERE id=$1`,
+      [id]
+    );
 
     await client.query(
       `UPDATE proposals SET status='rejected', updated_at=NOW()
@@ -640,26 +643,50 @@ const acceptProposal = async (req, res) => {
     );
 
     // 4) Job -> in_progress
-    await client.query(`UPDATE jobs SET status='in_progress', updated_at=NOW() WHERE id=$1`, [
-      row.job_id,
-    ]);
+    await client.query(
+      `UPDATE jobs SET status='in_progress', updated_at=NOW() WHERE id=$1`,
+      [row.job_id]
+    );
 
     // 5) ✅ Contract yaratish
     const contractRes = await client.query(
       `
       INSERT INTO contracts (
-        job_id, freelancer_id, client_id,
-        total_amount, platform_fee,
-        status, signed_at, created_at, updated_at
+        job_id,
+        freelancer_id,
+        client_id,
+        total_amount,
+        platform_fee,
+        status,
+        signed_at,
+        created_at,
+        updated_at
       )
       VALUES ($1,$2,$3,$4,$5,'active',NOW(),NOW(),NOW())
       RETURNING *
       `,
       [row.job_id, row.freelancer_id, row.client_id, totalAmount, 0]
     );
+
     const contract = contractRes.rows[0];
 
-    // 6) ✅ Chat yaratish (contract_id unique bo‘lsa dublikat bo‘lmaydi)
+    // 🔥 5.1) ✅ AUTO MILESTONE CREATE (UPWORK STYLE)
+    // ❗ Pulga tegilmaydi — faqat RECORD
+    await client.query(
+      `
+      INSERT INTO milestones (
+        contract_id,
+        title,
+        amount,
+        status,
+        created_at
+      )
+      VALUES ($1, $2, $3, 'pending', NOW())
+      `,
+      [contract.id, "Full project", totalAmount]
+    );
+
+    // 6) Chat yaratish
     const chatIns = await client.query(
       `
       INSERT INTO chats (contract_id, job_id, status, created_at)
@@ -669,21 +696,27 @@ const acceptProposal = async (req, res) => {
       `,
       [contract.id, row.job_id]
     );
+
     const chat =
       chatIns.rows[0] ||
-      (await client.query(`SELECT * FROM chats WHERE contract_id=$1 LIMIT 1`, [contract.id])).rows[0] ||
+      (
+        await client.query(
+          `SELECT * FROM chats WHERE contract_id=$1 LIMIT 1`,
+          [contract.id]
+        )
+      ).rows[0] ||
       null;
 
-    // 7) ✅ AUTO ESCROW HOLD (Variant A)
-    // balance row create
+    // 7) ✅ AUTO ESCROW HOLD (AS IS — O‘ZGARMAGAN)
     await ensureBalanceRow(client, row.client_id);
 
-    // lock balance
     const balR = await client.query(
-      `SELECT available_balance, escrow_balance
-       FROM user_balances
-       WHERE user_id = $1
-       FOR UPDATE`,
+      `
+      SELECT available_balance, escrow_balance
+      FROM user_balances
+      WHERE user_id = $1
+      FOR UPDATE
+      `,
       [row.client_id]
     );
 
@@ -696,7 +729,6 @@ const acceptProposal = async (req, res) => {
       });
     }
 
-    // move to escrow
     await client.query(
       `
       UPDATE user_balances
@@ -708,10 +740,21 @@ const acceptProposal = async (req, res) => {
       [totalAmount, row.client_id]
     );
 
-    // ledger transaction (escrow_hold)
     await client.query(
       `
-      INSERT INTO transactions (user_id, type, amount, currency, gateway, status, metadata, job_id, contract_id, created_at, updated_at)
+      INSERT INTO transactions (
+        user_id,
+        type,
+        amount,
+        currency,
+        gateway,
+        status,
+        metadata,
+        job_id,
+        contract_id,
+        created_at,
+        updated_at
+      )
       VALUES ($1,'escrow_hold',$2,'UZS','internal','completed',$3,$4,$5,NOW(),NOW())
       `,
       [
@@ -732,7 +775,8 @@ const acceptProposal = async (req, res) => {
 
     return res.json({
       success: true,
-      message: "Taklif qabul qilindi! Contract+Chat yaratildi, escrow avtomatik band qilindi.",
+      message:
+        "Taklif qabul qilindi! Contract, chat va milestone yaratildi, escrow band qilindi.",
       data: { contract, chat },
     });
   } catch (error) {
@@ -749,6 +793,9 @@ const acceptProposal = async (req, res) => {
     client.release();
   }
 };
+
+module.exports = { acceptProposal };
+
 
 
 
