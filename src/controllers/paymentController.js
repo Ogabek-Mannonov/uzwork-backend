@@ -16,47 +16,98 @@ function toAmount(x) {
   return Number.isFinite(n) ? n : NaN;
 }
 
-/* ================= GET PAYMENTS ================= */
+/* ================= GET PAYMENTS (admin: all, user: own) ================= */
 
 const getPayments = async (req, res) => {
   try {
-    const userId = req.user.id;
-    const { type, status, page = 1, limit = 20 } = req.query;
+    const authUserId = req.user.id;
+    const role = req.user.role;
 
-    const p = Math.max(+page || 1, 1);
-    const l = Math.min(Math.max(+limit || 20, 1), 100);
+    const {
+      q = "",
+      type,
+      status,
+      user_id,         // admin filter (optional)
+      sort = "created_desc", // created_desc | created_asc | amount_desc | amount_asc
+      page = 1,
+      limit = 20,
+    } = req.query;
+
+    const p = Math.max(parseInt(page, 10) || 1, 1);
+    const l = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
     const offset = (p - 1) * l;
 
-    let where = "WHERE user_id = $1";
-    const params = [userId];
-    let i = 2;
+    const isAdmin = role === "admin" || role === "superadmin";
+
+    // WHERE
+    let where = "WHERE 1=1";
+    const params = [];
+    let i = 1;
+
+    // user scope
+    if (!isAdmin) {
+      where += ` AND user_id = $${i++}`;
+      params.push(authUserId);
+    } else {
+      // admin bo'lsa: xohlasa user_id bo'yicha filtr qilsin
+      if (user_id) {
+        where += ` AND user_id = $${i++}`;
+        params.push(user_id);
+      }
+    }
 
     if (type) {
       where += ` AND type = $${i++}`;
       params.push(type);
     }
+
     if (status) {
       where += ` AND status = $${i++}`;
       params.push(status);
     }
 
+    // server-side search
+    const qs = String(q || "").trim();
+    if (qs) {
+      where += `
+        AND (
+          id::text ILIKE $${i}
+          OR type ILIKE $${i}
+          OR status ILIKE $${i}
+          OR COALESCE(gateway,'') ILIKE $${i}
+          OR COALESCE(currency,'') ILIKE $${i}
+          OR amount::text ILIKE $${i}
+        )
+      `;
+      params.push(`%${qs}%`);
+      i++;
+    }
+
+    // SORT whitelist
+    let orderBy = "created_at DESC";
+    if (sort === "created_asc") orderBy = "created_at ASC";
+    if (sort === "amount_desc") orderBy = "amount DESC";
+    if (sort === "amount_asc") orderBy = "amount ASC";
+
+    // COUNT
     const count = await pool.query(
       `SELECT COUNT(*)::int AS c FROM transactions ${where}`,
       params
     );
 
+    // LIST
     const list = await pool.query(
       `
       SELECT *
       FROM transactions
       ${where}
-      ORDER BY created_at DESC
+      ORDER BY ${orderBy}
       LIMIT $${i} OFFSET $${i + 1}
       `,
       [...params, l, offset]
     );
 
-    res.json({
+    return res.json({
       success: true,
       data: {
         transactions: list.rows,
@@ -69,9 +120,12 @@ const getPayments = async (req, res) => {
       },
     });
   } catch (e) {
-    res.status(500).json({ success: false, message: "Payment list error", error: e.message });
+    return res
+      .status(500)
+      .json({ success: false, message: "Payment list error", error: e.message });
   }
 };
+  
 
 /* ================= BALANCE ================= */
 
