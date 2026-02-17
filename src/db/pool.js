@@ -2,19 +2,23 @@
 require("dotenv").config();
 const { Pool } = require("pg");
 
-const isProd = process.env.NODE_ENV === "production";
+const DATABASE_URL = process.env.DATABASE_URL;
+if (!DATABASE_URL) throw new Error("❌ DATABASE_URL yo'q (.env)");
 
-// Render / Neon / Supabase: ko‘pincha SSL kerak bo‘ladi.
-// Local: SSL kerak emas.
+const isLocal =
+  DATABASE_URL.includes("localhost") ||
+  DATABASE_URL.includes("127.0.0.1");
+
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: isProd
-    ? { rejectUnauthorized: false }
-    : false,
+  connectionString: DATABASE_URL,
+  ssl: isLocal ? false : { rejectUnauthorized: false },
+  max: 10,
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 20000,
 });
 
 pool.on("connect", () => {
-  console.log("✅ Postgres ulandi");
+  console.log(`✅ Postgres ulandi (${isLocal ? "LOCAL" : "REMOTE SSL"})`);
 });
 
 pool.on("error", (err) => {
