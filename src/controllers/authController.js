@@ -1,5 +1,6 @@
 // src/controllers/authController.js
 const pool = require("../db/pool");
+const crypto = require("crypto");
 const { hashPassword, comparePassword } = require("../utils/hashPassword");
 const {
   generateAccessToken,
@@ -9,7 +10,6 @@ const {
 
 // helper: refresh token exp -> expires_at
 const getTokenExpiryDate = (token) => {
-  // JWT decode without verify (we already verify elsewhere sometimes)
   const parts = token.split(".");
   if (parts.length !== 3) return null;
   const payload = JSON.parse(Buffer.from(parts[1], "base64").toString("utf8"));
@@ -17,20 +17,55 @@ const getTokenExpiryDate = (token) => {
   return new Date(payload.exp * 1000);
 };
 
+/* ===================== PASSWORD RESET HELPERS ===================== */
+const sha256 = (s) =>
+  crypto.createHash("sha256").update(String(s)).digest("hex");
+
+const genOtp6 = () => String(Math.floor(100000 + Math.random() * 900000));
+
+const addMinutes = (date, minutes) =>
+  new Date(date.getTime() + minutes * 60 * 1000);
+
+const genericForgotResponse = {
+  success: true,
+  message: "Agar hisob mavjud bo‘lsa, tasdiqlash kodi yuborildi.",
+};
+/* ================================================================ */
+
 const signup = async (req, res) => {
   const client = await pool.connect();
   try {
-    const { email, phone, password, role, first_name, last_name, username, display_name } = req.body;
+    const {
+      email,
+      phone,
+      password,
+      role,
+      first_name,
+      last_name,
+      username,
+      display_name,
+    } = req.body;
 
-    if (!email || !phone || !password || !role || !first_name || !last_name || !username) {
+    if (
+      !email ||
+      !phone ||
+      !password ||
+      !role ||
+      !first_name ||
+      !last_name ||
+      !username
+    ) {
       return res.status(400).json({
         success: false,
-        message: "Majburiy: email, phone, password, role, first_name, last_name, username",
+        message:
+          "Majburiy: email, phone, password, role, first_name, last_name, username",
       });
     }
 
     if (!["freelancer", "client"].includes(role)) {
-      return res.status(400).json({ success: false, message: "Role freelancer yoki client bo‘lsin." });
+      return res
+        .status(400)
+        .json({ success: false, message: "Role freelancer yoki client bo‘lsin." });
     }
 
     if (!/^[a-zA-Z0-9_]+$/.test(username)) {
@@ -63,7 +98,18 @@ const signup = async (req, res) => {
        VALUES
         ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
        RETURNING id, username, email, phone, role, first_name, last_name, display_name, is_verified, avatar_url, created_at`,
-      [username, email, phone, passwordHash, role, first_name, last_name, display_name || null, false, null]
+      [
+        username,
+        email,
+        phone,
+        passwordHash,
+        role,
+        first_name,
+        last_name,
+        display_name || null,
+        false,
+        null,
+      ]
     );
 
     const user = ins.rows[0];
@@ -126,9 +172,14 @@ const signup = async (req, res) => {
       },
     });
   } catch (error) {
-    try { await client.query("ROLLBACK"); } catch (e) {}
+    try {
+      await client.query("ROLLBACK");
+    } catch (e) {}
     if (error.code === "23505") {
-      return res.status(409).json({ success: false, message: "Unique conflict (email/phone/username)." });
+      return res.status(409).json({
+        success: false,
+        message: "Unique conflict (email/phone/username).",
+      });
     }
     return res.status(500).json({
       success: false,
@@ -192,7 +243,6 @@ const login = async (req, res) => {
     const refreshToken = generateRefreshToken(user);
     const expiresAt = getTokenExpiryDate(refreshToken);
 
-    // rotate: eski tokenlarni tozalab tashlash shart emas, lekin tartibli bo‘lsin:
     await pool.query(
       `INSERT INTO refresh_tokens (user_id, token, expires_at)
        VALUES ($1, $2, $3)`,
@@ -242,7 +292,6 @@ const refresh = async (req, res) => {
       return res.status(401).json({ success: false, message: "Refresh token noto‘g‘ri yoki expired." });
     }
 
-    // token DBda bormi + expired emasmi
     const tokenQ = await pool.query(
       `SELECT id, user_id, expires_at
        FROM refresh_tokens
@@ -282,7 +331,6 @@ const refresh = async (req, res) => {
 
     const user = userQ.rows[0];
 
-    // rotate token: eski refreshni delete + yangisini insert
     const newAccessToken = generateAccessToken(user);
     const newRefreshToken = generateRefreshToken(user);
     const expiresAt = getTokenExpiryDate(newRefreshToken);
@@ -314,7 +362,10 @@ const refresh = async (req, res) => {
 const verify = async (req, res) => {
   try {
     const userId = req.user.id;
-    await pool.query(`UPDATE users SET is_verified = TRUE, updated_at = NOW() WHERE id = $1`, [userId]);
+    await pool.query(
+      `UPDATE users SET is_verified = TRUE, updated_at = NOW() WHERE id = $1`,
+      [userId]
+    );
     return res.json({ success: true, message: "User verified!" });
   } catch (error) {
     return res.status(500).json({
@@ -404,9 +455,7 @@ const getMe = async (req, res) => {
 
 const logout = async (req, res) => {
   try {
-    // variant 1: userning hamma refresh tokenlarini o‘chirib yuboramiz (oddiy va ishonchli)
     await pool.query(`DELETE FROM refresh_tokens WHERE user_id = $1`, [req.user.id]);
-
     return res.json({ success: true, message: "Chiqildi (logout)!" });
   } catch (error) {
     return res.status(500).json({
@@ -417,6 +466,220 @@ const logout = async (req, res) => {
   }
 };
 
+/* ===================== NEW: FORGOT / RESET PASSWORD ===================== */
+
+/**
+ * POST /auth/forgot-password
+ * Body: { email } or { phone }
+ * Privacy-friendly response.
+ */
+const forgotPassword = async (req, res) => {
+  try {
+    const { email, phone } = req.body || {};
+
+    if (!email && !phone) {
+      return res.status(400).json({
+        success: false,
+        message: "Email yoki phone yuboring.",
+      });
+    }
+
+    const userQ = await pool.query(
+      `SELECT id, reset_sent_at
+       FROM users
+       WHERE (email = $1 OR phone = $2) AND deleted_at IS NULL
+       LIMIT 1`,
+      [email || null, phone || null]
+    );
+
+    // privacy: user yo‘q bo‘lsa ham "ok"
+    if (userQ.rowCount === 0) {
+      return res.json(genericForgotResponse);
+    }
+
+    const user = userQ.rows[0];
+
+    // rate limit: 60 sec
+    if (user.reset_sent_at) {
+      const diffMs = Date.now() - new Date(user.reset_sent_at).getTime();
+      if (diffMs < 60 * 1000) {
+        return res.status(429).json({
+          success: false,
+          message: "Kod juda tez so‘raldi. 1 daqiqadan keyin urinib ko‘ring.",
+        });
+      }
+    }
+
+    const otp = genOtp6();
+    const otpHash = sha256(otp);
+    const now = new Date();
+    const expiresAt = addMinutes(now, 10);
+
+    await pool.query(
+      `UPDATE users
+       SET reset_code_hash = $1,
+           reset_expires_at = $2,
+           reset_attempts = 0,
+           reset_sent_at = $3,
+           updated_at = NOW()
+       WHERE id = $4`,
+      [otpHash, expiresAt, now, user.id]
+    );
+
+    // TODO: SMS/email service (hozircha console.log)
+    console.log("🔐 Password reset OTP:", {
+      user_id: user.id,
+      to: email || phone,
+      otp,
+      expiresAt,
+    });
+
+    return res.json(genericForgotResponse);
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: "forgot-password xato.",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  }
+};
+
+/**
+ * POST /auth/reset-password
+ * Body: { identifier, code, new_password }
+ * identifier = email yoki phone
+ */
+const resetPassword = async (req, res) => {
+  const client = await pool.connect();
+
+  try {
+    const { identifier, code, new_password } = req.body || {};
+
+    if (!identifier || !code || !new_password) {
+      return res.status(400).json({
+        success: false,
+        message: "identifier, code, new_password majburiy.",
+      });
+    }
+
+    if (String(new_password).length < 8) {
+      return res.status(400).json({
+        success: false,
+        message: "Yangi parol kamida 8 ta belgi bo‘lsin.",
+      });
+    }
+
+    await client.query("BEGIN");
+
+    const userQ = await client.query(
+      `SELECT id, reset_code_hash, reset_expires_at, reset_attempts
+       FROM users
+       WHERE (email = $1 OR phone = $1) AND deleted_at IS NULL
+       LIMIT 1
+       FOR UPDATE`,
+      [identifier]
+    );
+
+    if (userQ.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        success: false,
+        message: "Kod yoki identifier noto‘g‘ri.",
+      });
+    }
+
+    const user = userQ.rows[0];
+
+    if (!user.reset_code_hash || !user.reset_expires_at) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        success: false,
+        message: "Reset kodi topilmadi. Avval kod yuboring.",
+      });
+    }
+
+    if (new Date(user.reset_expires_at) < new Date()) {
+      // expired -> clear
+      await client.query(
+        `UPDATE users
+         SET reset_code_hash = NULL,
+             reset_expires_at = NULL,
+             reset_attempts = 0,
+             updated_at = NOW()
+         WHERE id = $1`,
+        [user.id]
+      );
+      await client.query("COMMIT");
+      return res.status(400).json({
+        success: false,
+        message: "Kod muddati tugagan. Qayta kod yuboring.",
+      });
+    }
+
+    const attempts = Number(user.reset_attempts || 0);
+    if (attempts >= 5) {
+      await client.query("ROLLBACK");
+      return res.status(429).json({
+        success: false,
+        message: "Urinishlar limiti tugadi. Keyinroq qayta urinib ko‘ring.",
+      });
+    }
+
+    const codeHash = sha256(code);
+    if (codeHash !== user.reset_code_hash) {
+      await client.query(
+        `UPDATE users
+         SET reset_attempts = reset_attempts + 1,
+             updated_at = NOW()
+         WHERE id = $1`,
+        [user.id]
+      );
+      await client.query("COMMIT");
+      return res.status(400).json({
+        success: false,
+        message: "Kod noto‘g‘ri.",
+      });
+    }
+
+    const passwordHash = await hashPassword(new_password);
+
+    await client.query(
+      `UPDATE users
+       SET password_hash = $1,
+           reset_code_hash = NULL,
+           reset_expires_at = NULL,
+           reset_attempts = 0,
+           reset_sent_at = NULL,
+           updated_at = NOW()
+       WHERE id = $2`,
+      [passwordHash, user.id]
+    );
+
+    // security: logout everywhere
+    await client.query(`DELETE FROM refresh_tokens WHERE user_id = $1`, [user.id]);
+
+    await client.query("COMMIT");
+
+    return res.json({
+      success: true,
+      message: "Parol muvaffaqiyatli yangilandi.",
+    });
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {}
+    return res.status(500).json({
+      success: false,
+      message: "reset-password xato.",
+      error: process.env.NODE_ENV === "development" ? error.message : undefined,
+    });
+  } finally {
+    client.release();
+  }
+};
+
+/* ======================================================================= */
+
 module.exports = {
   signup,
   login,
@@ -425,4 +688,8 @@ module.exports = {
   kyc,
   getMe,
   logout,
+
+  // ✅ exports
+  forgotPassword,
+  resetPassword,
 };
