@@ -499,6 +499,343 @@ const deleteMyCv = async (req, res) => {
   }
 };
 
+
+// helper
+const safeJsonArray = (v) => {
+  if (v == null) return [];
+  if (Array.isArray(v)) return v;
+  if (typeof v === "string") {
+    try {
+      const p = JSON.parse(v);
+      return Array.isArray(p) ? p : [];
+    } catch {
+      return [];
+    }
+  }
+  return [];
+};
+
+/**
+ * GET /freelancers/me/portfolio
+ */
+const getMyPortfolio = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const itemsR = await pool.query(
+      `
+      SELECT id, user_id, title, description, project_url, skills, is_featured, created_at, updated_at
+      FROM portfolio_items
+      WHERE user_id = $1
+      ORDER BY is_featured DESC, created_at DESC
+      `,
+      [userId]
+    );
+
+    const itemIds = itemsR.rows.map((x) => x.id);
+    let mediaRows = [];
+    if (itemIds.length > 0) {
+      const mediaR = await pool.query(
+        `
+        SELECT id, item_id, media_type, url, filename, mime, size_bytes, created_at
+        FROM portfolio_media
+        WHERE item_id = ANY($1::uuid[])
+        ORDER BY created_at DESC
+        `,
+        [itemIds]
+      );
+      mediaRows = mediaR.rows;
+    }
+
+    const mediaMap = new Map();
+    for (const m of mediaRows) {
+      if (!mediaMap.has(m.item_id)) mediaMap.set(m.item_id, []);
+      mediaMap.get(m.item_id).push(m);
+    }
+
+    const items = itemsR.rows.map((it) => ({
+      ...it,
+      media: mediaMap.get(it.id) || [],
+    }));
+
+    return res.json({ success: true, data: { items } });
+  } catch (error) {
+    console.error("Get my portfolio error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Portfolio olishda xato yuz berdi.",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * Public: GET /freelancers/:id/portfolio
+ */
+const getPublicPortfolioByFreelancerId = async (req, res) => {
+  try {
+    const freelancerId = req.params.id;
+
+    // freelancer mavjudligini tekshirish (optional, lekin yaxshi)
+    const uR = await pool.query(
+      `SELECT id FROM users WHERE id=$1 AND role='freelancer' AND deleted_at IS NULL LIMIT 1`,
+      [freelancerId]
+    );
+    if (uR.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Freelancer topilmadi." });
+    }
+
+    const itemsR = await pool.query(
+      `
+      SELECT id, user_id, title, description, project_url, skills, is_featured, created_at, updated_at
+      FROM portfolio_items
+      WHERE user_id = $1
+      ORDER BY is_featured DESC, created_at DESC
+      `,
+      [freelancerId]
+    );
+
+    const itemIds = itemsR.rows.map((x) => x.id);
+    let mediaRows = [];
+    if (itemIds.length > 0) {
+      const mediaR = await pool.query(
+        `
+        SELECT id, item_id, media_type, url, filename, mime, size_bytes, created_at
+        FROM portfolio_media
+        WHERE item_id = ANY($1::uuid[])
+        ORDER BY created_at DESC
+        `,
+        [itemIds]
+      );
+      mediaRows = mediaR.rows;
+    }
+
+    const mediaMap = new Map();
+    for (const m of mediaRows) {
+      if (!mediaMap.has(m.item_id)) mediaMap.set(m.item_id, []);
+      mediaMap.get(m.item_id).push(m);
+    }
+
+    const items = itemsR.rows.map((it) => ({
+      ...it,
+      media: mediaMap.get(it.id) || [],
+    }));
+
+    return res.json({ success: true, data: { items } });
+  } catch (error) {
+    console.error("Get public portfolio error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Public portfolio olishda xato yuz berdi.",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * POST /freelancers/me/portfolio
+ * Body: { title, description, project_url, skills, is_featured }
+ */
+const createPortfolioItem = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { title, description, project_url, skills, is_featured } = req.body;
+
+    if (!title || String(title).trim().length < 2) {
+      return res.status(400).json({ success: false, message: "Title majburiy (kamida 2 ta belgi)." });
+    }
+
+    const skillArr = safeJsonArray(skills);
+
+    const r = await pool.query(
+      `
+      INSERT INTO portfolio_items (user_id, title, description, project_url, skills, is_featured)
+      VALUES ($1, $2, $3, $4, $5::jsonb, $6)
+      RETURNING id, user_id, title, description, project_url, skills, is_featured, created_at, updated_at
+      `,
+      [userId, title.trim(), description || null, project_url || null, JSON.stringify(skillArr), !!is_featured]
+    );
+
+    return res.status(201).json({ success: true, message: "Portfolio item yaratildi.", data: { item: r.rows[0] } });
+  } catch (error) {
+    console.error("Create portfolio item error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Portfolio item yaratishda xato yuz berdi.",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * PUT /freelancers/me/portfolio/:itemId
+ */
+const updatePortfolioItem = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { itemId } = req.params;
+    const { title, description, project_url, skills, is_featured } = req.body;
+
+    const existing = await pool.query(
+      `SELECT id FROM portfolio_items WHERE id=$1 AND user_id=$2 LIMIT 1`,
+      [itemId, userId]
+    );
+    if (existing.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Portfolio item topilmadi." });
+    }
+
+    const skillArr = skills !== undefined ? safeJsonArray(skills) : undefined;
+
+    const r = await pool.query(
+      `
+      UPDATE portfolio_items
+      SET
+        title = COALESCE($3, title),
+        description = COALESCE($4, description),
+        project_url = COALESCE($5, project_url),
+        skills = COALESCE($6::jsonb, skills),
+        is_featured = COALESCE($7, is_featured),
+        updated_at = NOW()
+      WHERE id=$1 AND user_id=$2
+      RETURNING id, user_id, title, description, project_url, skills, is_featured, created_at, updated_at
+      `,
+      [
+        itemId,
+        userId,
+        title ? String(title).trim() : null,
+        description ?? null,
+        project_url ?? null,
+        skillArr !== undefined ? JSON.stringify(skillArr) : null,
+        typeof is_featured === "boolean" ? is_featured : null,
+      ]
+    );
+
+    return res.json({ success: true, message: "Portfolio item yangilandi.", data: { item: r.rows[0] } });
+  } catch (error) {
+    console.error("Update portfolio item error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Portfolio item yangilashda xato yuz berdi.",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * DELETE /freelancers/me/portfolio/:itemId
+ * (media ON DELETE CASCADE bo‘lgani uchun media ham o‘chadi)
+ */
+const deletePortfolioItem = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { itemId } = req.params;
+
+    const r = await pool.query(
+      `DELETE FROM portfolio_items WHERE id=$1 AND user_id=$2 RETURNING id`,
+      [itemId, userId]
+    );
+
+    if (r.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Portfolio item topilmadi." });
+    }
+
+    return res.json({ success: true, message: "Portfolio item o‘chirildi." });
+  } catch (error) {
+    console.error("Delete portfolio item error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Portfolio item o‘chirishda xato yuz berdi.",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * POST /freelancers/me/portfolio/:itemId/media
+ * form-data: media=<file>
+ */
+const addPortfolioMedia = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { itemId } = req.params;
+
+    // item ownership check
+    const itemR = await pool.query(
+      `SELECT id FROM portfolio_items WHERE id=$1 AND user_id=$2 LIMIT 1`,
+      [itemId, userId]
+    );
+    if (itemR.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Portfolio item topilmadi." });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: "Media file yuborilmadi." });
+    }
+
+    const isPdf = req.file.mimetype === "application/pdf";
+    const mediaType = isPdf ? "document" : "image";
+
+    const url = `/uploads/portfolio/${req.file.filename}`;
+
+    const r = await pool.query(
+      `
+      INSERT INTO portfolio_media (item_id, media_type, url, filename, mime, size_bytes)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING id, item_id, media_type, url, filename, mime, size_bytes, created_at
+      `,
+      [itemId, mediaType, url, req.file.originalname || null, req.file.mimetype || null, req.file.size || null]
+    );
+
+    return res.status(201).json({ success: true, message: "Media qo‘shildi.", data: { media: r.rows[0] } });
+  } catch (error) {
+    console.error("Add portfolio media error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Media qo‘shishda xato yuz berdi.",
+      error: error.message,
+    });
+  }
+};
+
+/**
+ * DELETE /freelancers/me/portfolio/:itemId/media/:mediaId
+ * (DB dan o‘chiradi; xohlasangiz diskdan ham o‘chirib beramiz)
+ */
+const deletePortfolioMedia = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { itemId, mediaId } = req.params;
+
+    // ownership check via join
+    const r = await pool.query(
+      `
+      DELETE FROM portfolio_media pm
+      USING portfolio_items pi
+      WHERE pm.id = $1
+        AND pm.item_id = $2
+        AND pm.item_id = pi.id
+        AND pi.user_id = $3
+      RETURNING pm.id
+      `,
+      [mediaId, itemId, userId]
+    );
+
+    if (r.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Media topilmadi." });
+    }
+
+    return res.json({ success: true, message: "Media o‘chirildi." });
+  } catch (error) {
+    console.error("Delete portfolio media error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Media o‘chirishda xato yuz berdi.",
+      error: error.message,
+    });
+  }
+};
+
+
 module.exports = {
   getFreelancers,
   getRecommendedFreelancers,
@@ -509,4 +846,11 @@ module.exports = {
   saveFreelancer,
   uploadMyCv,
   deleteMyCv,
+  getMyPortfolio,
+  getPublicPortfolioByFreelancerId,
+  createPortfolioItem,
+  updatePortfolioItem,
+  deletePortfolioItem,
+  addPortfolioMedia,
+  deletePortfolioMedia,
 };
