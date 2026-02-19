@@ -10,9 +10,12 @@ const {
   aiPortfolio,
   getSavedFreelancers,
   saveFreelancer,
+  uploadMyCv,
+  deleteMyCv,
 } = require("../controllers/freelancerController");
 
 const { authenticate, authorize } = require("../middlewares/authMiddleware");
+const uploadCv = require("../middlewares/uploadCv");
 
 // ✅ Public
 router.get("/", getFreelancers);
@@ -26,5 +29,12 @@ router.post("/:id/save", authenticate, authorize("client", "admin"), saveFreelan
 
 // ✅ Dynamic OXIRIDA
 router.get("/:id", getFreelancerById);
+router.post(
+  "/me/cv",
+  authenticate,
+  authorize("freelancer"),
+  uploadCv.single("cv"),
+  uploadMyCv
+);
 
 module.exports = router;

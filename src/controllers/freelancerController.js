@@ -1,5 +1,6 @@
 // src/controllers/freelancerController.js
 const pool = require("../db/pool");
+const path = require("path");
 
 // helper: skills query -> array
 function normalizeSkills(skills) {
@@ -427,6 +428,77 @@ const saveFreelancer = async (req, res) => {
   }
 };
 
+
+const uploadMyCv = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: "CV file yuborilmadi." });
+    }
+
+    // public url: server static qilib berishi kerak (quyida aytaman)
+    const cvUrl = `/uploads/cv/${req.file.filename}`;
+
+    // profile row yo'q bo'lsa ham create qilib qo'yamiz (upsert)
+    const r = await pool.query(
+      `
+      INSERT INTO freelancer_profiles (user_id, cv_url, cv_filename, cv_updated_at)
+      VALUES ($1, $2, $3, NOW())
+      ON CONFLICT (user_id)
+      DO UPDATE SET
+        cv_url = EXCLUDED.cv_url,
+        cv_filename = EXCLUDED.cv_filename,
+        cv_updated_at = NOW(),
+        updated_at = NOW()
+      RETURNING user_id, cv_url, cv_filename, cv_updated_at
+      `,
+      [userId, cvUrl, req.file.originalname]
+    );
+
+    return res.json({
+      success: true,
+      message: "CV yuklandi.",
+      data: { cv: r.rows[0] },
+    });
+  } catch (error) {
+    console.error("Upload CV error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "CV yuklashda xato yuz berdi.",
+      error: error.message,
+    });
+  }
+};
+
+const deleteMyCv = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const r = await pool.query(
+      `
+      UPDATE freelancer_profiles
+      SET cv_url = NULL,
+          cv_filename = NULL,
+          cv_updated_at = NULL,
+          updated_at = NOW()
+      WHERE user_id = $1
+      RETURNING user_id
+      `,
+      [userId]
+    );
+
+    return res.json({ success: true, message: "CV o‘chirildi." });
+  } catch (error) {
+    console.error("Delete CV error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "CV o‘chirishda xato yuz berdi.",
+      error: error.message,
+    });
+  }
+};
+
 module.exports = {
   getFreelancers,
   getRecommendedFreelancers,
@@ -435,4 +507,6 @@ module.exports = {
   aiPortfolio,
   getSavedFreelancers,
   saveFreelancer,
+  uploadMyCv,
+  deleteMyCv,
 };
