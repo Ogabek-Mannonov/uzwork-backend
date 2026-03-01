@@ -7,6 +7,8 @@ const http = require("http");
 const { Server } = require("socket.io");
 const path = require("path");
 require("dotenv").config();
+const { startCron } = require("./cron");
+startCron();
 
 const pool = require("./db/pool");
 
