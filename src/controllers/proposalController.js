@@ -5,7 +5,24 @@ const pool = require("../db/pool");
  * POST /proposals
  * Create a new proposal (only freelancers can create)
  */
+const {
+  ensureBalanceRow,
+  lockFromAvailableToLocked,
+  refundLockedToAvailable,
+  consumeLockedToPlatform,
+} = require("../services/walletService");
+
+const normalizeStatus = (s) => (s ? String(s).toLowerCase() : null);
+
+const DEPOSIT_AMOUNT = Number(process.env.PROPOSAL_DEPOSIT_AMOUNT || 0);
+const PLATFORM_USER_ID = process.env.PLATFORM_USER_ID;
+
+// =========================
+// POST /proposals
+// Create proposal + LOCK deposit (wallet)
+// =========================
 const createProposal = async (req, res) => {
+  const client = await pool.connect();
   try {
     const userId = req.user.id;
     const userRole = req.user.role;
@@ -22,66 +39,102 @@ const createProposal = async (req, res) => {
     if (!job_id || !cover_letter || proposed_price == null || proposed_duration == null) {
       return res.status(400).json({
         success: false,
-        message: "job_id, cover_letter, proposed_price va proposed_duration majburiy maydonlar.",
+        message: "job_id, cover_letter, proposed_price va proposed_duration majburiy.",
       });
     }
 
-    // Job mavjudmi + openmi + deleted emasmi
-    const jobCheck = await pool.query(
-      "SELECT id, client_id, job_type, status, deleted_at FROM jobs WHERE id = $1",
+    await client.query("BEGIN");
+
+    // Job mavjudmi + openmi + deleted emasmi (LOCK emas, lekin ok)
+    const jobCheck = await client.query(
+      "SELECT id, client_id, status, deleted_at FROM jobs WHERE id = $1",
       [job_id]
     );
 
     if (jobCheck.rows.length === 0 || jobCheck.rows[0].deleted_at) {
-      return res.status(404).json({
-        success: false,
-        message: "Loyiha topilmadi.",
-      });
+      await client.query("ROLLBACK");
+      return res.status(404).json({ success: false, message: "Loyiha topilmadi." });
     }
 
     const job = jobCheck.rows[0];
 
-    if (job.status !== "open") {
+    if (normalizeStatus(job.status) !== "open") {
+      await client.query("ROLLBACK");
       return res.status(400).json({
         success: false,
         message: 'Faqat "open" statusdagi loyihalarga taklif yuborish mumkin.',
       });
     }
 
-    // allaqachon yuborganmi
-    const existing = await pool.query(
-      "SELECT id FROM proposals WHERE job_id = $1 AND freelancer_id = $2",
+    // allaqachon yuborganmi (LOCK uchun FOR UPDATE qilamiz)
+    const existing = await client.query(
+      "SELECT id FROM proposals WHERE job_id = $1 AND freelancer_id = $2 FOR UPDATE",
       [job_id, userId]
     );
 
     if (existing.rows.length > 0) {
+      await client.query("ROLLBACK");
       return res.status(409).json({
         success: false,
         message: "Siz bu loyihaga allaqachon taklif yuborgansiz.",
       });
     }
 
-    const result = await pool.query(
+    // 1) Proposal insert (pending)
+    const result = await client.query(
       `INSERT INTO proposals (
         job_id, freelancer_id, cover_letter,
-        proposed_price, proposed_duration, status
-      ) VALUES ($1, $2, $3, $4, $5, 'pending')
+        proposed_price, proposed_duration,
+        status,
+        deposit_amount, deposit_status, deposit_locked_at
+      ) VALUES ($1, $2, $3, $4, $5,
+        'pending',
+        $6, $7, $8
+      )
       RETURNING *`,
-      [job_id, userId, cover_letter, proposed_price, proposed_duration]
+      [
+        job_id,
+        userId,
+        cover_letter,
+        proposed_price,
+        proposed_duration,
+        DEPOSIT_AMOUNT > 0 ? DEPOSIT_AMOUNT : 0,
+        DEPOSIT_AMOUNT > 0 ? "locked" : "none",
+        DEPOSIT_AMOUNT > 0 ? new Date() : null,
+      ]
     );
+
+    const proposal = result.rows[0];
+
+    // 2) Deposit lock (available -> locked)
+    if (DEPOSIT_AMOUNT > 0) {
+      const idemKey = `proposal_lock:${proposal.id}`;
+      await lockFromAvailableToLocked(client, {
+        userId,
+        amount: DEPOSIT_AMOUNT,
+        currency: "UZS",
+        meta: { proposal_id: String(proposal.id), job_id: String(job_id), reason: "proposal_deposit_lock" },
+        idempotencyKey: idemKey,
+      });
+    }
+
+    await client.query("COMMIT");
 
     return res.status(201).json({
       success: true,
-      message: "Taklif muvaffaqiyatli yuborildi!",
-      data: { proposal: result.rows[0] },
+      message: "Taklif yuborildi! Deposit walletdan vaqtincha band qilindi.",
+      data: { proposal },
     });
   } catch (error) {
+    try { await client.query("ROLLBACK"); } catch {}
     console.error("Create proposal error:", error);
-    return res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       success: false,
-      message: "Taklif yaratishda xato yuz berdi.",
+      message: error.statusCode ? error.message : "Taklif yaratishda xato yuz berdi.",
       error: error.message,
     });
+  } finally {
+    client.release();
   }
 };
 
@@ -180,46 +233,56 @@ const getProposals = async (req, res) => {
  * Get proposal by ID
  */
 const getProposalById = async (req, res) => {
+  const client = await pool.connect();
   try {
     const { id } = req.params;
+    const userId = req.user?.id;
+    const role = req.user?.role;
 
-    const result = await pool.query(
+    await client.query("BEGIN");
+
+    const r = await client.query(
       `
       SELECT 
         p.*,
-        u.id as freelancer_id,
-        u.first_name as freelancer_first_name,
-        u.last_name as freelancer_last_name,
-        u.email as freelancer_email,
-
-        j.id as job_id,
-        j.title as job_title,
-        j.description as job_description,
-        j.client_id as job_client_id,
-        j.status as job_status
+        j.client_id AS job_client_id,
+        j.deleted_at
       FROM proposals p
-      JOIN users u ON u.id = p.freelancer_id
       JOIN jobs j ON j.id = p.job_id
-      WHERE p.id = $1 AND j.deleted_at IS NULL
+      WHERE p.id = $1
+      FOR UPDATE
       `,
       [id]
     );
 
-    if (result.rows.length === 0) {
+    if (!r.rows.length || r.rows[0].deleted_at) {
+      await client.query("ROLLBACK");
       return res.status(404).json({ success: false, message: "Taklif topilmadi." });
     }
 
-    return res.json({
-      success: true,
-      data: { proposal: result.rows[0] },
-    });
+    const proposal = r.rows[0];
+
+    // ✅ Client job egasi bo'lsa va hali viewed_at yo'q bo'lsa -> set
+    if (role === "client" && String(proposal.job_client_id) === String(userId) && !proposal.viewed_at) {
+      await client.query(
+        `UPDATE proposals SET viewed_at = NOW(), updated_at = NOW() WHERE id = $1`,
+        [id]
+      );
+      proposal.viewed_at = new Date();
+    }
+
+    await client.query("COMMIT");
+    return res.json({ success: true, data: { proposal } });
   } catch (error) {
+    try { await client.query("ROLLBACK"); } catch {}
     console.error("Get proposal by ID error:", error);
     return res.status(500).json({
       success: false,
-      message: "Taklifni olishda xato yuz berdi.",
+      message: "Taklifni olishda xato.",
       error: error.message,
     });
+  } finally {
+    client.release();
   }
 };
 
@@ -526,20 +589,14 @@ const withdrawProposal = async (req, res) => {
 
 
 
-const normalizeStatus = (s) => (s ? String(s).toLowerCase() : null);
 
-async function ensureBalanceRow(qClient, userId) {
-  await qClient.query(
-    `INSERT INTO user_balances (user_id)
-     VALUES ($1)
-     ON CONFLICT (user_id) DO NOTHING`,
-    [userId]
-  );
-}
-
+// POST /proposals/:id/accept
+// Accept -> contract flow (sizdagi eski kod) +
+// ✅ accepted deposit consume
+// ✅ other rejected deposits refund
+// =========================
 const acceptProposal = async (req, res) => {
   const client = await pool.connect();
-
   try {
     const { id } = req.params; // proposal id
     const userId = req.user.id;
@@ -564,6 +621,8 @@ const acceptProposal = async (req, res) => {
         p.freelancer_id,
         p.proposed_price,
         p.status AS proposal_status,
+        p.deposit_amount,
+        p.deposit_status,
 
         j.client_id,
         j.status AS job_status,
@@ -576,7 +635,7 @@ const acceptProposal = async (req, res) => {
       [id]
     );
 
-    if (pr.rows.length === 0 || pr.rows[0].deleted_at) {
+    if (!pr.rows.length || pr.rows[0].deleted_at) {
       await client.query("ROLLBACK");
       return res.status(404).json({ success: false, message: "Taklif topilmadi." });
     }
@@ -585,43 +644,27 @@ const acceptProposal = async (req, res) => {
 
     if (!isAdmin && String(row.client_id) !== String(userId)) {
       await client.query("ROLLBACK");
-      return res.status(403).json({ success: false, message: "Siz bu loyihaning egasi emassiz." });
+      return res.status(403).json({ success: false, message: "Siz bu job egasi emassiz." });
     }
 
     if (normalizeStatus(row.proposal_status) !== "pending") {
       await client.query("ROLLBACK");
-      return res.status(400).json({
-        success: false,
-        message: 'Faqat "pending" taklif qabul qilinadi.',
-      });
+      return res.status(400).json({ success: false, message: 'Faqat "pending" taklif qabul qilinadi.' });
     }
 
     if (normalizeStatus(row.job_status) !== "open") {
       await client.query("ROLLBACK");
-      return res.status(400).json({
-        success: false,
-        message: 'Faqat "open" loyihada qabul qilish mumkin.',
-      });
+      return res.status(400).json({ success: false, message: 'Faqat "open" jobda qabul qilish mumkin.' });
     }
 
     // 2) Contract bor-yo‘qligini tekshir
     const existing = await client.query(
-      `
-      SELECT id
-      FROM contracts
-      WHERE job_id = $1
-        AND status IN ('active','disputed')
-      LIMIT 1
-      `,
+      `SELECT id FROM contracts WHERE job_id=$1 AND status IN ('active','disputed') LIMIT 1`,
       [row.job_id]
     );
-
-    if (existing.rows.length > 0) {
+    if (existing.rows.length) {
       await client.query("ROLLBACK");
-      return res.status(409).json({
-        success: false,
-        message: "Bu job uchun allaqachon active/disputed contract bor.",
-      });
+      return res.status(409).json({ success: false, message: "Bu job uchun active/disputed contract bor." });
     }
 
     const totalAmount = Number(row.proposed_price) || 0;
@@ -630,10 +673,18 @@ const acceptProposal = async (req, res) => {
       return res.status(400).json({ success: false, message: "proposed_price noto‘g‘ri." });
     }
 
-    // 3) Proposal ACCEPT + boshqalar REJECT
-    await client.query(
-      `UPDATE proposals SET status='accepted', updated_at=NOW() WHERE id=$1`,
-      [id]
+    // 3) Proposal ACCEPT + boshqalar REJECT (LOCK bo‘lishi uchun FOR UPDATE)
+    await client.query(`UPDATE proposals SET status='accepted', updated_at=NOW() WHERE id=$1`, [id]);
+
+    // rejected list (kimlarga refund bo'ladi)
+    const rejectedList = await client.query(
+      `
+      SELECT id, freelancer_id, deposit_amount, deposit_status
+      FROM proposals
+      WHERE job_id = $1 AND id <> $2
+      FOR UPDATE
+      `,
+      [row.job_id, id]
     );
 
     await client.query(
@@ -643,50 +694,33 @@ const acceptProposal = async (req, res) => {
     );
 
     // 4) Job -> in_progress
-    await client.query(
-      `UPDATE jobs SET status='in_progress', updated_at=NOW() WHERE id=$1`,
-      [row.job_id]
-    );
+    await client.query(`UPDATE jobs SET status='in_progress', updated_at=NOW() WHERE id=$1`, [row.job_id]);
 
-    // 5) ✅ Contract yaratish
+    // 5) Contract create (sizdagi kabi)
     const contractRes = await client.query(
       `
       INSERT INTO contracts (
-        job_id,
-        freelancer_id,
-        client_id,
-        total_amount,
-        platform_fee,
-        status,
-        signed_at,
-        created_at,
-        updated_at
+        job_id, freelancer_id, client_id,
+        total_amount, platform_fee,
+        status, signed_at, created_at, updated_at
       )
       VALUES ($1,$2,$3,$4,$5,'active',NOW(),NOW(),NOW())
       RETURNING *
       `,
       [row.job_id, row.freelancer_id, row.client_id, totalAmount, 0]
     );
-
     const contract = contractRes.rows[0];
 
-    // 🔥 5.1) ✅ AUTO MILESTONE CREATE (UPWORK STYLE)
-    // ❗ Pulga tegilmaydi — faqat RECORD
+    // 5.1) milestone create (sizdagi kabi)
     await client.query(
       `
-      INSERT INTO milestones (
-        contract_id,
-        title,
-        amount,
-        status,
-        created_at
-      )
+      INSERT INTO milestones (contract_id, title, amount, status, created_at)
       VALUES ($1, $2, $3, 'pending', NOW())
       `,
       [contract.id, "Full project", totalAmount]
     );
 
-    // 6) Chat yaratish
+    // 6) chat create (sizdagi kabi)
     const chatIns = await client.query(
       `
       INSERT INTO chats (contract_id, job_id, status, created_at)
@@ -699,34 +733,20 @@ const acceptProposal = async (req, res) => {
 
     const chat =
       chatIns.rows[0] ||
-      (
-        await client.query(
-          `SELECT * FROM chats WHERE contract_id=$1 LIMIT 1`,
-          [contract.id]
-        )
-      ).rows[0] ||
+      (await client.query(`SELECT * FROM chats WHERE contract_id=$1 LIMIT 1`, [contract.id])).rows[0] ||
       null;
 
-    // 7) ✅ AUTO ESCROW HOLD (AS IS — O‘ZGARMAGAN)
+    // 7) auto escrow hold (sizdagi logika qoldi)
     await ensureBalanceRow(client, row.client_id);
 
     const balR = await client.query(
-      `
-      SELECT available_balance, escrow_balance
-      FROM user_balances
-      WHERE user_id = $1
-      FOR UPDATE
-      `,
+      `SELECT available_balance, escrow_balance FROM user_balances WHERE user_id=$1 FOR UPDATE`,
       [row.client_id]
     );
-
     const available = Number(balR.rows[0]?.available_balance ?? 0);
     if (available < totalAmount) {
       await client.query("ROLLBACK");
-      return res.status(400).json({
-        success: false,
-        message: "Balansda yetarli mablag' yo'q. Avval deposit qiling.",
-      });
+      return res.status(400).json({ success: false, message: "Balansda yetarli mablag' yo'q. Avval deposit qiling." });
     }
 
     await client.query(
@@ -742,19 +762,7 @@ const acceptProposal = async (req, res) => {
 
     await client.query(
       `
-      INSERT INTO transactions (
-        user_id,
-        type,
-        amount,
-        currency,
-        gateway,
-        status,
-        metadata,
-        job_id,
-        contract_id,
-        created_at,
-        updated_at
-      )
+      INSERT INTO transactions (user_id,type,amount,currency,gateway,status,metadata,job_id,contract_id,created_at,updated_at)
       VALUES ($1,'escrow_hold',$2,'UZS','internal','completed',$3,$4,$5,NOW(),NOW())
       `,
       [
@@ -771,28 +779,69 @@ const acceptProposal = async (req, res) => {
       ]
     );
 
+    // ===========================
+    // ✅ DEPOSIT LOGIC
+    // ===========================
+
+    // A) accepted proposal deposit -> consume (locked -> platform)
+    const acceptedDepAmt = Number(row.deposit_amount || 0);
+    if (acceptedDepAmt > 0 && row.deposit_status === "locked") {
+      const idemKey = `proposal_consume:${row.proposal_id}`;
+      await consumeLockedToPlatform(client, {
+        userId: row.freelancer_id,
+        platformUserId: PLATFORM_USER_ID,
+        amount: acceptedDepAmt,
+        currency: "UZS",
+        meta: { proposal_id: String(row.proposal_id), contract_id: String(contract.id), reason: "accepted_hired" },
+        idempotencyKey: idemKey,
+      });
+
+      await client.query(
+        `UPDATE proposals SET deposit_status='consumed', updated_at=NOW() WHERE id=$1`,
+        [row.proposal_id]
+      );
+    }
+
+    // B) rejected proposals deposit -> refund
+    for (const p of rejectedList.rows) {
+      const amt = Number(p.deposit_amount || 0);
+      if (amt > 0 && p.deposit_status === "locked") {
+        const idemKey = `proposal_refund:${p.id}`;
+        await refundLockedToAvailable(client, {
+          userId: p.freelancer_id,
+          amount: amt,
+          currency: "UZS",
+          meta: { proposal_id: String(p.id), job_id: String(row.job_id), reason: "rejected_after_accept" },
+          idempotencyKey: idemKey,
+        });
+
+        await client.query(
+          `UPDATE proposals SET deposit_status='refunded', updated_at=NOW() WHERE id=$1`,
+          [p.id]
+        );
+      }
+    }
+
     await client.query("COMMIT");
 
     return res.json({
       success: true,
-      message:
-        "Taklif qabul qilindi! Contract, chat va milestone yaratildi, escrow band qilindi.",
+      message: "Taklif qabul qilindi! Contract/chat yaratildi. Depositlar consume/refund qilindi.",
       data: { contract, chat },
     });
   } catch (error) {
-    try {
-      await client.query("ROLLBACK");
-    } catch {}
+    try { await client.query("ROLLBACK"); } catch {}
     console.error("Accept proposal error:", error);
-    return res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       success: false,
-      message: "Taklifni qabul qilishda xato.",
+      message: error.statusCode ? error.message : "Taklifni qabul qilishda xato.",
       error: error.message,
     });
   } finally {
     client.release();
   }
 };
+
 
 module.exports = { acceptProposal };
 
@@ -804,6 +853,7 @@ module.exports = { acceptProposal };
  * Reject proposal (client/admin)
  */
 const rejectProposal = async (req, res) => {
+  const client = await pool.connect();
   try {
     const { id } = req.params;
     const userId = req.user.id;
@@ -813,57 +863,81 @@ const rejectProposal = async (req, res) => {
     if (!["client", "admin"].includes(userRole)) {
       return res.status(403).json({
         success: false,
-        message: "Faqat client yoki admin taklifni rad etishi mumkin.",
+        message: "Faqat client yoki admin rad etishi mumkin.",
       });
     }
 
-    const proposalResult = await pool.query(
+    await client.query("BEGIN");
+
+    const q = await client.query(
       `
       SELECT 
-        p.id,
-        p.status,
-        j.client_id,
-        j.deleted_at
+        p.id, p.status, p.freelancer_id, p.deposit_amount, p.deposit_status,
+        j.client_id, j.deleted_at
       FROM proposals p
       JOIN jobs j ON j.id = p.job_id
       WHERE p.id = $1
+      FOR UPDATE
       `,
       [id]
     );
 
-    if (proposalResult.rows.length === 0 || proposalResult.rows[0].deleted_at) {
+    if (!q.rows.length || q.rows[0].deleted_at) {
+      await client.query("ROLLBACK");
       return res.status(404).json({ success: false, message: "Taklif topilmadi." });
     }
 
-    const row = proposalResult.rows[0];
+    const row = q.rows[0];
 
-    if (!isAdmin && row.client_id !== userId) {
-      return res.status(403).json({
-        success: false,
-        message: "Siz bu loyihaning egasi emassiz.",
-      });
+    if (!isAdmin && String(row.client_id) !== String(userId)) {
+      await client.query("ROLLBACK");
+      return res.status(403).json({ success: false, message: "Siz bu job egasi emassiz." });
     }
 
-    if (row.status !== "pending") {
+    if (normalizeStatus(row.status) !== "pending") {
+      await client.query("ROLLBACK");
       return res.status(400).json({
         success: false,
-        message: 'Faqat "pending" statusdagi takliflarni rad etish mumkin.',
+        message: 'Faqat "pending" statusdagi taklifni rad etish mumkin.',
       });
     }
 
-    await pool.query(
-      "UPDATE proposals SET status='rejected', updated_at = CURRENT_TIMESTAMP WHERE id = $1",
+    // 1) status -> rejected
+    await client.query(
+      `UPDATE proposals SET status='rejected', updated_at=NOW() WHERE id=$1`,
       [id]
     );
 
-    return res.json({ success: true, message: "Taklif rad etildi!" });
+    // 2) refund deposit
+    const depAmt = Number(row.deposit_amount || 0);
+    if (depAmt > 0 && row.deposit_status === "locked") {
+      const idemKey = `proposal_refund:${row.id}`;
+      await refundLockedToAvailable(client, {
+        userId: row.freelancer_id,
+        amount: depAmt,
+        currency: "UZS",
+        meta: { proposal_id: String(row.id), reason: "rejected_by_client" },
+        idempotencyKey: idemKey,
+      });
+
+      await client.query(
+        `UPDATE proposals SET deposit_status='refunded', updated_at=NOW() WHERE id=$1`,
+        [id]
+      );
+    }
+
+    await client.query("COMMIT");
+    return res.json({ success: true, message: "Taklif rad etildi, deposit qaytarildi." });
   } catch (error) {
+    try { await client.query("ROLLBACK"); } catch {}
     console.error("Reject proposal error:", error);
-    return res.status(500).json({
+    return res.status(error.statusCode || 500).json({
       success: false,
-      message: "Taklifni rad etishda xato yuz berdi.",
+      message: error.statusCode ? error.message : "Taklifni rad etishda xato.",
       error: error.message,
     });
+  } finally {
+    client.release();
   }
 };
 
