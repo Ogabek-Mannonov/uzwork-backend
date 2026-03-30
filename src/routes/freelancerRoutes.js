@@ -35,8 +35,6 @@ router.post("/premium", authenticate, authorize("freelancer"), activatePremium);
 router.post("/me/ai-portfolio", authenticate, authorize("freelancer"), aiPortfolio);
 router.post("/:id/save", authenticate, authorize("client", "admin"), saveFreelancer);
 
-// ✅ Dynamic OXIRIDA
-router.get("/:id", getFreelancerById);
 router.post(
   "/me/cv",
   authenticate,
@@ -45,10 +43,6 @@ router.post(
   uploadMyCv
 );
 router.delete("/me/cv", authenticate, authorize("freelancer"), deleteMyCv);
-
-
-
-router.get("/:id/portfolio", getPublicPortfolioByFreelancerId);
 
 // ✅ Protected portfolio (freelancer)
 router.get("/me/portfolio", authenticate, authorize("freelancer"), getMyPortfolio);
@@ -71,5 +65,9 @@ router.delete(
   authorize("freelancer"),
   deletePortfolioMedia
 );
+
+// ✅ Dynamic OXIRIDA
+router.get("/:id", getFreelancerById);
+router.get("/:id/portfolio", getPublicPortfolioByFreelancerId);
 
 module.exports = router;

@@ -69,13 +69,13 @@ const getMyProfile = async (req, res) => {
       "last_name",
       "role",
       "username",
-      "avatar_url",
-      "is_email_verified",
-      "is_phone_verified",
       "created_at",
       "updated_at",
     ];
 
+    if (hasUserColumn(cache, "avatar_url")) selectCols.push("avatar_url");
+    if (hasUserColumn(cache, "is_email_verified")) selectCols.push("is_email_verified");
+    if (hasUserColumn(cache, "is_phone_verified")) selectCols.push("is_phone_verified");
     if (hasUserColumn(cache, "is_kyc_verified")) selectCols.push("is_kyc_verified");
     if (hasUserColumn(cache, "kyc_status")) selectCols.push("kyc_status");
 
@@ -101,29 +101,13 @@ const getMyProfile = async (req, res) => {
 
     if (user.role === "freelancer") {
       const fp = await pool.query(
-        `
-        SELECT
-          user_id, title, bio, hourly_rate, location,
-          languages, skills, portfolio_urls,
-          rating, completed_jobs,
-          avatar_url, cover_url, availability_status,
-          created_at, updated_at
-        FROM freelancer_profiles
-        WHERE user_id = $1
-        `,
+        `SELECT * FROM freelancer_profiles WHERE user_id = $1`,
         [userId]
       );
       roleProfile = fp.rows[0] || null;
     } else if (user.role === "client") {
       const cp = await pool.query(
-        `
-        SELECT
-          user_id, company_name, company_website, company_size,
-          rating, spent_total,
-          created_at, updated_at
-        FROM client_profiles
-        WHERE user_id = $1
-        `,
+        `SELECT * FROM client_profiles WHERE user_id = $1`,
         [userId]
       );
       roleProfile = cp.rows[0] || null;
@@ -186,8 +170,9 @@ const getUserProfile = async (req, res) => {
     const cache = await loadSchemaCache();
 
     // Public profile => email/phone yo‘q
-    const selectCols = ["id", "first_name", "last_name", "role", "username", "avatar_url", "created_at"];
+    const selectCols = ["id", "first_name", "last_name", "role", "username", "created_at"];
 
+    if (hasUserColumn(cache, "avatar_url")) selectCols.push("avatar_url");
     if (hasUserColumn(cache, "is_kyc_verified")) selectCols.push("is_kyc_verified");
 
     const hasDeletedAt = hasUserColumn(cache, "deleted_at");
@@ -211,29 +196,13 @@ const getUserProfile = async (req, res) => {
 
     if (user.role === "freelancer") {
       const fp = await pool.query(
-        `
-        SELECT
-          user_id, title, bio, hourly_rate, location,
-          languages, skills, portfolio_urls,
-          rating, completed_jobs,
-          avatar_url, cover_url, availability_status,
-          created_at, updated_at
-        FROM freelancer_profiles
-        WHERE user_id = $1
-        `,
+        `SELECT * FROM freelancer_profiles WHERE user_id = $1`,
         [userId]
       );
       roleProfile = fp.rows[0] || null;
     } else if (user.role === "client") {
       const cp = await pool.query(
-        `
-        SELECT
-          user_id, company_name, company_website, company_size,
-          rating, spent_total,
-          created_at, updated_at
-        FROM client_profiles
-        WHERE user_id = $1
-        `,
+        `SELECT * FROM client_profiles WHERE user_id = $1`,
         [userId]
       );
       roleProfile = cp.rows[0] || null;
@@ -298,7 +267,6 @@ const updateMyProfile = async (req, res) => {
         location,
         languages,
         skills,
-        portfolio_urls,
         avatar_url,
         cover_url,
         availability_status,
@@ -308,13 +276,13 @@ const updateMyProfile = async (req, res) => {
         `
         INSERT INTO freelancer_profiles (
           user_id, title, bio, hourly_rate, location,
-          languages, skills, portfolio_urls,
+          languages, skills,
           avatar_url, cover_url, availability_status
         )
         VALUES (
           $1, $2, $3, $4, $5,
-          $6::jsonb, $7::jsonb, $8::jsonb,
-          $9, $10, $11
+          $6::jsonb, $7::jsonb,
+          $8, $9, $10
         )
         ON CONFLICT (user_id) DO UPDATE SET
           title = COALESCE(EXCLUDED.title, freelancer_profiles.title),
@@ -323,7 +291,6 @@ const updateMyProfile = async (req, res) => {
           location = COALESCE(EXCLUDED.location, freelancer_profiles.location),
           languages = COALESCE(EXCLUDED.languages, freelancer_profiles.languages),
           skills = COALESCE(EXCLUDED.skills, freelancer_profiles.skills),
-          portfolio_urls = COALESCE(EXCLUDED.portfolio_urls, freelancer_profiles.portfolio_urls),
           avatar_url = COALESCE(EXCLUDED.avatar_url, freelancer_profiles.avatar_url),
           cover_url = COALESCE(EXCLUDED.cover_url, freelancer_profiles.cover_url),
           availability_status = COALESCE(EXCLUDED.availability_status, freelancer_profiles.availability_status),
@@ -338,7 +305,6 @@ const updateMyProfile = async (req, res) => {
           toStrOrNull(location),
           toJsonbOrNull(languages),
           toJsonbOrNull(skills),
-          toJsonbOrNull(portfolio_urls),
           toStrOrNull(avatar_url),
           toStrOrNull(cover_url),
           toStrOrNull(availability_status),
