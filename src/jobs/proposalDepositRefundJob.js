@@ -22,7 +22,7 @@ async function runProposalDepositRefundJob() {
       FOR UPDATE
       LIMIT 200
       `,
-      [`${HOURS} hours`]
+      [HOURS]
     );
 
     for (const p of q.rows) {
