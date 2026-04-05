@@ -278,6 +278,7 @@ const updateMyProfile = async (req, res) => {
       languages,
       skills,
       cover_url,
+      cv_url,
       availability_status,
 
       // Client specific
@@ -335,12 +336,12 @@ const updateMyProfile = async (req, res) => {
         INSERT INTO freelancer_profiles (
           user_id, title, bio, hourly_rate, location,
           languages, skills,
-          avatar_url, cover_url, availability_status
+          avatar_url, cover_url, cv_url, availability_status
         )
         VALUES (
           $1, $2, $3, $4, $5,
           $6::jsonb, $7::jsonb,
-          $8, $9, $10
+          $8, $9, $10, $11
         )
         ON CONFLICT (user_id) DO UPDATE SET
           title = COALESCE(EXCLUDED.title, freelancer_profiles.title),
@@ -351,6 +352,7 @@ const updateMyProfile = async (req, res) => {
           skills = COALESCE(EXCLUDED.skills, freelancer_profiles.skills),
           avatar_url = COALESCE(EXCLUDED.avatar_url, freelancer_profiles.avatar_url),
           cover_url = COALESCE(EXCLUDED.cover_url, freelancer_profiles.cover_url),
+          cv_url = COALESCE(EXCLUDED.cv_url, freelancer_profiles.cv_url),
           availability_status = COALESCE(EXCLUDED.availability_status, freelancer_profiles.availability_status),
           updated_at = NOW()
         RETURNING *
@@ -365,6 +367,7 @@ const updateMyProfile = async (req, res) => {
           toJsonbOrNull(skills),
           toStrOrNull(avatar_url),
           toStrOrNull(cover_url),
+          toStrOrNull(cv_url),
           toStrOrNull(availability_status),
         ]
       );
@@ -407,5 +410,6 @@ const updateMyProfile = async (req, res) => {
     client.release();
   }
 };
+
 
 module.exports = { getMyProfile, getUserProfile, updateMyProfile };

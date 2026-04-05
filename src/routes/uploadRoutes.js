@@ -3,10 +3,14 @@ const express = require("express");
 const router = express.Router();
 
 const { authenticate } = require("../middlewares/authMiddleware");
-const { upload, uploadVoice } = require("../controllers/uploadController");
+const { upload, uploadGeneralFile, uploadVoice } = require("../controllers/uploadController");
 
-// ✅ Voice upload
-// field name: "voice"
+// ✅ Voice upload (legacy support)
 router.post("/voice", authenticate, upload.single("voice"), uploadVoice);
 
+// ✅ General file upload (CV, etc.)
+// field name: "file"
+router.post("/", authenticate, upload.single("file"), uploadGeneralFile);
+
 module.exports = router;
+

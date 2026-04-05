@@ -15,8 +15,10 @@ const ALLOWED_RELATED_TYPES = new Set([
   "job",
   "message",
   "dispute",
+  "resume", // Added for CV/Resume support
   "other",
 ]);
+
 
 /**
  * POST /files/upload

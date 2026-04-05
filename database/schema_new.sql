@@ -46,10 +46,12 @@ CREATE TABLE IF NOT EXISTS freelancer_profiles (
     completed_jobs INT DEFAULT 0,
     avatar_url TEXT,
     cover_url TEXT,
+    cv_url TEXT, -- CV fayli uchun link
     availability_status VARCHAR(20) DEFAULT 'available', -- available, busy, offline
     created_at TIMESTAMP DEFAULT NOW(),
     updated_at TIMESTAMP DEFAULT NOW()
 );
+
 
 CREATE TABLE IF NOT EXISTS client_profiles (
     user_id UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
