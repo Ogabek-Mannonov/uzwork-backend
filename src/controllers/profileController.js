@@ -253,26 +253,84 @@ const getUserProfile = async (req, res) => {
 };
 
 const updateMyProfile = async (req, res) => {
+  const client = await pool.connect();
   try {
     const userId = req.user?.id;
     const role = req.user?.role;
 
     if (!userId) return res.status(401).json({ success: false, message: "Auth kerak." });
 
-    if (role === "freelancer") {
-      const {
-        title,
-        bio,
-        hourly_rate,
-        location,
-        languages,
-        skills,
-        avatar_url,
-        cover_url,
-        availability_status,
-      } = req.body;
+    const {
+      // Users table fields
+      first_name,
+      last_name,
+      display_name,
+      email,
+      phone,
+      avatar_url,
+      // Freelancer/Client common fields
+      location,
 
-      const result = await pool.query(
+      // Freelancer specific
+      title,
+      bio,
+      hourly_rate,
+      languages,
+      skills,
+      cover_url,
+      availability_status,
+
+      // Client specific
+      company_name,
+      company_website,
+      company_size,
+    } = req.body;
+
+    await client.query("BEGIN");
+
+    // 1. Update users table (shared info)
+    const userUpdateCols = [];
+    const userUpdateVals = [];
+    let paramIdx = 1;
+
+    if (first_name !== undefined) {
+      userUpdateCols.push(`first_name = $${paramIdx++}`);
+      userUpdateVals.push(toStrOrNull(first_name));
+    }
+    if (last_name !== undefined) {
+      userUpdateCols.push(`last_name = $${paramIdx++}`);
+      userUpdateVals.push(toStrOrNull(last_name));
+    }
+    if (display_name !== undefined) {
+      userUpdateCols.push(`display_name = $${paramIdx++}`);
+      userUpdateVals.push(toStrOrNull(display_name));
+    }
+    if (email !== undefined) {
+      userUpdateCols.push(`email = $${paramIdx++}`);
+      userUpdateVals.push(toStrOrNull(email));
+    }
+    if (phone !== undefined) {
+      userUpdateCols.push(`phone = $${paramIdx++}`);
+      userUpdateVals.push(toStrOrNull(phone));
+    }
+    if (avatar_url !== undefined) {
+      userUpdateCols.push(`avatar_url = $${paramIdx++}`);
+      userUpdateVals.push(toStrOrNull(avatar_url));
+    }
+
+    if (userUpdateCols.length > 0) {
+      userUpdateVals.push(userId);
+      await client.query(
+        `UPDATE users SET ${userUpdateCols.join(", ")}, updated_at = NOW() WHERE id = $${paramIdx}`,
+        userUpdateVals
+      );
+    }
+
+    let roleProfile = null;
+
+    // 2. Update role-specific profile table
+    if (role === "freelancer") {
+      const result = await client.query(
         `
         INSERT INTO freelancer_profiles (
           user_id, title, bio, hourly_rate, location,
@@ -310,18 +368,9 @@ const updateMyProfile = async (req, res) => {
           toStrOrNull(availability_status),
         ]
       );
-
-      return res.json({
-        success: true,
-        message: "Freelancer profili yangilandi!",
-        data: { profile: result.rows[0] },
-      });
-    }
-
-    if (role === "client") {
-      const { company_name, company_website, company_size } = req.body;
-
-      const result = await pool.query(
+      roleProfile = result.rows[0];
+    } else if (role === "client") {
+      const result = await client.query(
         `
         INSERT INTO client_profiles (
           user_id, company_name, company_website, company_size
@@ -336,25 +385,26 @@ const updateMyProfile = async (req, res) => {
         `,
         [userId, toStrOrNull(company_name), toStrOrNull(company_website), toStrOrNull(company_size)]
       );
-
-      return res.json({
-        success: true,
-        message: "Client profili yangilandi!",
-        data: { profile: result.rows[0] },
-      });
+      roleProfile = result.rows[0];
     }
 
-    return res.status(400).json({
-      success: false,
-      message: "Role noto‘g‘ri yoki qo‘llab-quvvatlanmagan.",
+    await client.query("COMMIT");
+
+    return res.json({
+      success: true,
+      message: "Profil muvaffaqiyatli yangilandi!",
+      data: { profile: roleProfile },
     });
   } catch (error) {
+    await client.query("ROLLBACK");
     console.error("Update profile error:", error);
     return res.status(500).json({
       success: false,
       message: "Profilni yangilashda xato yuz berdi.",
       error: error.message,
     });
+  } finally {
+    client.release();
   }
 };
 
