@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 
+const { authenticate, authorize } = require("../middlewares/authMiddleware");
 const uploadCertification = require("../middlewares/uploadCertification");
 
 const {
@@ -13,16 +14,12 @@ const {
   deleteCertificationFile,
 } = require("../controllers/freelancerCertificationsController");
 
-// ✅ Public (MUST be before "/:id")
-router.get("/:id/certifications", getPublicCertificationsByFreelancerId);
-
-// ✅ Protected (freelancer)
+// ✅ Protected /me/* routes AVVAL (/:id wildcard dan oldin!)
 router.get("/me/certifications", authenticate, authorize("freelancer"), getMyCertifications);
 router.post("/me/certifications", authenticate, authorize("freelancer"), createCertification);
 router.put("/me/certifications/:certId", authenticate, authorize("freelancer"), updateCertification);
 router.delete("/me/certifications/:certId", authenticate, authorize("freelancer"), deleteCertification);
 
-// ✅ Upload file (optional)
 router.post(
   "/me/certifications/:certId/file",
   authenticate,
@@ -37,6 +34,9 @@ router.delete(
   authorize("freelancer"),
   deleteCertificationFile
 );
+
+// ✅ Public /:id/* routes OXIRIDA (wildcard — "me" ni tutib qolmasligi uchun)
+router.get("/:id/certifications", getPublicCertificationsByFreelancerId);
 
 module.exports = router;
 

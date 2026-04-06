@@ -21,9 +21,20 @@ const {
   deletePortfolioMedia,
 } = require("../controllers/freelancerController");
 
+const {
+  getPublicCertificationsByFreelancerId,
+  getMyCertifications,
+  createCertification,
+  updateCertification,
+  deleteCertification,
+  uploadCertificationFile,
+  deleteCertificationFile,
+} = require("../controllers/freelancerCertificationsController");
+
 const { authenticate, authorize } = require("../middlewares/authMiddleware");
 const uploadCv = require("../middlewares/uploadCv");
 const uploadPortfolio = require("../middlewares/uploadPortfolio");
+const uploadCertification = require("../middlewares/uploadCertification");
 
 // ✅ Public
 router.get("/", getFreelancers);
@@ -66,8 +77,28 @@ router.delete(
   deletePortfolioMedia
 );
 
+// ✅ Certifications — /me/* static OLDIN, /:id/* dynamic KEYIN
+router.get("/me/certifications", authenticate, authorize("freelancer"), getMyCertifications);
+router.post("/me/certifications", authenticate, authorize("freelancer"), createCertification);
+router.put("/me/certifications/:certId", authenticate, authorize("freelancer"), updateCertification);
+router.delete("/me/certifications/:certId", authenticate, authorize("freelancer"), deleteCertification);
+router.post(
+  "/me/certifications/:certId/file",
+  authenticate,
+  authorize("freelancer"),
+  uploadCertification.single("file"),
+  uploadCertificationFile
+);
+router.delete(
+  "/me/certifications/:certId/file",
+  authenticate,
+  authorize("freelancer"),
+  deleteCertificationFile
+);
+
 // ✅ Dynamic OXIRIDA
 router.get("/:id", getFreelancerById);
 router.get("/:id/portfolio", getPublicPortfolioByFreelancerId);
+router.get("/:id/certifications", getPublicCertificationsByFreelancerId);
 
 module.exports = router;

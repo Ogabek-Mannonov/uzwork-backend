@@ -35,6 +35,7 @@ const uploadRoutes = require("./routes/uploadRoutes");
 const disputeRoutes = require("./routes/disputeRoutes");
 const milestoneRoutes = require("./routes/milestoneRoutes");
 const landingRoutes = require("./routes/landingRoutes");
+// freelancerCertificationsRoutes endi freelancerRoutes.js ichida birlashtirildi
 
 
 

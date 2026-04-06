@@ -12,6 +12,7 @@
     "setup-new-schema": "node scripts/setup-new-schema.js",
     "check-missing-tables": "node scripts/check-missing-tables.js",
     "show-tables": "node scripts/show-tables.js",
+    "create-cert-table": "node scripts/create_certifications_table.js",
     "test-all": "powershell -ExecutionPolicy Bypass -File ./test-all-apis.ps1",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
@@ -39,6 +40,7 @@
     "node-cron": "^4.2.1",
     "nodemailer": "^8.0.4",
     "pg": "^8.16.3",
+    "sharp": "^0.34.5",
     "socket.io": "^4.8.3"
   },
   "devDependencies": {
