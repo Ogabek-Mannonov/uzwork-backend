@@ -150,7 +150,8 @@ const signup = async (req, res) => {
     await client.query("COMMIT");
 
     if (email) {
-      await sendEmail({
+      // Don't wait for email to send before responding to the user, or at least release client first
+      const emailPromise = sendEmail({
         to: email,
         subject: "Hisobni tasdiqlash kodi",
         html: `
@@ -161,7 +162,7 @@ const signup = async (req, res) => {
           <br />
           <p>Hurmat bilan,<br/><b>UzWork Platformasi</b></p>
         `,
-      });
+      }).catch(err => console.error("Signup email error:", err));
     }
 
     // Instead of giving access straight away, require verification
@@ -740,7 +741,6 @@ const resetPassword = async (req, res) => {
 
 /* ===================== GOOGLE OAUTH ===================== */
 const googleLogin = async (req, res) => {
-  const client = await pool.connect();
   try {
     const { credential, role } = req.body; 
     
@@ -759,103 +759,111 @@ const googleLogin = async (req, res) => {
     const payload = await response.json();
     const { email, given_name, family_name, picture, sub } = payload;
 
-    await client.query("BEGIN");
+    const client = await pool.connect();
+    
+    try {
+      await client.query("BEGIN");
 
-    // Check if user exists by email
-    let userQ = await client.query(
-      `SELECT id, username, email, phone, role, status, first_name, last_name, display_name, is_verified, avatar_url 
-       FROM users WHERE email = $1 AND deleted_at IS NULL LIMIT 1`,
-      [email]
-    );
-
-    let user;
-
-    if (userQ.rowCount > 0) {
-      user = userQ.rows[0];
-      if (user.status === "blocked") {
-        await client.query("ROLLBACK");
-        return res.status(403).json({ success: false, message: "User bloklangan." });
-      }
-    } else {
-      // Create new user via Google
-      const finalRole = role && ["freelancer", "client"].includes(role) ? role : "freelancer";
-      const username = "g_" + sub.substring(0, 10); 
-      
-      const ins = await client.query(
-        `INSERT INTO users
-          (username, email, role, first_name, last_name, display_name, is_verified, avatar_url)
-         VALUES
-          ($1,$2,$3,$4,$5,$6,$7,$8)
-         RETURNING id, username, email, phone, role, first_name, last_name, display_name, is_verified, avatar_url, created_at, status`,
-        [
-          username,
-          email,
-          finalRole,
-          given_name || "User",
-          family_name || "",
-          given_name || "Google User",
-          true,
-          picture || null
-        ]
+      // Check if user exists by email
+      let userQ = await client.query(
+        `SELECT id, username, email, phone, role, status, first_name, last_name, display_name, is_verified, avatar_url 
+         FROM users WHERE email = $1 AND deleted_at IS NULL LIMIT 1`,
+        [email]
       );
 
-      user = ins.rows[0];
+      let user;
 
-      if (finalRole === "freelancer") {
-        await client.query(`INSERT INTO freelancer_profiles (user_id) VALUES ($1) ON CONFLICT DO NOTHING`, [user.id]);
+      if (userQ.rowCount > 0) {
+        user = userQ.rows[0];
+        if (user.status === "blocked") {
+          await client.query("ROLLBACK");
+          client.release();
+          return res.status(403).json({ success: false, message: "User bloklangan." });
+        }
       } else {
-        await client.query(`INSERT INTO client_profiles (user_id) VALUES ($1) ON CONFLICT DO NOTHING`, [user.id]);
+        // Create new user via Google
+        const finalRole = role && ["freelancer", "client"].includes(role) ? role : "freelancer";
+        const username = "g_" + sub.substring(0, 10); 
+        
+        const ins = await client.query(
+          `INSERT INTO users
+            (username, email, role, first_name, last_name, display_name, is_verified, avatar_url)
+           VALUES
+            ($1,$2,$3,$4,$5,$6,$7,$8)
+           RETURNING id, username, email, phone, role, first_name, last_name, display_name, is_verified, avatar_url, created_at, status`,
+          [
+            username,
+            email,
+            finalRole,
+            given_name || "User",
+            family_name || "",
+            given_name || "Google User",
+            true,
+            picture || null
+          ]
+        );
+
+        user = ins.rows[0];
+
+        if (finalRole === "freelancer") {
+          await client.query(`INSERT INTO freelancer_profiles (user_id) VALUES ($1) ON CONFLICT DO NOTHING`, [user.id]);
+        } else {
+          await client.query(`INSERT INTO client_profiles (user_id) VALUES ($1) ON CONFLICT DO NOTHING`, [user.id]);
+        }
+
+        await client.query(
+          `INSERT INTO user_balances (user_id, available_balance, reserved_balance, escrow_balance, total_earned, total_spent)
+           VALUES ($1, 0, 0, 0, 0, 0)
+           ON CONFLICT DO NOTHING`,
+          [user.id]
+        );
       }
+
+      await client.query("COMMIT");
+
+      const accessToken = generateAccessToken(user);
+      const refreshToken = generateRefreshToken(user);
+      const expiresAt = getTokenExpiryDate(refreshToken);
 
       await client.query(
-        `INSERT INTO user_balances (user_id, available_balance, reserved_balance, escrow_balance, total_earned, total_spent)
-         VALUES ($1, 0, 0, 0, 0, 0)
-         ON CONFLICT DO NOTHING`,
-        [user.id]
+        `INSERT INTO refresh_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)`,
+        [user.id, refreshToken, expiresAt || new Date(Date.now() + 7 * 24 * 3600 * 1000)]
       );
-    }
 
-    await client.query("COMMIT");
+      client.release();
 
-    const accessToken = generateAccessToken(user);
-    const refreshToken = generateRefreshToken(user);
-    const expiresAt = getTokenExpiryDate(refreshToken);
-
-    await pool.query(
-      `INSERT INTO refresh_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)`,
-      [user.id, refreshToken, expiresAt || new Date(Date.now() + 7 * 24 * 3600 * 1000)]
-    );
-
-    return res.json({
-      success: true,
-      message: "Google orqali kirdingiz!",
-      data: {
-        user: {
-          id: user.id,
-          username: user.username,
-          email: user.email,
-          phone: user.phone,
-          role: user.role,
-          first_name: user.first_name,
-          last_name: user.last_name,
-          display_name: user.display_name || user.username,
-          is_verified: user.is_verified,
-          avatar_url: user.avatar_url,
+      return res.json({
+        success: true,
+        message: "Google orqali kirdingiz!",
+        data: {
+          user: {
+            id: user.id,
+            username: user.username,
+            email: user.email,
+            phone: user.phone,
+            role: user.role,
+            first_name: user.first_name,
+            last_name: user.last_name,
+            display_name: user.display_name || user.username,
+            is_verified: user.is_verified,
+            avatar_url: user.avatar_url,
+          },
+          accessToken,
+          refreshToken,
         },
-        accessToken,
-        refreshToken,
-      },
-    });
+      });
+    } catch (dbError) {
+      try { await client.query("ROLLBACK"); } catch (e) {}
+      client.release();
+      throw dbError;
+    }
   } catch (error) {
-    try { await client.query("ROLLBACK"); } catch (e) {}
     console.error("Google Login Error:", error);
     return res.status(500).json({
       success: false,
       message: "Google login xato.",
       error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
-  } finally {
-    client.release();
   }
 };
 
