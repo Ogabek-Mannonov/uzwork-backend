@@ -548,6 +548,24 @@ const getRecommendedProjects = async (req, res) => {
       return res.status(403).json({ success: false, message: 'Faqat freelancerlar uchun.' });
     }
 
+    const {
+      status = 'open',
+      budget_type,
+      job_type,
+      min_budget,
+      max_budget,
+      search,
+      page = 1,
+      limit = 20,
+      sort_by = 'created_at',
+      order = 'DESC'
+    } = req.query;
+
+    const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
+    const validSortColumns = ['created_at', 'budget_min', 'budget_max', 'title', 'skill_match_count'];
+    const sortColumn = validSortColumns.includes(sort_by) ? sort_by : 'created_at';
+    const sortOrder = String(order).toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+
     const fr = await pool.query(
       `SELECT COALESCE(skills, '[]'::jsonb) AS skills
        FROM freelancer_profiles
@@ -557,59 +575,89 @@ const getRecommendedProjects = async (req, res) => {
 
     const skillsArr = normalizeToArray(fr.rows[0]?.skills || []);
 
-    // skills bo‘lmasa: oddiy top open jobs
-    if (skillsArr.length === 0) {
-      const r = await pool.query(`
-        SELECT
-          j.*,
-          u.first_name as client_first_name,
-          u.last_name as client_last_name,
-          u.username as client_username,
-          (SELECT COUNT(*)::int FROM proposals pr WHERE pr.job_id = j.id) as proposals_count
-        FROM jobs j
-        JOIN users u ON u.id = j.client_id
-        WHERE j.status='open' AND j.deleted_at IS NULL
-        ORDER BY j.is_boosted DESC, j.created_at DESC
-        LIMIT 10
-      `);
+    let where = ['j.deleted_at IS NULL'];
+    let params = [];
+    let i = 1;
 
-      return res.json({
-        success: true,
-        message: 'Tavsiya etilgan loyihalar',
-        data: { projects: r.rows }
-      });
+    if (status && status !== 'all') {
+      where.push(`j.status = $${i++}`);
+      params.push(status);
     }
 
-    // skill overlap: required_skills ?| array['a','b']
-    const r = await pool.query(
-      `
+    const jt = job_type || budget_type;
+    if (jt) {
+      where.push(`j.job_type = $${i++}`);
+      params.push(jt);
+    }
+
+    if (min_budget != null) {
+      where.push(`j.budget_max >= $${i++}`);
+      params.push(Number(min_budget));
+    }
+
+    if (max_budget != null) {
+      where.push(`j.budget_min <= $${i++}`);
+      params.push(Number(max_budget));
+    }
+
+    if (search) {
+      where.push(`(j.title ILIKE $${i} OR j.description ILIKE $${i})`);
+      params.push(`%${search}%`);
+      i++;
+    }
+
+    if (skillsArr.length > 0) {
+      where.push(`(COALESCE(j.required_skills,'[]'::jsonb) ?| $${i}::text[])`);
+      params.push(skillsArr);
+      i++;
+    }
+
+    const whereClause = where.join(' AND ');
+
+    let skillMatchSubquery = "0 AS skill_match_count";
+    if (skillsArr.length > 0) {
+      skillMatchSubquery = `(
+        SELECT COUNT(*)::int
+        FROM jsonb_array_elements_text(COALESCE(j.required_skills,'[]'::jsonb)) s
+        WHERE s.value = ANY($${params.length}::text[])
+      ) AS skill_match_count`;
+    }
+
+    const countRes = await pool.query(
+      `SELECT COUNT(*)::int AS c FROM jobs j WHERE ${whereClause}`,
+      params
+    );
+    const total = countRes.rows[0]?.c || 0;
+
+    const listQuery = `
       SELECT
         j.*,
         u.first_name as client_first_name,
         u.last_name as client_last_name,
         u.username as client_username,
         (SELECT COUNT(*)::int FROM proposals pr WHERE pr.job_id = j.id) as proposals_count,
-        -- match count (ixtiyoriy)
-        (
-          SELECT COUNT(*)::int
-          FROM jsonb_array_elements_text(COALESCE(j.required_skills,'[]'::jsonb)) s
-          WHERE s.value = ANY($1::text[])
-        ) AS skill_match_count
+        ${skillMatchSubquery}
       FROM jobs j
       JOIN users u ON u.id = j.client_id
-      WHERE j.status='open'
-        AND j.deleted_at IS NULL
-        AND (COALESCE(j.required_skills,'[]'::jsonb) ?| $1::text[])
-      ORDER BY j.is_boosted DESC, skill_match_count DESC, j.created_at DESC
-      LIMIT 10
-      `,
-      [skillsArr]
-    );
+      WHERE ${whereClause}
+      ORDER BY j.is_boosted DESC, ${sortColumn === 'skill_match_count' ? '' : `j.${sortColumn} ${sortOrder},`} skill_match_count DESC
+      LIMIT $${i} OFFSET $${i + 1}
+    `;
+
+    params.push(parseInt(limit, 10), offset);
+    const listRes = await pool.query(listQuery, params);
 
     return res.json({
       success: true,
-      message: 'Tavsiya etilgan loyihalar',
-      data: { projects: r.rows }
+      data: {
+        projects: listRes.rows,
+        pagination: {
+          page: parseInt(page, 10),
+          limit: parseInt(limit, 10),
+          total,
+          totalPages: Math.ceil(total / parseInt(limit, 10)),
+        }
+      }
     });
   } catch (error) {
     console.error('Get recommended projects error:', error);
