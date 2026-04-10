@@ -101,7 +101,10 @@ const getMyProfile = async (req, res) => {
 
     if (user.role === "freelancer") {
       const fp = await pool.query(
-        `SELECT * FROM freelancer_profiles WHERE user_id = $1`,
+        `SELECT fp.*, cat.name as category_name 
+         FROM freelancer_profiles fp 
+         LEFT JOIN categories cat ON fp.category_id = cat.id 
+         WHERE fp.user_id = $1`,
         [userId]
       );
       roleProfile = fp.rows[0] || null;
@@ -196,7 +199,10 @@ const getUserProfile = async (req, res) => {
 
     if (user.role === "freelancer") {
       const fp = await pool.query(
-        `SELECT * FROM freelancer_profiles WHERE user_id = $1`,
+        `SELECT fp.*, cat.name as category_name 
+         FROM freelancer_profiles fp 
+         LEFT JOIN categories cat ON fp.category_id = cat.id 
+         WHERE fp.user_id = $1`,
         [userId]
       );
       roleProfile = fp.rows[0] || null;
@@ -280,6 +286,7 @@ const updateMyProfile = async (req, res) => {
       cover_url,
       cv_url,
       availability_status,
+      category_id,
 
       // Client specific
       company_name,
@@ -336,12 +343,12 @@ const updateMyProfile = async (req, res) => {
         INSERT INTO freelancer_profiles (
           user_id, title, bio, hourly_rate, location,
           languages, skills,
-          avatar_url, cover_url, cv_url, availability_status
+          avatar_url, cover_url, cv_url, availability_status, category_id
         )
         VALUES (
           $1, $2, $3, $4, $5,
           $6::jsonb, $7::jsonb,
-          $8, $9, $10, $11
+          $8, $9, $10, $11, $12
         )
         ON CONFLICT (user_id) DO UPDATE SET
           title = COALESCE(EXCLUDED.title, freelancer_profiles.title),
@@ -354,6 +361,7 @@ const updateMyProfile = async (req, res) => {
           cover_url = COALESCE(EXCLUDED.cover_url, freelancer_profiles.cover_url),
           cv_url = COALESCE(EXCLUDED.cv_url, freelancer_profiles.cv_url),
           availability_status = COALESCE(EXCLUDED.availability_status, freelancer_profiles.availability_status),
+          category_id = COALESCE(EXCLUDED.category_id, freelancer_profiles.category_id),
           updated_at = NOW()
         RETURNING *
         `,
@@ -369,6 +377,7 @@ const updateMyProfile = async (req, res) => {
           toStrOrNull(cover_url),
           toStrOrNull(cv_url),
           toStrOrNull(availability_status),
+          toNumOrNull(category_id),
         ]
       );
       roleProfile = result.rows[0];
@@ -412,4 +421,14 @@ const updateMyProfile = async (req, res) => {
 };
 
 
-module.exports = { getMyProfile, getUserProfile, updateMyProfile };
+const getCategories = async (req, res) => {
+  try {
+    const result = await pool.query("SELECT * FROM categories ORDER BY name ASC");
+    return res.json({ success: true, data: result.rows });
+  } catch (error) {
+    console.error("Get categories error:", error);
+    return res.status(500).json({ success: false, message: "Kategoriyalarni olishda xato." });
+  }
+};
+
+module.exports = { getMyProfile, getUserProfile, updateMyProfile, getCategories };

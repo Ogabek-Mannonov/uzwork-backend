@@ -207,21 +207,27 @@ const login = async (req, res) => {
 
     let q, params;
     if (email && phone) {
-      q = `SELECT id, username, email, phone, password_hash, role, first_name, last_name, display_name, is_verified, avatar_url, status
-           FROM users
-           WHERE (email=$1 OR phone=$2) AND deleted_at IS NULL
+      q = `SELECT u.id, u.username, u.email, u.phone, u.password_hash, u.role, u.first_name, u.last_name, u.display_name, u.is_verified, u.avatar_url, u.status,
+               fp.category_id
+           FROM users u
+           LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
+           WHERE (u.email=$1 OR u.phone=$2) AND u.deleted_at IS NULL
            LIMIT 1`;
       params = [email, phone];
     } else if (email) {
-      q = `SELECT id, username, email, phone, password_hash, role, first_name, last_name, display_name, is_verified, avatar_url, status
-           FROM users
-           WHERE email=$1 AND deleted_at IS NULL
+      q = `SELECT u.id, u.username, u.email, u.phone, u.password_hash, u.role, u.first_name, u.last_name, u.display_name, u.is_verified, u.avatar_url, u.status,
+               fp.category_id
+           FROM users u
+           LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
+           WHERE u.email=$1 AND u.deleted_at IS NULL
            LIMIT 1`;
       params = [email];
     } else {
-      q = `SELECT id, username, email, phone, password_hash, role, first_name, last_name, display_name, is_verified, avatar_url, status
-           FROM users
-           WHERE phone=$1 AND deleted_at IS NULL
+      q = `SELECT u.id, u.username, u.email, u.phone, u.password_hash, u.role, u.first_name, u.last_name, u.display_name, u.is_verified, u.avatar_url, u.status,
+               fp.category_id
+           FROM users u
+           LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
+           WHERE u.phone=$1 AND u.deleted_at IS NULL
            LIMIT 1`;
       params = [phone];
     }
@@ -267,6 +273,7 @@ const login = async (req, res) => {
           display_name: user.display_name || user.username,
           is_verified: user.is_verified,
           avatar_url: user.avatar_url,
+          category_id: user.category_id || null,
         },
         accessToken,
         refreshToken,
@@ -400,7 +407,44 @@ const verifySignup = async (req, res) => {
       [userId]
     );
 
-    return res.json({ success: true, message: "Hisob muvaffaqiyatli tasdiqlandi!" });
+    const updatedUserQ = await pool.query(
+      `SELECT id, username, email, phone, role, first_name, last_name, display_name, is_verified, avatar_url
+       FROM users 
+       WHERE id = $1`,
+      [userId]
+    );
+    const userRow = updatedUserQ.rows[0];
+
+    const accessToken = generateAccessToken(userRow);
+    const refreshToken = generateRefreshToken(userRow);
+    const expiresAt = getTokenExpiryDate(refreshToken);
+
+    await pool.query(
+      `INSERT INTO refresh_tokens (user_id, token, expires_at)
+       VALUES ($1, $2, $3)`,
+      [userRow.id, refreshToken, expiresAt || new Date(Date.now() + 7 * 24 * 3600 * 1000)]
+    );
+
+    return res.json({ 
+      success: true, 
+      message: "Hisob muvaffaqiyatli tasdiqlandi!",
+      data: {
+        user: {
+          id: userRow.id,
+          username: userRow.username,
+          email: userRow.email,
+          phone: userRow.phone,
+          role: userRow.role,
+          first_name: userRow.first_name,
+          last_name: userRow.last_name,
+          display_name: userRow.display_name || userRow.username,
+          is_verified: userRow.is_verified,
+          avatar_url: userRow.avatar_url,
+        },
+        accessToken,
+        refreshToken
+      }
+    });
   } catch (error) {
     return res.status(500).json({ success: false, message: "Verify xatolik yuz berdi." });
   }
@@ -766,8 +810,11 @@ const googleLogin = async (req, res) => {
 
       // Check if user exists by email
       let userQ = await client.query(
-        `SELECT id, username, email, phone, role, status, first_name, last_name, display_name, is_verified, avatar_url 
-         FROM users WHERE email = $1 AND deleted_at IS NULL LIMIT 1`,
+        `SELECT u.id, u.username, u.email, u.phone, u.role, u.status, u.first_name, u.last_name, u.display_name, u.is_verified, u.avatar_url,
+                fp.category_id
+         FROM users u
+         LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
+         WHERE u.email = $1 AND u.deleted_at IS NULL LIMIT 1`,
         [email]
       );
 
@@ -847,6 +894,7 @@ const googleLogin = async (req, res) => {
             display_name: user.display_name || user.username,
             is_verified: user.is_verified,
             avatar_url: user.avatar_url,
+            category_id: user.category_id || null,
           },
           accessToken,
           refreshToken,
