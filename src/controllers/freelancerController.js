@@ -524,7 +524,7 @@ const getMyPortfolio = async (req, res) => {
 
     const itemsR = await pool.query(
       `
-      SELECT id, user_id, title, description, project_url, skills, is_featured, created_at, updated_at
+      SELECT id, user_id, title, role, description, project_url, skills, is_featured, created_at, updated_at
       FROM portfolio_items
       WHERE user_id = $1
       ORDER BY is_featured DESC, created_at DESC
@@ -587,7 +587,7 @@ const getPublicPortfolioByFreelancerId = async (req, res) => {
 
     const itemsR = await pool.query(
       `
-      SELECT id, user_id, title, description, project_url, skills, is_featured, created_at, updated_at
+      SELECT id, user_id, title, role, description, project_url, skills, is_featured, created_at, updated_at
       FROM portfolio_items
       WHERE user_id = $1
       ORDER BY is_featured DESC, created_at DESC
@@ -639,21 +639,21 @@ const getPublicPortfolioByFreelancerId = async (req, res) => {
 const createPortfolioItem = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { title, description, project_url, skills, is_featured } = req.body;
+    const { title, role, description, project_url, skills, is_featured } = req.body;
 
     if (!title || String(title).trim().length < 2) {
       return res.status(400).json({ success: false, message: "Title majburiy (kamida 2 ta belgi)." });
     }
 
-    const skillArr = safeJsonArray(skills);
+    const skillArr = normalizeSkills(skills);
 
     const r = await pool.query(
       `
-      INSERT INTO portfolio_items (user_id, title, description, project_url, skills, is_featured)
-      VALUES ($1, $2, $3, $4, $5::jsonb, $6)
-      RETURNING id, user_id, title, description, project_url, skills, is_featured, created_at, updated_at
+      INSERT INTO portfolio_items (user_id, title, role, description, project_url, skills, is_featured)
+      VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)
+      RETURNING id, user_id, title, role, description, project_url, skills, is_featured, created_at, updated_at
       `,
-      [userId, title.trim(), description || null, project_url || null, JSON.stringify(skillArr), !!is_featured]
+      [userId, title.trim(), role || null, description || null, project_url || null, JSON.stringify(skillArr), !!is_featured]
     );
 
     return res.status(201).json({ success: true, message: "Portfolio item yaratildi.", data: { item: r.rows[0] } });
@@ -674,7 +674,7 @@ const updatePortfolioItem = async (req, res) => {
   try {
     const userId = req.user.id;
     const { itemId } = req.params;
-    const { title, description, project_url, skills, is_featured } = req.body;
+    const { title, role, description, project_url, skills, is_featured } = req.body;
 
     const existing = await pool.query(
       `SELECT id FROM portfolio_items WHERE id=$1 AND user_id=$2 LIMIT 1`,
@@ -691,18 +691,20 @@ const updatePortfolioItem = async (req, res) => {
       UPDATE portfolio_items
       SET
         title = COALESCE($3, title),
-        description = COALESCE($4, description),
-        project_url = COALESCE($5, project_url),
-        skills = COALESCE($6::jsonb, skills),
-        is_featured = COALESCE($7, is_featured),
+        role = COALESCE($4, role),
+        description = COALESCE($5, description),
+        project_url = COALESCE($6, project_url),
+        skills = COALESCE($7::jsonb, skills),
+        is_featured = COALESCE($8, is_featured),
         updated_at = NOW()
       WHERE id=$1 AND user_id=$2
-      RETURNING id, user_id, title, description, project_url, skills, is_featured, created_at, updated_at
+      RETURNING id, user_id, title, role, description, project_url, skills, is_featured, created_at, updated_at
       `,
       [
         itemId,
         userId,
         title ? String(title).trim() : null,
+        role ?? null,
         description ?? null,
         project_url ?? null,
         skillArr !== undefined ? JSON.stringify(skillArr) : null,

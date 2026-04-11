@@ -13,6 +13,7 @@
     "check-missing-tables": "node scripts/check-missing-tables.js",
     "show-tables": "node scripts/show-tables.js",
     "create-cert-table": "node scripts/create_certifications_table.js",
+    "create-portfolio-tables": "node scripts/create_portfolio_tables.js",
     "test-all": "powershell -ExecutionPolicy Bypass -File ./test-all-apis.ps1",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
