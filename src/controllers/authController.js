@@ -828,42 +828,13 @@ const googleLogin = async (req, res) => {
           return res.status(403).json({ success: false, message: "User bloklangan." });
         }
       } else {
-        // Create new user via Google
-        const finalRole = role && ["freelancer", "client"].includes(role) ? role : "freelancer";
-        const username = "g_" + sub.substring(0, 10); 
-        
-        const ins = await client.query(
-          `INSERT INTO users
-            (username, email, role, first_name, last_name, display_name, is_verified, avatar_url)
-           VALUES
-            ($1,$2,$3,$4,$5,$6,$7,$8)
-           RETURNING id, username, email, phone, role, first_name, last_name, display_name, is_verified, avatar_url, created_at, status`,
-          [
-            username,
-            email,
-            finalRole,
-            given_name || "User",
-            family_name || "",
-            given_name || "Google User",
-            true,
-            picture || null
-          ]
-        );
-
-        user = ins.rows[0];
-
-        if (finalRole === "freelancer") {
-          await client.query(`INSERT INTO freelancer_profiles (user_id) VALUES ($1) ON CONFLICT DO NOTHING`, [user.id]);
-        } else {
-          await client.query(`INSERT INTO client_profiles (user_id) VALUES ($1) ON CONFLICT DO NOTHING`, [user.id]);
-        }
-
-        await client.query(
-          `INSERT INTO user_balances (user_id, available_balance, reserved_balance, escrow_balance, total_earned, total_spent)
-           VALUES ($1, 0, 0, 0, 0, 0)
-           ON CONFLICT DO NOTHING`,
-          [user.id]
-        );
+        await client.query("ROLLBACK");
+        client.release();
+        return res.status(404).json({
+          success: false,
+          needs_registration: true,
+          message: "Bunday foydalanuvchi mavjud emas. Iltimos, avval ro'yxatdan o'ting.",
+        });
       }
 
       await client.query("COMMIT");
