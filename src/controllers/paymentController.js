@@ -98,8 +98,13 @@ const getPayments = async (req, res) => {
     // LIST
     const list = await pool.query(
       `
-      SELECT *
-      FROM transactions
+      SELECT 
+        t.*,
+        j.title as job_title,
+        c.id as contract_uuid
+      FROM transactions t
+      LEFT JOIN jobs j ON j.id = t.job_id
+      LEFT JOIN contracts c ON c.id = t.contract_id
       ${where}
       ORDER BY ${orderBy}
       LIMIT $${i} OFFSET $${i + 1}
@@ -753,6 +758,71 @@ const getPaymentDetail = async (req, res) => {
   }
 };
 
+/* ================= USER CARDS ================= */
+
+const getCards = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const r = await pool.query(
+      "SELECT * FROM user_cards WHERE user_id = $1 ORDER BY is_main DESC, created_at DESC",
+      [userId]
+    );
+    res.json({ success: true, data: r.rows });
+  } catch (e) {
+    res.status(500).json({ success: false, message: "Cards error", error: e.message });
+  }
+};
+
+const addCard = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { card_number, card_holder, expiry_date, card_type = "uzcard" } = req.body;
+
+    if (!card_number || !card_holder || !expiry_date) {
+      return res.status(400).json({ success: false, message: "Kartaga oid barcha ma'lumotlar majburiy." });
+    }
+
+    // Har bir userda max 5 ta karta bo'lsin
+    const countR = await pool.query("SELECT COUNT(*)::int as c FROM user_cards WHERE user_id = $1", [userId]);
+    if (countR.rows[0].c >= 5) {
+      return res.status(400).json({ success: false, message: "Maksimal 5 ta karta qo'shish mumkin." });
+    }
+
+    // Agar bu birinchi karta bo'lsa is_main=true
+    const isMain = countR.rows[0].c === 0;
+
+    const r = await pool.query(
+      `INSERT INTO user_cards (user_id, card_number, card_holder, expiry_date, card_type, is_main)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [userId, card_number, card_holder, expiry_date, card_type, isMain]
+    );
+
+    res.status(201).json({ success: true, data: r.rows[0] });
+  } catch (e) {
+    res.status(500).json({ success: false, message: "Add card error", error: e.message });
+  }
+};
+
+const deleteCard = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { id } = req.params;
+
+    const r = await pool.query(
+      "DELETE FROM user_cards WHERE id = $1 AND user_id = $2 RETURNING *",
+      [id, userId]
+    );
+
+    if (r.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Karta topilmadi." });
+    }
+
+    res.json({ success: true, message: "Karta o'chirildi." });
+  } catch (e) {
+    res.status(500).json({ success: false, message: "Delete card error", error: e.message });
+  }
+};
+
 /* ================= EXPORT ================= */
 
 module.exports = {
@@ -764,4 +834,7 @@ module.exports = {
   escrowHold,
   releaseMilestone,
   getPaymentDetail,
+  getCards,
+  addCard,
+  deleteCard,
 };
