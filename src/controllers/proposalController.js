@@ -34,7 +34,7 @@ const createProposal = async (req, res) => {
       });
     }
 
-    const { job_id, cover_letter, proposed_price, proposed_duration } = req.body;
+    const { job_id, cover_letter, proposed_price, proposed_duration, milestones = [], files = [] } = req.body;
 
     if (!job_id || !cover_letter || proposed_price == null || proposed_duration == null) {
       return res.status(400).json({
@@ -86,11 +86,9 @@ const createProposal = async (req, res) => {
         job_id, freelancer_id, cover_letter,
         proposed_price, proposed_duration,
         status,
-        deposit_amount, deposit_status, deposit_locked_at
-      ) VALUES ($1, $2, $3, $4, $5,
-        'pending',
-        $6, $7, $8
-      )
+        deposit_amount, deposit_status, deposit_locked_at,
+        milestones, files
+      ) VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10)
       RETURNING *`,
       [
         job_id,
@@ -101,6 +99,8 @@ const createProposal = async (req, res) => {
         DEPOSIT_AMOUNT > 0 ? DEPOSIT_AMOUNT : 0,
         DEPOSIT_AMOUNT > 0 ? "locked" : "none",
         DEPOSIT_AMOUNT > 0 ? new Date() : null,
+        JSON.stringify(milestones),
+        JSON.stringify(files)
       ]
     );
 
@@ -623,6 +623,7 @@ const acceptProposal = async (req, res) => {
         p.status AS proposal_status,
         p.deposit_amount,
         p.deposit_status,
+        p.milestones as proposal_milestones,
 
         j.client_id,
         j.status AS job_status,
@@ -711,14 +712,26 @@ const acceptProposal = async (req, res) => {
     );
     const contract = contractRes.rows[0];
 
-    // 5.1) milestone create (sizdagi kabi)
-    await client.query(
-      `
-      INSERT INTO milestones (contract_id, title, amount, status, created_at)
-      VALUES ($1, $2, $3, 'pending', NOW())
-      `,
-      [contract.id, "Full project", totalAmount]
-    );
+    // 5.1) milestone create
+    const proposalMilestones = row.proposal_milestones;
+    
+    if (Array.isArray(proposalMilestones) && proposalMilestones.length > 0) {
+      // Bir nechta milestone bo'lsa
+      for (const m of proposalMilestones) {
+        await client.query(
+          `INSERT INTO milestones (contract_id, title, amount, status, created_at)
+           VALUES ($1, $2, $3, 'pending', NOW())`,
+          [contract.id, m.description || "Untitled Milestone", Number(m.amount) || 0]
+        );
+      }
+    } else {
+      // Milestone yo'q bo'lsa (Project-based)
+      await client.query(
+        `INSERT INTO milestones (contract_id, title, amount, status, created_at)
+         VALUES ($1, $2, $3, 'pending', NOW())`,
+        [contract.id, "Full project", totalAmount]
+      );
+    }
 
     // 6) chat create (sizdagi kabi)
     const chatIns = await client.query(
