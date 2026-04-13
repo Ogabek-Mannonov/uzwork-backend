@@ -17,7 +17,7 @@ const {
   reportProject
 } = require('../controllers/projectController');
 
-const { authenticate, authorize } = require('../middlewares/authMiddleware');
+const { authenticate, authorize, optionalAuthenticate } = require('../middlewares/authMiddleware');
 
 // Public routes
 router.get('/', getProjects);
@@ -27,8 +27,8 @@ router.get('/recommended', authenticate, getRecommendedProjects);
 router.get('/my', authenticate, getMyProjects);
 router.get('/saved', authenticate, getSavedProjects);
 
-// ✅ ID route eng pastda
-router.get('/:id', getProjectById);
+// ✅ ID route eng pastda - optional auth is_saved uchun kerak
+router.get('/:id', optionalAuthenticate, getProjectById);
 
 // Protected routes
 router.post('/', authenticate, authorize('client'), createProject);

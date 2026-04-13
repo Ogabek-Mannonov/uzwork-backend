@@ -234,7 +234,9 @@ const getProjects = async (req, res) => {
 const getProjectById = async (req, res) => {
   try {
     const { id } = req.params;
+    const currentUserId = req.user?.id;
 
+    // 1. Basic Job and Client Data
     const result = await pool.query(
       `
       SELECT
@@ -243,19 +245,46 @@ const getProjectById = async (req, res) => {
         u.first_name as client_first_name,
         u.last_name as client_last_name,
         u.username as client_username,
-        (SELECT COUNT(*)::int FROM proposals pr WHERE pr.job_id = j.id) as proposals_count
+        u.created_at as client_member_since,
+        cp.rating as client_rating,
+        cp.spent_total as client_spent_total,
+        cp.location as client_location,
+        (SELECT COUNT(*)::int FROM proposals pr WHERE pr.job_id = j.id) as proposals_count,
+        (SELECT COUNT(*)::int FROM saved_jobs sj WHERE sj.job_id = j.id AND sj.user_id = $2) > 0 as is_saved
       FROM jobs j
       JOIN users u ON u.id = j.client_id
+      LEFT JOIN client_profiles cp ON cp.user_id = u.id
       WHERE j.id = $1 AND j.deleted_at IS NULL
       `,
-      [id]
+      [id, currentUserId]
     );
 
     if (result.rows.length === 0) {
       return res.status(404).json({ success: false, message: 'Loyiha topilmadi.' });
     }
 
-    return res.json({ success: true, data: { project: result.rows[0] } });
+    const project = result.rows[0];
+
+    // 2. Client Hire Rate Calculation
+    const statsRes = await pool.query(
+      `
+      SELECT 
+        COUNT(*)::int as total_posted,
+        COUNT(DISTINCT c.job_id)::int as total_hired
+      FROM jobs j
+      LEFT JOIN contracts c ON c.job_id = j.id
+      WHERE j.client_id = $1 AND j.deleted_at IS NULL
+      `,
+      [project.client_id]
+    );
+    
+    const stats = statsRes.rows[0];
+    project.client_hire_rate = stats.total_posted > 0 
+      ? Math.round((stats.total_hired / stats.total_posted) * 100) 
+      : 0;
+    project.client_total_posted = stats.total_posted;
+
+    return res.json({ success: true, data: { project } });
   } catch (error) {
     console.error('Get project by ID error:', error);
     return res.status(500).json({
@@ -780,21 +809,98 @@ const aiTranslate = async (req, res) => {
  * DB’da saved_items yo‘q -> 501
  */
 const getSavedProjects = async (req, res) => {
-  return res.status(501).json({
-    success: false,
-    message: "Saved projects funksiyasi hali yo‘q (saved_items jadvali DB’da yo‘q)."
-  });
+  try {
+    const userId = req.user.id;
+    const { page = 1, limit = 20 } = req.query;
+    const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
+
+    const countRes = await pool.query(
+      `SELECT COUNT(*)::int AS c FROM saved_jobs WHERE user_id = $1`,
+      [userId]
+    );
+    const total = countRes.rows[0]?.c || 0;
+
+    const listQuery = `
+      SELECT
+        j.*,
+        u.first_name as client_first_name,
+        u.last_name as client_last_name,
+        u.username as client_username,
+        (SELECT COUNT(*)::int FROM proposals pr WHERE pr.job_id = j.id) as proposals_count,
+        TRUE as is_saved
+      FROM saved_jobs sj
+      JOIN jobs j ON j.id = sj.job_id
+      JOIN users u ON u.id = j.client_id
+      WHERE sj.user_id = $1 AND j.deleted_at IS NULL
+      ORDER BY sj.created_at DESC
+      LIMIT $2 OFFSET $3
+    `;
+
+    const listRes = await pool.query(listQuery, [userId, parseInt(limit, 10), offset]);
+
+    return res.json({
+      success: true,
+      data: {
+        projects: listRes.rows,
+        pagination: {
+          page: parseInt(page, 10),
+          limit: parseInt(limit, 10),
+          total,
+          totalPages: Math.ceil(total / parseInt(limit, 10)),
+        }
+      }
+    });
+  } catch (error) {
+    console.error('Get saved projects error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Saqlangan loyihalarni olishda xato yuz berdi.',
+      error: error.message
+    });
+  }
 };
 
-/**
- * POST /projects/:id/save
- * DB’da saved_items yo‘q -> 501
- */
 const saveProject = async (req, res) => {
-  return res.status(501).json({
-    success: false,
-    message: "Save funksiyasi hali yo‘q (saved_items jadvali DB’da yo‘q)."
-  });
+  try {
+    const { id: jobId } = req.params;
+    const userId = req.user.id;
+
+    // Check if job exists
+    const jobCheck = await pool.query(
+      "SELECT id FROM jobs WHERE id = $1 AND deleted_at IS NULL",
+      [jobId]
+    );
+    if (jobCheck.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Loyiha topilmadi." });
+    }
+
+    // Toggle logic
+    const exists = await pool.query(
+      "SELECT id FROM saved_jobs WHERE user_id = $1 AND job_id = $2",
+      [userId, jobId]
+    );
+
+    if (exists.rows.length > 0) {
+      await pool.query(
+        "DELETE FROM saved_jobs WHERE user_id = $1 AND job_id = $2",
+        [userId, jobId]
+      );
+      return res.json({ success: true, message: "Loyiha saqlanganlardan olib tashlandi.", is_saved: false });
+    } else {
+      await pool.query(
+        "INSERT INTO saved_jobs (user_id, job_id) VALUES ($1, $2)",
+        [userId, jobId]
+      );
+      return res.json({ success: true, message: "Loyiha saqlandi.", is_saved: true });
+    }
+  } catch (error) {
+    console.error('Save project error:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Loyihani saqlashda xato yuz berdi.',
+      error: error.message
+    });
+  }
 };
 
 /**

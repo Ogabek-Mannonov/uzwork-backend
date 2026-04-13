@@ -91,4 +91,29 @@ const authorize = (...roles) => {
   };
 };
 
-module.exports = { authenticate, authorize };
+const optionalAuthenticate = async (req, res, next) => {
+  try {
+    const header = req.headers.authorization || "";
+    if (header.startsWith("Bearer ")) {
+      const token = header.slice(7).trim();
+      if (token) {
+        const decoded = verifyAccessToken(token);
+        const result = await pool.query(
+          `SELECT id, username, email, phone, role, first_name, last_name, is_verified, status
+           FROM users
+           WHERE id = $1 AND deleted_at IS NULL
+           LIMIT 1`,
+          [decoded.id]
+        );
+        if (result.rowCount > 0) {
+          req.user = result.rows[0];
+        }
+      }
+    }
+    next();
+  } catch (error) {
+    next();
+  }
+};
+
+module.exports = { authenticate, authorize, optionalAuthenticate };
