@@ -414,6 +414,8 @@ const getChatHistory = async (req, res) => {
         m.file_url,
         m.is_read,
         m.is_edited,
+        m.reply_to_id,
+        m.reactions,
         m.created_at,
         m.updated_at,
         m.deleted_at,
@@ -483,8 +485,7 @@ const getChatHistory = async (req, res) => {
 const sendMessage = async (req, res) => {
   try {
     const userId = req.user.id;
-
-    const { chat_id, message_text, type = "text", file_url } = req.body;
+    const { chat_id, message_text, type = "text", file_url, reply_to_id } = req.body;
 
     if (!chat_id || !isUuid(chat_id)) {
       return res.status(400).json({ success: false, message: "chat_id noto'g'ri" });
@@ -511,12 +512,13 @@ const sendMessage = async (req, res) => {
         content,
         type,
         file_url,
+        reply_to_id,
         is_read,
         created_at
       )
-      VALUES ($1, $2, $3, $4, $5, FALSE, NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, FALSE, NOW())
       RETURNING *`,
-      [chat_id, userId, message_text || null, safeType, file_url || null]
+      [chat_id, userId, message_text || null, safeType, file_url || null, reply_to_id || null]
     );
 
     const newMessage = insertRes.rows[0];
@@ -608,7 +610,7 @@ const sendVoiceMessage = async (req, res) => {
       return res.status(400).json({ success: false, message: "Noto'g'ri chat ID" });
     }
 
-    const { voice_url } = req.body;
+    const { voice_url, reply_to_id } = req.body;
     if (!voice_url) {
       return res.status(400).json({ success: false, message: "voice_url kerak" });
     }
@@ -619,10 +621,10 @@ const sendVoiceMessage = async (req, res) => {
     }
 
     const insertRes = await pool.query(
-      `INSERT INTO messages (chat_id, sender_id, type, file_url, is_read, created_at)
-       VALUES ($1, $2, 'voice', $3, FALSE, NOW())
+      `INSERT INTO messages (chat_id, sender_id, type, file_url, reply_to_id, is_read, created_at)
+       VALUES ($1, $2, 'voice', $3, $4, FALSE, NOW())
        RETURNING *`,
-      [chatId, req.user.id, voice_url]
+      [chatId, req.user.id, voice_url, reply_to_id || null]
     );
 
     const msg = insertRes.rows[0];
