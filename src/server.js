@@ -76,13 +76,52 @@ const io = new Server(server, {
 app.set("io", io);
 
 // Socket events
-io.on("connection", (socket) => {
-  console.log("✅ Socket connected:", socket.id);
+const activeSockets = new Map(); // userId -> Set of socket ids
+const lastSeenMap = new Map();     // userId -> ISO string
 
+io.on("connection", (socket) => {
+  let currentUserId = null;
+  
   socket.on("joinUser", (userId) => {
     if (!userId) return;
+    currentUserId = String(userId);
+    
+    if (!activeSockets.has(currentUserId)) {
+      activeSockets.set(currentUserId, new Set());
+    }
+    activeSockets.get(currentUserId).add(socket.id);
+    
+    io.emit("userStatus", { userId: currentUserId, isOnline: true });
     socket.join(`user_${userId}`);
   });
+
+  socket.on("checkStatus", (userId) => {
+    const uid = String(userId);
+    const isOnline = activeSockets.has(uid) && activeSockets.get(uid).size > 0;
+    if(isOnline) {
+      socket.emit("userStatus", { userId, isOnline: true });
+    } else {
+      if (lastSeenMap.has(uid)) {
+         socket.emit("userStatus", { userId, isOnline: false, lastSeen: lastSeenMap.get(uid) });
+      }
+    }
+  });
+
+  socket.on("disconnect", () => {
+    if (currentUserId && activeSockets.has(currentUserId)) {
+      activeSockets.get(currentUserId).delete(socket.id);
+      
+      if (activeSockets.get(currentUserId).size === 0) {
+        // All tabs closed for this user
+        const lastSeen = new Date().toISOString();
+        lastSeenMap.set(currentUserId, lastSeen);
+        activeSockets.delete(currentUserId);
+        io.emit("userStatus", { userId: currentUserId, isOnline: false, lastSeen });
+      }
+    }
+    console.log("Socket disconnected:", socket.id);
+  });
+
 
   socket.on("joinChat", (chatId) => {
     if (!chatId) return;
