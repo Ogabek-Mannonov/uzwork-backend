@@ -118,6 +118,48 @@ io.on("connection", (socket) => {
     socket.to(chatId).emit("userStoppedTyping");
   });
 
+  socket.on("addReaction", async ({ chatId, messageId, emoji }) => {
+    if (!chatId || !messageId || !emoji) return;
+
+    try {
+      // ✅ Atomically update reactions in JSONB array
+      // Agar ushbu emoji bo'lsa count+1 qiladi, bo'lmasa yangi element qo'shadi
+      const updateQuery = `
+        UPDATE messages
+        SET reactions = (
+          CASE 
+            WHEN reactions @> jsonb_build_array(jsonb_build_object('emoji', $1::text))
+            THEN (
+              SELECT jsonb_agg(
+                CASE 
+                  WHEN elem->>'emoji' = $1 THEN jsonb_set(elem, '{count}', ( (elem->>'count')::int + 1 )::text::jsonb)
+                  ELSE elem
+                END
+              )
+              FROM jsonb_array_elements(reactions) AS elem
+            )
+            ELSE reactions || jsonb_build_array(jsonb_build_object('emoji', $1, 'count', 1))
+          END
+        )
+        WHERE id = $2
+        RETURNING reactions;
+      `;
+      
+      const res = await pool.query(updateQuery, [emoji, messageId]);
+      
+      if (res.rows.length > 0) {
+        // Chatdagi hammaga xabar berish
+        io.to(chatId).emit("reactionAdded", { 
+          messageId, 
+          emoji, 
+          reactions: res.rows[0].reactions 
+        });
+      }
+    } catch (err) {
+      console.error("❌ socket addReaction error:", err.message);
+    }
+  });
+
   socket.on("disconnect", () => {
     console.log("❌ Socket disconnected:", socket.id);
   });
