@@ -75,6 +75,15 @@ const ensureChatMemberOrAdmin = async (chatId, user) => {
   };
 };
 
+let getActiveSockets, getLastSeenMap;
+
+try {
+  ({ getActiveSockets, getLastSeenMap } = require("../server"));
+} catch (e) {
+  getActiveSockets = () => new Map();
+  getLastSeenMap = () => new Map();
+}
+
 const getPartnerForChat = async (chatRow, userId) => {
   // returns {partnerUser} or null
   // priority: contract participants
@@ -97,7 +106,19 @@ const getPartnerForChat = async (chatRow, userId) => {
        WHERE id = $1`,
       [partnerId]
     );
-    return uRes.rows[0] || null;
+    const user = uRes.rows[0];
+    if (!user) return null;
+
+    // Real-time online status from Socket.io
+    const activeSockets = getActiveSockets();
+    const lastSeenMap = getLastSeenMap();
+    const socketSet = activeSockets.get(partnerId);
+    const isOnlineNow = socketSet && socketSet.size > 0;
+    const lastSeenNow = isOnlineNow ? null : (lastSeenMap.get(partnerId) || null);
+
+    console.log(`[getPartnerForChat] partnerId=${partnerId}, isOnlineNow=${isOnlineNow}, lastSeenNow=${lastSeenNow}, socketSet=${socketSet?.size}`);
+
+    return { ...user, is_online: isOnlineNow, last_seen: lastSeenNow };
   }
 
   // job chat:
@@ -130,7 +151,16 @@ const getPartnerForChat = async (chatRow, userId) => {
          WHERE id = $1`,
         [freelancerId]
       );
-      return uRes.rows[0] || null;
+      const user = uRes.rows[0];
+      if (!user) return null;
+
+      const activeSockets = getActiveSockets();
+      const lastSeenMap = getLastSeenMap();
+      const socketSet = activeSockets.get(freelancerId);
+      const isOnlineNow = socketSet && socketSet.size > 0;
+      const lastSeenNow = isOnlineNow ? null : (lastSeenMap.get(freelancerId) || null);
+
+      return { ...user, is_online: isOnlineNow, last_seen: lastSeenNow };
     }
 
     // else partner is client
@@ -140,7 +170,16 @@ const getPartnerForChat = async (chatRow, userId) => {
        WHERE id = $1`,
       [j.client_id]
     );
-    return uRes.rows[0] || null;
+    const user = uRes.rows[0];
+    if (!user) return null;
+
+    const activeSockets = getActiveSockets();
+    const lastSeenMap = getLastSeenMap();
+    const socketSet = activeSockets.get(j.client_id);
+    const isOnlineNow = socketSet && socketSet.size > 0;
+    const lastSeenNow = isOnlineNow ? null : (lastSeenMap.get(j.client_id) || null);
+
+    return { ...user, is_online: isOnlineNow, last_seen: lastSeenNow };
   }
 
   return null;
@@ -149,6 +188,15 @@ const getPartnerForChat = async (chatRow, userId) => {
 // ✅ NEW: get both participants + job info
 const getParticipantsForChat = async (chatRow) => {
   const empty = { client: null, freelancer: null, job: null };
+  const activeSockets = getActiveSockets();
+  const lastSeenMap = getLastSeenMap();
+
+  const getOnlineStatus = (userId) => {
+    const socketSet = activeSockets.get(userId);
+    const isOnlineNow = socketSet && socketSet.size > 0;
+    const lastSeenNow = isOnlineNow ? null : (lastSeenMap.get(userId) || null);
+    return { is_online: isOnlineNow, last_seen: lastSeenNow };
+  };
 
   // 1) Contract chat
   if (chatRow.contract_id) {
@@ -182,6 +230,9 @@ const getParticipantsForChat = async (chatRow) => {
     const r = res.rows[0];
     if (!r) return empty;
 
+    const clientStatus = getOnlineStatus(r.client_id);
+    const freelancerStatus = getOnlineStatus(r.freelancer_id);
+
     return {
       client: {
         id: r.client_id,
@@ -190,6 +241,8 @@ const getParticipantsForChat = async (chatRow) => {
         username: r.client_username,
         avatar_url: r.client_avatar_url,
         role: "client",
+        is_online: clientStatus.is_online,
+        last_seen: clientStatus.last_seen,
       },
       freelancer: {
         id: r.freelancer_id,
@@ -198,6 +251,8 @@ const getParticipantsForChat = async (chatRow) => {
         username: r.freelancer_username,
         avatar_url: r.freelancer_avatar_url,
         role: "freelancer",
+        is_online: freelancerStatus.is_online,
+        last_seen: freelancerStatus.last_seen,
       },
       job: r.job_id ? { id: r.job_id, title: r.job_title || "" } : null,
     };
@@ -236,6 +291,9 @@ const getParticipantsForChat = async (chatRow) => {
     const r = res.rows[0];
     if (!r) return empty;
 
+    const clientStatus = getOnlineStatus(r.client_id);
+    const freelancerStatus = r.freelancer_id ? getOnlineStatus(r.freelancer_id) : { is_online: false, last_seen: null };
+
     return {
       client: {
         id: r.client_id,
@@ -244,6 +302,8 @@ const getParticipantsForChat = async (chatRow) => {
         username: r.client_username,
         avatar_url: r.client_avatar_url,
         role: "client",
+        is_online: clientStatus.is_online,
+        last_seen: clientStatus.last_seen,
       },
       freelancer: r.freelancer_id
         ? {
@@ -253,6 +313,8 @@ const getParticipantsForChat = async (chatRow) => {
             username: r.freelancer_username,
             avatar_url: r.freelancer_avatar_url,
             role: "freelancer",
+            is_online: freelancerStatus.is_online,
+            last_seen: freelancerStatus.last_seen,
           }
         : null,
       job: { id: r.job_id, title: r.job_title || "" },

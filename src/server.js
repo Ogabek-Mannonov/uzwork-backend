@@ -9,8 +9,16 @@ const path = require("path");
 require("dotenv").config();
 const { startCron } = require("./cron");
 startCron();
+const { verifyAccessToken } = require("./utils/jwt");
 
 const pool = require("./db/pool");
+
+// Socket state - controllerlar ishlatishi uchun
+let activeSocketsMap = new Map();
+let lastSeenMapStore = new Map();
+const getActiveSockets = () => activeSocketsMap;
+const getLastSeenMap = () => lastSeenMapStore;
+module.exports = { getActiveSockets, getLastSeenMap };
 
 // Routes
 const authRoutes = require("./routes/authRoutes");
@@ -76,52 +84,137 @@ const io = new Server(server, {
 app.set("io", io);
 
 // Socket events
-const activeSockets = new Map(); // userId -> Set of socket ids
-const lastSeenMap = new Map();     // userId -> ISO string
+activeSocketsMap = new Map();
+lastSeenMapStore = new Map();
 
 io.on("connection", (socket) => {
   let currentUserId = null;
-  
-  socket.on("joinUser", (userId) => {
+
+  const parseSocketUserId = () => {
+    try {
+      const authToken = socket.handshake?.auth?.token;
+      const headerToken = socket.handshake?.headers?.authorization;
+      const raw = authToken || headerToken || "";
+      const token = String(raw).startsWith("Bearer ")
+        ? String(raw).slice(7).trim()
+        : String(raw).trim();
+      if (!token) return null;
+      const decoded = verifyAccessToken(token);
+      return decoded?.id ? String(decoded.id) : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const leaveCurrentJoin = async () => {
+    if (!currentUserId) return;
+    const userSockets = activeSocketsMap.get(currentUserId);
+    if (!userSockets) return;
+
+    userSockets.delete(socket.id);
+
+    if (userSockets.size > 0) {
+      console.log(`[presence] ${currentUserId} socket left (${socket.id}), remaining=${userSockets.size}`);
+      return;
+    }
+
+    const lastSeen = new Date().toISOString();
+    lastSeenMapStore.set(currentUserId, lastSeen);
+    activeSocketsMap.delete(currentUserId);
+
+    try {
+      await pool.query(
+        `UPDATE users SET is_online = false, last_seen = $1 WHERE id = $2`,
+        [lastSeen, currentUserId]
+      );
+    } catch (err) {
+      console.error("Error updating offline status:", err.message);
+    }
+
+    console.log(`[presence] OFFLINE user=${currentUserId} lastSeen=${lastSeen}`);
+    io.emit("userStatus", { userId: currentUserId, isOnline: false, lastSeen });
+  };
+
+  const markUserOnline = async (userId, source = "unknown") => {
     if (!userId) return;
-    currentUserId = String(userId);
-    
-    if (!activeSockets.has(currentUserId)) {
-      activeSockets.set(currentUserId, new Set());
-    }
-    activeSockets.get(currentUserId).add(socket.id);
-    
-    io.emit("userStatus", { userId: currentUserId, isOnline: true });
-    socket.join(`user_${userId}`);
-  });
-
-  socket.on("checkStatus", (userId) => {
     const uid = String(userId);
-    const isOnline = activeSockets.has(uid) && activeSockets.get(uid).size > 0;
-    if(isOnline) {
-      socket.emit("userStatus", { userId, isOnline: true });
-    } else {
-      if (lastSeenMap.has(uid)) {
-         socket.emit("userStatus", { userId, isOnline: false, lastSeen: lastSeenMap.get(uid) });
-      }
+
+    if (currentUserId && currentUserId !== uid) {
+      await leaveCurrentJoin();
     }
+    currentUserId = uid;
+
+    if (!activeSocketsMap.has(uid)) {
+      activeSocketsMap.set(uid, new Set());
+    }
+    const userSockets = activeSocketsMap.get(uid);
+    userSockets.add(socket.id);
+
+    try {
+      await pool.query(
+        `UPDATE users SET is_online = true, last_seen = NULL WHERE id = $1`,
+        [uid]
+      );
+    } catch (err) {
+      console.error("Error updating online status:", err.message);
+    }
+
+    socket.join(`user_${uid}`);
+    console.log(`[presence] ONLINE user=${uid} sockets=${userSockets.size} source=${source}`);
+    io.emit("userStatus", { userId: uid, isOnline: true, lastSeen: null });
+  };
+
+  const handshakeUserId = parseSocketUserId();
+  if (handshakeUserId) {
+    markUserOnline(handshakeUserId, "handshake-token").catch((err) => {
+      console.error("Presence handshake markUserOnline error:", err.message);
+    });
+  }
+
+  socket.on("joinUser", async (userId) => {
+    if (!userId) return;
+    const claimedUserId = String(userId);
+    if (handshakeUserId && handshakeUserId !== claimedUserId) {
+      console.warn(`[presence] joinUser mismatch socket=${socket.id} token=${handshakeUserId} claimed=${claimedUserId}`);
+      await markUserOnline(handshakeUserId, "joinUser-mismatch-token-priority");
+      return;
+    }
+    await markUserOnline(claimedUserId, "joinUser");
   });
 
-  socket.on("disconnect", () => {
-    if (currentUserId && activeSockets.has(currentUserId)) {
-      activeSockets.get(currentUserId).delete(socket.id);
-      
-      if (activeSockets.get(currentUserId).size === 0) {
-        // All tabs closed for this user
-        const lastSeen = new Date().toISOString();
-        lastSeenMap.set(currentUserId, lastSeen);
-        activeSockets.delete(currentUserId);
-        io.emit("userStatus", { userId: currentUserId, isOnline: false, lastSeen });
-      }
+  socket.on("checkStatus", async (userId) => {
+    if (!userId) return;
+    const uid = String(userId);
+    const isOnline = activeSocketsMap.get(uid)?.size > 0;
+
+    if (isOnline) {
+      console.log(`[presence] checkStatus user=${uid} => ONLINE`);
+      socket.emit("userStatus", { userId: uid, isOnline: true, lastSeen: null });
+      return;
     }
-    console.log("Socket disconnected:", socket.id);
+
+    let dbLastSeen = null;
+    try {
+      const res = await pool.query(`SELECT last_seen FROM users WHERE id = $1`, [uid]);
+      dbLastSeen = res.rows[0]?.last_seen;
+    } catch (err) {
+      console.error("Error getting last_seen:", err.message);
+    }
+
+    const lastSeen = dbLastSeen || lastSeenMapStore.get(uid) || null;
+    console.log(`[presence] checkStatus user=${uid} => OFFLINE lastSeen=${lastSeen || "null"}`);
+    socket.emit("userStatus", {
+      userId: uid,
+      isOnline: false,
+      lastSeen,
+    });
   });
 
+  socket.on("disconnect", async (reason) => {
+    await leaveCurrentJoin();
+    currentUserId = null;
+    console.log(`[presence] socket disconnected id=${socket.id} reason=${reason || "unknown"}`);
+  });
 
   socket.on("joinChat", (chatId) => {
     if (!chatId) return;
@@ -197,10 +290,6 @@ io.on("connection", (socket) => {
     } catch (err) {
       console.error("❌ socket addReaction error:", err.message);
     }
-  });
-
-  socket.on("disconnect", () => {
-    console.log("❌ Socket disconnected:", socket.id);
   });
 });
 
@@ -344,3 +433,4 @@ server.listen(PORT, () => {
   console.log("🔒 Env:", process.env.NODE_ENV || "development");
   console.log("=".repeat(50));
 });
+
