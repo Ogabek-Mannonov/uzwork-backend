@@ -137,6 +137,8 @@ const getProjects = async (req, res) => {
       min_budget,
       max_budget,
       search,
+      proposals_tier,
+      client_history,
       page = 1,
       limit = 20,
       sort_by = 'created_at',
@@ -169,7 +171,7 @@ const getProjects = async (req, res) => {
     }
 
     if (max_budget != null) {
-      where.push(`j.budget_min <= $${i++}`);
+      where.push(`j.budget_max <= $${i++}`);
       params.push(Number(max_budget));
     }
 
@@ -179,10 +181,22 @@ const getProjects = async (req, res) => {
       i++;
     }
 
+    if (proposals_tier) {
+      if (proposals_tier === 'less_5') where.push(`(SELECT COUNT(*) FROM proposals pr WHERE pr.job_id = j.id) < 5`);
+      else if (proposals_tier === '5_10') where.push(`(SELECT COUNT(*) FROM proposals pr WHERE pr.job_id = j.id) BETWEEN 5 AND 10`);
+      else if (proposals_tier === '10_15') where.push(`(SELECT COUNT(*) FROM proposals pr WHERE pr.job_id = j.id) BETWEEN 10 AND 15`);
+      else if (proposals_tier === '15_50') where.push(`(SELECT COUNT(*) FROM proposals pr WHERE pr.job_id = j.id) BETWEEN 15 AND 50`);
+    }
+
+    if (client_history) {
+      if (client_history === 'no_hires') where.push(`(cp.spent_total IS NULL OR cp.spent_total = 0)`);
+      else if (client_history === 'has_hires') where.push(`coalesce(cp.spent_total, 0) > 0`);
+    }
+
     const whereClause = where.join(' AND ');
 
     const countRes = await pool.query(
-      `SELECT COUNT(*)::int AS c FROM jobs j WHERE ${whereClause}`,
+      `SELECT COUNT(*)::int AS c FROM jobs j LEFT JOIN client_profiles cp ON cp.user_id = j.client_id WHERE ${whereClause}`,
       params
     );
     const total = countRes.rows[0]?.c || 0;
@@ -194,9 +208,12 @@ const getProjects = async (req, res) => {
         u.first_name as client_first_name,
         u.last_name as client_last_name,
         u.username as client_username,
+        cp.spent_total as client_spent_total,
+        cp.rating as client_rating,
         (SELECT COUNT(*)::int FROM proposals pr WHERE pr.job_id = j.id) as proposals_count
       FROM jobs j
       JOIN users u ON u.id = j.client_id
+      LEFT JOIN client_profiles cp ON cp.user_id = u.id
       WHERE ${whereClause}
       ORDER BY j.${sortColumn} ${sortOrder}
       LIMIT $${i} OFFSET $${i + 1}
@@ -584,6 +601,8 @@ const getRecommendedProjects = async (req, res) => {
       min_budget,
       max_budget,
       search,
+      proposals_tier,
+      client_history,
       page = 1,
       limit = 20,
       sort_by = 'created_at',
@@ -625,7 +644,7 @@ const getRecommendedProjects = async (req, res) => {
     }
 
     if (max_budget != null) {
-      where.push(`j.budget_min <= $${i++}`);
+      where.push(`j.budget_max <= $${i++}`);
       params.push(Number(max_budget));
     }
 
@@ -633,6 +652,18 @@ const getRecommendedProjects = async (req, res) => {
       where.push(`(j.title ILIKE $${i} OR j.description ILIKE $${i})`);
       params.push(`%${search}%`);
       i++;
+    }
+
+    if (proposals_tier) {
+      if (proposals_tier === 'less_5') where.push(`(SELECT COUNT(*) FROM proposals pr WHERE pr.job_id = j.id) < 5`);
+      else if (proposals_tier === '5_10') where.push(`(SELECT COUNT(*) FROM proposals pr WHERE pr.job_id = j.id) BETWEEN 5 AND 10`);
+      else if (proposals_tier === '10_15') where.push(`(SELECT COUNT(*) FROM proposals pr WHERE pr.job_id = j.id) BETWEEN 10 AND 15`);
+      else if (proposals_tier === '15_50') where.push(`(SELECT COUNT(*) FROM proposals pr WHERE pr.job_id = j.id) BETWEEN 15 AND 50`);
+    }
+
+    if (client_history) {
+      if (client_history === 'no_hires') where.push(`(cp.spent_total IS NULL OR cp.spent_total = 0)`);
+      else if (client_history === 'has_hires') where.push(`coalesce(cp.spent_total, 0) > 0`);
     }
 
     if (skillsArr.length > 0) {
@@ -653,7 +684,7 @@ const getRecommendedProjects = async (req, res) => {
     }
 
     const countRes = await pool.query(
-      `SELECT COUNT(*)::int AS c FROM jobs j WHERE ${whereClause}`,
+      `SELECT COUNT(*)::int AS c FROM jobs j LEFT JOIN client_profiles cp ON cp.user_id = j.client_id WHERE ${whereClause}`,
       params
     );
     const total = countRes.rows[0]?.c || 0;
@@ -664,10 +695,13 @@ const getRecommendedProjects = async (req, res) => {
         u.first_name as client_first_name,
         u.last_name as client_last_name,
         u.username as client_username,
+        cp.spent_total as client_spent_total,
+        cp.rating as client_rating,
         (SELECT COUNT(*)::int FROM proposals pr WHERE pr.job_id = j.id) as proposals_count,
         ${skillMatchSubquery}
       FROM jobs j
       JOIN users u ON u.id = j.client_id
+      LEFT JOIN client_profiles cp ON cp.user_id = u.id
       WHERE ${whereClause}
       ORDER BY j.is_boosted DESC, ${sortColumn === 'skill_match_count' ? '' : `j.${sortColumn} ${sortOrder},`} skill_match_count DESC
       LIMIT $${i} OFFSET $${i + 1}
