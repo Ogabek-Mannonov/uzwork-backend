@@ -13,7 +13,7 @@ const JWT_REFRESH_SECRET =
   process.env.REFRESH_TOKEN_SECRET ||
   "change-me-refresh-secret";
 
-const ACCESS_TOKEN_EXPIRY = process.env.JWT_EXPIRY || "15m";
+const ACCESS_TOKEN_EXPIRY = process.env.JWT_EXPIRY || "24h";
 const REFRESH_TOKEN_EXPIRY = process.env.JWT_REFRESH_EXPIRY || "7d";
 
 const generateAccessToken = (payload) => {
