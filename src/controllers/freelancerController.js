@@ -19,13 +19,23 @@ function normalizeSkills(skills) {
  */
 const getFreelancers = async (req, res) => {
   try {
-    const { skills, min_rating, location, availability, page = 1, limit = 20 } = req.query;
+    const { 
+      skills, 
+      min_rating, 
+      location, 
+      availability, 
+      search, 
+      min_rate, 
+      max_rate, 
+      page = 1, 
+      limit = 20 
+    } = req.query;
 
     const p = Math.max(parseInt(page, 10) || 1, 1);
     const l = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
     const offset = (p - 1) * l;
 
-    let where = `WHERE u.role = 'freelancer' AND u.deleted_at IS NULL`;
+    let where = `WHERE u.role ILIKE 'freelancer'`;
     const params = [];
     let i = 1;
 
@@ -51,6 +61,22 @@ const getFreelancers = async (req, res) => {
       params.push(Number(min_rating));
     }
 
+    if (search) {
+      where += ` AND (u.first_name ILIKE $${i} OR u.last_name ILIKE $${i} OR fp.title ILIKE $${i} OR fp.bio ILIKE $${i})`;
+      params.push(`%${search}%`);
+      i++;
+    }
+
+    if (min_rate) {
+      where += ` AND fp.hourly_rate >= $${i++}`;
+      params.push(Number(min_rate));
+    }
+
+    if (max_rate) {
+      where += ` AND fp.hourly_rate <= $${i++}`;
+      params.push(Number(max_rate));
+    }
+
     const countR = await pool.query(
       `
       SELECT COUNT(*)::int AS c
@@ -70,8 +96,6 @@ const getFreelancers = async (req, res) => {
         u.username,
         u.email,
         u.phone,
-        u.is_kyc_verified,
-        u.kyc_status,
 
         fp.user_id,
         fp.title,
@@ -80,7 +104,6 @@ const getFreelancers = async (req, res) => {
         fp.location,
         fp.languages,
         fp.skills,
-        fp.portfolio_urls,
         fp.avatar_url,
         fp.cover_url,
         fp.availability_status,
@@ -225,8 +248,6 @@ const getFreelancerById = async (req, res) => {
         u.username,
         u.email,
         u.phone,
-        u.is_kyc_verified,
-        u.kyc_status,
 
         fp.user_id,
         fp.title,
@@ -235,7 +256,6 @@ const getFreelancerById = async (req, res) => {
         fp.location,
         fp.languages,
         fp.skills,
-        fp.portfolio_urls,
         fp.avatar_url,
         fp.cover_url,
         fp.availability_status,
@@ -247,7 +267,6 @@ const getFreelancerById = async (req, res) => {
       LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
       WHERE u.id = $1
         AND u.role = 'freelancer'
-        AND u.deleted_at IS NULL
       LIMIT 1
       `,
       [id]
