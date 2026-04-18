@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS messages (
     receiver_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
     message_text TEXT,
-    message_type VARCHAR(20) DEFAULT 'text' CHECK (message_type IN ('text', 'file', 'voice', 'video_call')),
+    message_type VARCHAR(20) DEFAULT 'text' CHECK (message_type IN ('text', 'image', 'file', 'voice', 'video', 'video_call')),
     file_url TEXT,
     voice_url TEXT,
     video_call_link TEXT,
