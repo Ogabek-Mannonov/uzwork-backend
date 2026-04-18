@@ -11,21 +11,21 @@ try {
 }
 
 // Render/Production uchun: project rootdan ishlash yaxshiroq
-// Updated to support documents (CV/Resume) and images
 const voiceDir = path.join(process.cwd(), "uploads", "voice");
 const docsDir = path.join(process.cwd(), "uploads", "documents");
 const imagesDir = path.join(process.cwd(), "uploads", "images");
+const videosDir = path.join(process.cwd(), "uploads", "videos");
 
 // Papkalarni yaratish
-[voiceDir, docsDir, imagesDir].forEach(dir => {
+[voiceDir, docsDir, imagesDir, videosDir].forEach(dir => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
-
 
 // Allowed formats
 const ALLOWED_AUDIO_EXT = new Set([".webm", ".ogg", ".mp3", ".wav", ".m4a"]);
 const ALLOWED_DOC_EXT = new Set([".pdf", ".doc", ".docx"]);
 const ALLOWED_IMG_EXT = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp"]);
+const ALLOWED_VIDEO_EXT = new Set([".mp4", ".mov", ".avi", ".mkv", ".webm"]);
 
 // Storage
 const storage = multer.diskStorage({
@@ -33,6 +33,7 @@ const storage = multer.diskStorage({
     const ext = path.extname(file.originalname).toLowerCase();
     if (ALLOWED_DOC_EXT.has(ext)) return cb(null, docsDir);
     if (ALLOWED_IMG_EXT.has(ext)) return cb(null, imagesDir);
+    if (ALLOWED_VIDEO_EXT.has(ext)) return cb(null, videosDir);
     cb(null, voiceDir);
   },
   filename: (req, file, cb) => {
@@ -40,6 +41,7 @@ const storage = multer.diskStorage({
     let prefix = "voice";
     if (ALLOWED_DOC_EXT.has(ext)) prefix = "doc";
     if (ALLOWED_IMG_EXT.has(ext)) prefix = "img";
+    if (ALLOWED_VIDEO_EXT.has(ext)) prefix = "vid";
     const uniqueName = `${prefix}-${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`;
     cb(null, uniqueName);
   },
@@ -50,42 +52,34 @@ function fileFilter(req, file, cb) {
   const ext = path.extname(file.originalname).toLowerCase();
   const mimetype = (file.mimetype || "").toLowerCase();
 
-  const isAudio = ALLOWED_AUDIO_EXT.has(ext) || mimetype.startsWith("audio/") || mimetype === "video/webm";
+  const isAudio = ALLOWED_AUDIO_EXT.has(ext) || mimetype.startsWith("audio/");
   const isDoc = ALLOWED_DOC_EXT.has(ext) || 
                 ["application/pdf", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"].includes(mimetype);
   const isImg = ALLOWED_IMG_EXT.has(ext) || mimetype.startsWith("image/");
+  const isVideo = ALLOWED_VIDEO_EXT.has(ext) || mimetype.startsWith("video/");
 
-  if (isAudio || isDoc || isImg) return cb(null, true);
+  if (isAudio || isDoc || isImg || isVideo) return cb(null, true);
 
-  return cb(new Error("Faqat audio, hujjat yoki rasm fayllar ruxsat."));
+  return cb(new Error("Faqat audio, video, hujjat yoki rasm fayllar ruxsat."));
 }
-
 
 const upload = multer({
   storage,
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
   fileFilter,
 });
-
 
 // Helper: BASE_URL bo‘lmasa req’dan yasab beradi (proxy’ni ham hisobga oladi)
 function getBaseUrl(req) {
   const envBase = process.env.BASE_URL;
   if (envBase) return envBase.replace(/\/$/, "");
 
-  // Render/Proxy holati: x-forwarded-proto bo'lishi mumkin
-  const proto =
-    (req.headers["x-forwarded-proto"] || req.protocol || "https")
-      .toString()
-      .split(",")[0]
-      .trim();
-
+  const proto = (req.headers["x-forwarded-proto"] || req.protocol || "https").toString().split(",")[0].trim();
   const host = req.get("host");
   return `${proto}://${host}`;
 }
 
 // Controller
-// Generic Upload Controller
 const uploadGeneralFile = async (req, res) => {
   try {
     if (!req.file) {
@@ -94,7 +88,16 @@ const uploadGeneralFile = async (req, res) => {
 
     const baseUrl = getBaseUrl(req);
     const ext = path.extname(req.file.filename).toLowerCase();
-    const subDir = ALLOWED_DOC_EXT.has(ext) ? "documents" : "voice";
+    
+    let subDir = "voice";
+    if (ALLOWED_DOC_EXT.has(ext) || req.file.filename.startsWith("doc-")) {
+      subDir = "documents";
+    } else if (ALLOWED_IMG_EXT.has(ext) || req.file.filename.startsWith("img-")) {
+      subDir = "images";
+    } else if (ALLOWED_VIDEO_EXT.has(ext) || req.file.filename.startsWith("vid-")) {
+      subDir = "videos";
+    }
+    
     const fileUrl = `${baseUrl}/uploads/${subDir}/${req.file.filename}`;
 
     return res.status(201).json({
@@ -116,20 +119,18 @@ const uploadGeneralFile = async (req, res) => {
   }
 };
 
-// Image Upload Controller (with specific sizing)
 const uploadImage = async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ success: false, message: "Rasm yuklanmadi." });
     }
 
-    const type = req.body.type || "general"; // 'avatar', 'cover', 'general'
+    const type = req.body.type || "general"; 
     const baseUrl = getBaseUrl(req);
     const originalPath = req.file.path;
     const ext = path.extname(req.file.filename).toLowerCase();
     const fileName = req.file.filename;
     
-    // sharp bo'lsa o'lchamini to'g'irlaymiz
     if (sharp && (type === "avatar" || type === "cover")) {
       const processedName = `processed-${Date.now()}${ext}`;
       const processedPath = path.join(imagesDir, processedName);
@@ -143,8 +144,6 @@ const uploadImage = async (req, res) => {
       }
       
       await transform.toFile(processedPath);
-      
-      // Originalni o'chiramiz (ixtiyoriy, lekin diskni tejash uchun yaxshi)
       try { fs.unlinkSync(originalPath); } catch(e) {}
       
       const fileUrl = `${baseUrl}/uploads/images/${processedName}`;
@@ -155,7 +154,6 @@ const uploadImage = async (req, res) => {
       });
     }
 
-    // sharp bo'lmasa yoki general bo'lsa shunchaki URL qaytaramiz
     const fileUrl = `${baseUrl}/uploads/images/${fileName}`;
     return res.status(201).json({
       success: true,
@@ -171,7 +169,6 @@ const uploadImage = async (req, res) => {
   }
 };
 
-// Alias for legacy voice uploads
 const uploadVoice = uploadGeneralFile;
 
 module.exports = {
@@ -180,7 +177,3 @@ module.exports = {
   uploadGeneralFile,
   uploadImage,
 };
-
-
-
-
