@@ -45,9 +45,11 @@ const createProject = async (req, res) => {
       deadline,
       duration_days,
       skills,
-      required_skills,
       attachments,
-      visibility
+      visibility,
+      category,
+      scope,
+      duration
     } = req.body;
 
     const jt = job_type || budget_type;
@@ -87,9 +89,10 @@ const createProject = async (req, res) => {
       INSERT INTO jobs (
         client_id, title, description, job_type,
         budget_min, budget_max, currency, deadline,
-        required_skills, attachments, visibility
+        required_skills, attachments, visibility,
+        category, scope, duration
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11, $12, $13, $14)
       RETURNING *
       `,
       [
@@ -104,6 +107,9 @@ const createProject = async (req, res) => {
         JSON.stringify(skillsArr),
         attachmentsJson,
         visibility || 'public',
+        category,
+        scope,
+        duration
       ]
     );
 
@@ -394,6 +400,10 @@ const updateProject = async (req, res) => {
     if (attachments !== undefined) {
       add(`attachments = $$::jsonb`, safeJsonToString(attachments, []));
     }
+
+    if (category !== undefined) add(`category = $$`, category);
+    if (scope !== undefined) add(`scope = $$`, scope);
+    if (duration !== undefined) add(`duration = $$`, duration);
 
     // admin only fields
     if (admin) {
