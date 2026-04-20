@@ -177,7 +177,7 @@ CREATE TABLE IF NOT EXISTS messages (
     chat_id UUID REFERENCES chats(id) ON DELETE CASCADE,
     sender_id UUID REFERENCES users(id),
     content TEXT,
-    type VARCHAR(20) DEFAULT 'text' CHECK (type IN ('text', 'image', 'file', 'voice', 'video', 'video_call')),
+    type VARCHAR(20) DEFAULT 'text' CHECK (type IN ('text', 'file', 'voice', 'video')),
     file_url TEXT,
     is_read BOOLEAN DEFAULT false,
     created_at TIMESTAMP DEFAULT NOW()
