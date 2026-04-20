@@ -24,9 +24,8 @@ const getMyNotifications = async (req, res) => {
     const countResult = await pool.query(countQuery, queryParams);
     const total = parseInt(countResult.rows[0].count);
 
-    // Get notifications
     const notificationsQuery = `
-      SELECT *
+      SELECT id, user_id, type, title, body as message, is_read, data, created_at
       FROM notifications
       ${whereClause}
       ORDER BY created_at DESC
@@ -36,10 +35,13 @@ const getMyNotifications = async (req, res) => {
 
     const notificationsResult = await pool.query(notificationsQuery, queryParams);
 
+    // Map body to message if needed by frontend (already doing body as message in SQL)
+    const formattedNotifications = notificationsResult.rows;
+
     res.json({
       success: true,
       data: {
-        notifications: notificationsResult.rows,
+        notifications: formattedNotifications,
         pagination: {
           page: parseInt(page),
           limit: parseInt(limit),
@@ -120,9 +122,43 @@ const markAllAsRead = async (req, res) => {
   }
 };
 
+/**
+ * Internal helper to create a notification and emit socket event
+ * Can be called from other controllers
+ */
+const createNotification = async (io, {
+  userId,
+  type,
+  title,
+  message,
+  relatedId = null,
+  relatedType = null
+}) => {
+  try {
+    const data = JSON.stringify({ related_id: relatedId, related_type: relatedType });
+    const query = `
+      INSERT INTO notifications (user_id, type, title, body, data)
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING id, user_id, type, title, body as message, is_read, data, created_at
+    `;
+    const values = [userId, type, title, message, data];
+    const result = await pool.query(query, values);
+    const notification = result.rows[0];
+
+    if (io) {
+      io.to(`user_${userId}`).emit('newNotification', notification);
+    }
+    return notification;
+  } catch (error) {
+    console.error('Error creating notification:', error);
+    return null;
+  }
+};
+
 module.exports = {
   getMyNotifications,
   markAsRead,
-  markAllAsRead
+  markAllAsRead,
+  createNotification
 };
 

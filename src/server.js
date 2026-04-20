@@ -43,22 +43,16 @@ const uploadRoutes = require("./routes/uploadRoutes");
 const disputeRoutes = require("./routes/disputeRoutes");
 const milestoneRoutes = require("./routes/milestoneRoutes");
 const landingRoutes = require("./routes/landingRoutes");
-// freelancerCertificationsRoutes endi freelancerRoutes.js ichida birlashtirildi
-
-
 
 const localeMiddleware = require("./middlewares/localeMiddleware");
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Render/Proxy bo‘lsa kerak (cookie/ip uchun foydali)
 app.set("trust proxy", 1);
 
-// HTTP server (socket uchun)
 const server = http.createServer(app);
 
-// CORS origins
 const allowedOrigins = [
   "http://localhost:3000",
   "http://localhost:5173",
@@ -68,7 +62,6 @@ const allowedOrigins = [
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 
-// Socket.io
 const io = new Server(server, {
   cors: {
     origin: allowedOrigins,
@@ -80,10 +73,8 @@ const io = new Server(server, {
   transports: ["websocket", "polling"],
 });
 
-// io ni controllers ichidan ishlatish uchun
 app.set("io", io);
 
-// Socket events
 activeSocketsMap = new Map();
 lastSeenMapStore = new Map();
 
@@ -124,7 +115,7 @@ io.on("connection", (socket) => {
 
     try {
       await pool.query(
-        `UPDATE users SET is_online = false, last_seen = $1 WHERE id = $2`,
+        "UPDATE users SET is_online = false, last_seen = $1 WHERE id = $2",
         [lastSeen, currentUserId]
       );
     } catch (err) {
@@ -152,7 +143,7 @@ io.on("connection", (socket) => {
 
     try {
       await pool.query(
-        `UPDATE users SET is_online = true, last_seen = NULL WHERE id = $1`,
+        "UPDATE users SET is_online = true, last_seen = NULL WHERE id = $1",
         [uid]
       );
     } catch (err) {
@@ -195,7 +186,7 @@ io.on("connection", (socket) => {
 
     let dbLastSeen = null;
     try {
-      const res = await pool.query(`SELECT last_seen FROM users WHERE id = $1`, [uid]);
+      const res = await pool.query("SELECT last_seen FROM users WHERE id = $1", [uid]);
       dbLastSeen = res.rows[0]?.last_seen;
     } catch (err) {
       console.error("Error getting last_seen:", err.message);
@@ -250,85 +241,59 @@ io.on("connection", (socket) => {
     socket.to(chatId).emit("userStoppedTyping");
   });
 
-  
   socket.on("removeReaction", async ({ chatId, messageId, emoji, userId }) => {
-    if (!chatId || !messageId || !emoji) return;
+    if (!chatId || !messageId || !emoji || !userId) return;
     try {
-      const updateQuery = `
-        UPDATE messages
-        SET reactions = (
-          SELECT COALESCE(
-            jsonb_agg(
-              CASE 
-                WHEN elem->>'emoji' = $1 THEN 
-                  CASE 
-                    WHEN (elem->>'count')::int > 1 THEN jsonb_set(elem, '{count}', ( (elem->>'count')::int - 1 )::text::jsonb)
-                    ELSE NULL
-                  END
-                ELSE elem
-              END
-            ) FILTER (WHERE CASE WHEN elem->>'emoji' = $1 THEN (elem->>'count')::int > 1 ELSE true END),
-            '[]'::jsonb
-          )
-          FROM jsonb_array_elements(reactions) AS elem
-        )
-        WHERE id = $2
-        RETURNING reactions;
-      `;
-      const res = await pool.query(updateQuery, [emoji, messageId]);
-      if (res.rows.length > 0) {
-        // Option 1: rely on optimistic frontend
-        // io.to(chatId).emit("reactionRemoved", { messageId, emoji, reactions: res.rows[0].reactions });
-      }
+      const selectRes = await pool.query("SELECT reactions FROM messages WHERE id = $1", [messageId]);
+      if (selectRes.rows.length === 0) return;
+
+      let reactions = Array.isArray(selectRes.rows[0].reactions) ? selectRes.rows[0].reactions : [];
+
+      reactions = reactions.map(r => {
+        if (r.emoji === emoji) {
+          const filteredIds = (r.user_ids || []).filter(id => String(id) !== String(userId));
+          return { ...r, user_ids: filteredIds, count: filteredIds.length };
+        }
+        return r;
+      }).filter(r => r.count > 0);
+
+      await pool.query("UPDATE messages SET reactions = $1 WHERE id = $2", [JSON.stringify(reactions), messageId]);
+      io.to(chatId).emit("reactionUpdate", { messageId, reactions, userId });
     } catch (err) {
-      console.error("❌ socket removeReaction error:", err.message);
+      console.error("Error removeReaction:", err.message);
     }
   });
 
-  socket.on("addReaction", async ({ chatId, messageId, emoji }) => {
-    if (!chatId || !messageId || !emoji) return;
+  socket.on("addReaction", async ({ chatId, messageId, emoji, userId }) => {
+    if (!chatId || !messageId || !emoji || !userId) return;
 
     try {
-      // ✅ Atomically update reactions in JSONB array
-      // Agar ushbu emoji bo'lsa count+1 qiladi, bo'lmasa yangi element qo'shadi
-      const updateQuery = `
-        UPDATE messages
-        SET reactions = (
-          CASE 
-            WHEN reactions @> jsonb_build_array(jsonb_build_object('emoji', $1::text))
-            THEN (
-              SELECT jsonb_agg(
-                CASE 
-                  WHEN elem->>'emoji' = $1 THEN jsonb_set(elem, '{count}', ( (elem->>'count')::int + 1 )::text::jsonb)
-                  ELSE elem
-                END
-              )
-              FROM jsonb_array_elements(reactions) AS elem
-            )
-            ELSE reactions || jsonb_build_array(jsonb_build_object('emoji', $1, 'count', 1))
-          END
-        )
-        WHERE id = $2
-        RETURNING reactions;
-      `;
-      
-      const res = await pool.query(updateQuery, [emoji, messageId]);
-      
-      if (res.rows.length > 0) {
-        // Chatdagi hammaga xabar berish
-        io.to(chatId).emit("reactionAdded", { 
-          messageId, 
-          emoji, 
-          reactions: res.rows[0].reactions 
-        });
+      const selectRes = await pool.query("SELECT reactions FROM messages WHERE id = $1", [messageId]);
+      if (selectRes.rows.length === 0) return;
+
+      let reactions = Array.isArray(selectRes.rows[0].reactions) ? selectRes.rows[0].reactions : [];
+
+      reactions = reactions.map(r => {
+        const filteredIds = (r.user_ids || []).filter(id => String(id) !== String(userId));
+        return { ...r, user_ids: filteredIds, count: filteredIds.length };
+      }).filter(r => r.count > 0);
+
+      const idx = reactions.findIndex(r => r.emoji === emoji);
+      if (idx !== -1) {
+        reactions[idx].user_ids.push(userId);
+        reactions[idx].count = reactions[idx].user_ids.length;
+      } else {
+        reactions.push({ emoji, user_ids: [userId], count: 1 });
       }
+
+      await pool.query("UPDATE messages SET reactions = $1 WHERE id = $2", [JSON.stringify(reactions), messageId]);
+      io.to(chatId).emit("reactionUpdate", { messageId, reactions, userId });
     } catch (err) {
-      console.error("❌ socket addReaction error:", err.message);
+      console.error("Error addReaction:", err.message);
     }
   });
 });
 
-// Middlewares
 app.use(
   cors({
     origin: allowedOrigins,
@@ -352,7 +317,6 @@ app.use(
 
 app.use(localeMiddleware);
 
-// Static uploads (1 marta, konflikt yo‘q)
 app.use(
   "/uploads",
   (req, res, next) => {
@@ -363,10 +327,13 @@ app.use(
   express.static(path.join(__dirname, "../uploads"))
 );
 
+<<<<<<< HEAD
 
 
 
 // Test route
+=======
+>>>>>>> b12e5c747d5a28d6f9ff7f97cca6dbfd95f4ca3e
 app.get("/", async (req, res) => {
   try {
     const result = await pool.query("SELECT NOW()");
@@ -398,7 +365,6 @@ app.get("/health", (req, res) => {
   });
 });
 
-// Routes
 app.use("/auth", authRoutes);
 app.use("/projects", projectRoutes);
 app.use("/proposals", proposalRoutes);
@@ -422,7 +388,6 @@ app.use("/disputes", disputeRoutes);
 app.use("/milestones", milestoneRoutes);
 app.use("/api/landing", landingRoutes);
 
-// 404
 app.use((req, res) => {
   res.status(404).json({
     success: false,
@@ -430,17 +395,14 @@ app.use((req, res) => {
   });
 });
 
-// Error handler
 app.use((err, req, res, next) => {
   console.error("❌ Server Error:", err);
-
   if (err.code === "LIMIT_FILE_SIZE") {
     return res.status(400).json({
       success: false,
       message: "Fayl hajmi juda katta",
     });
   }
-
   res.status(err.status || 500).json({
     success: false,
     message: err.message || "Server xatosi",
@@ -448,18 +410,24 @@ app.use((err, req, res, next) => {
   });
 });
 
-// Graceful shutdown
 process.on("SIGTERM", () => {
   console.log("⚠️ SIGTERM: closing server...");
-  server.close(() => {
-    pool.end(() => {
-      console.log("✅ DB pool closed");
-      process.exit(0);
+  if (server) {
+    server.close(() => {
+      if (pool) {
+        pool.end(() => {
+          console.log("✅ DB pool closed");
+          process.exit(0);
+        });
+      } else {
+        process.exit(0);
+      }
     });
-  });
+  } else {
+    process.exit(0);
+  }
 });
 
-// Start
 server.listen(PORT, () => {
   console.log("=".repeat(50));
   console.log("🚀 UzWork Server ishga tushdi!");
@@ -469,4 +437,3 @@ server.listen(PORT, () => {
   console.log("🔒 Env:", process.env.NODE_ENV || "development");
   console.log("=".repeat(50));
 });
-

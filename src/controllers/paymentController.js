@@ -1,4 +1,5 @@
 const pool = require("../db/pool");
+const { createNotification } = require("./notificationController");
 
 /* ================= HELPERS ================= */
 
@@ -222,6 +223,17 @@ const deposit = async (req, res) => {
 
     await client.query("COMMIT");
 
+    // Notify user (background)
+    const io = req.app.get("io");
+    createNotification(io, {
+      userId,
+      type: 'payment_received',
+      title: 'Hisob to\'ldirildi',
+      message: `${a.toLocaleString()} UZS miqdoridagi mablag' hisobingizga muvaffaqiyatli kelib tushdi.`,
+      relatedId: tx.id,
+      relatedType: 'transaction'
+    });
+
     return res.status(201).json({
       success: true,
       message: "Deposit muvaffaqiyatli amalga oshirildi (auto).",
@@ -295,6 +307,17 @@ const withdraw = async (req, res) => {
     );
 
     await pool.query("COMMIT");
+
+    // Notify user (background)
+    const io = req.app.get("io");
+    createNotification(io, {
+      userId,
+      type: 'withdrawal_request',
+      title: 'Yechib olish so\'rovi',
+      message: `${a.toLocaleString()} UZS miqdoridagi mablag'ni yechib olish uchun so'rovingiz qabul qilindi.`,
+      relatedId: tx.rows[0].id,
+      relatedType: 'transaction'
+    });
 
     res.status(201).json({ success: true, data: { transaction: tx.rows[0] } });
   } catch (e) {
@@ -409,6 +432,18 @@ const escrowHold = async (req, res) => {
       );
 
       await pool.query("COMMIT");
+
+      // Notify client (background)
+      const io = req.app.get("io");
+      createNotification(io, {
+        userId: clientId,
+        type: 'escrow_hold',
+        title: 'Mablag\' band qilindi',
+        message: `${a.toLocaleString()} UZS miqdoridagi mablag' shartnoma uchun escrow hamyoningizda band qilindi.`,
+        relatedId: txR.rows[0].id,
+        relatedType: 'transaction'
+      });
+
       return res.status(201).json({
         success: true,
         message: "Mablag' escrowga band qilindi.",
@@ -654,6 +689,30 @@ const releaseMilestone = async (req, res) => {
       }
 
       await pool.query("COMMIT");
+
+      // Notify both parties (background)
+      const io = req.app.get("io");
+      
+      // Notify Client (Debit)
+      createNotification(io, {
+        userId: clientId,
+        type: 'payment_sent',
+        title: 'To\'lov o\'tkazildi',
+        message: `Freelancerga ${a.toLocaleString()} UZS miqdoridagi to'lov muvaffaqiyatli o'tkazildi.`,
+        relatedId: releaseTx.id,
+        relatedType: 'transaction'
+      });
+
+      // Notify Freelancer (Credit)
+      createNotification(io, {
+        userId: contract.freelancer_id,
+        type: 'payment_received',
+        title: 'To\'lov qabul qilindi',
+        message: `Sizga ${netToFreelancer.toLocaleString()} UZS miqdoridagi to'lov kelib tushdi.`,
+        relatedId: releaseTx.id,
+        relatedType: 'transaction'
+      });
+
       return res.json({
         success: true,
         message: "Escrowdan freelancerga yechildi (fee bilan)!",
