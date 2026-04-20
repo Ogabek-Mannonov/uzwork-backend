@@ -246,12 +246,15 @@ const getContracts = async (req, res) => {
 
         uc.first_name AS client_first_name,
         uc.last_name  AS client_last_name,
+        uc.avatar_url AS client_avatar_url,
         uf.first_name AS freelancer_first_name,
-        uf.last_name  AS freelancer_last_name
+        uf.last_name  AS freelancer_last_name,
+        uf.avatar_url AS freelancer_avatar_url
       FROM contracts c
       JOIN jobs j ON j.id = c.job_id
       JOIN users uc ON uc.id = c.client_id
       JOIN users uf ON uf.id = c.freelancer_id
+
       ${whereClause}
       ORDER BY c.created_at DESC
       LIMIT $${i} OFFSET $${i + 1}
@@ -303,10 +306,12 @@ const getContractById = async (req, res) => {
         uc.first_name AS client_first_name,
         uc.last_name  AS client_last_name,
         uc.email      AS client_email,
+        uc.avatar_url AS client_avatar_url,
 
         uf.first_name AS freelancer_first_name,
         uf.last_name  AS freelancer_last_name,
-        uf.email      AS freelancer_email
+        uf.email      AS freelancer_email,
+        uf.avatar_url AS freelancer_avatar_url
       FROM contracts c
       JOIN jobs j ON j.id = c.job_id
       JOIN users uc ON uc.id = c.client_id
@@ -410,12 +415,15 @@ const getMyContracts = async (req, res) => {
         j.status AS job_status,
         uc.first_name AS client_first_name,
         uc.last_name  AS client_last_name,
+        uc.avatar_url AS client_avatar_url,
         uf.first_name AS freelancer_first_name,
-        uf.last_name  AS freelancer_last_name
+        uf.last_name  AS freelancer_last_name,
+        uf.avatar_url AS freelancer_avatar_url
       FROM contracts c
       JOIN jobs j ON j.id = c.job_id
       JOIN users uc ON uc.id = c.client_id
       JOIN users uf ON uf.id = c.freelancer_id
+
       ${whereClause}
       ORDER BY c.created_at DESC
       LIMIT $${i} OFFSET $${i + 1}
