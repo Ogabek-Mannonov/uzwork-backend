@@ -1,5 +1,6 @@
 // src/controllers/projectController.js
 const pool = require('../db/pool');
+const { createNotification } = require('./notificationController');
 
 // -------------------------
 // helpers
@@ -107,10 +108,43 @@ const createProject = async (req, res) => {
       ]
     );
 
+    const project = result.rows[0];
+
+    // --- Start Notification Logic ---
+    // Mos keladigan freelancerlarga bildirishnoma yuborish (background)
+    (async () => {
+      try {
+        const io = req.app.get("io");
+        if (skillsArr.length > 0) {
+          const freelancersRes = await pool.query(
+            `SELECT user_id FROM freelancer_profiles WHERE skills ?| $1::text[]`,
+            [skillsArr]
+          );
+
+          for (const f of freelancersRes.rows) {
+            // Loyiha egasiga yubormaslik (client freelancer ham bo'lsa)
+            if (String(f.user_id) === String(userId)) continue;
+
+            createNotification(io, {
+              userId: f.user_id,
+              type: 'new_job_posted',
+              title: 'Yangi loyiha!',
+              message: `Sizning ko'nikmalaringizga mos keladigan yangi loyiha joylandi: "${title}"`,
+              relatedId: project.id,
+              relatedType: 'project'
+            });
+          }
+        }
+      } catch (err) {
+        console.error("New job notification error:", err);
+      }
+    })();
+    // --- End Notification Logic ---
+
     return res.status(201).json({
       success: true,
       message: 'Loyiha muvaffaqiyatli yaratildi!',
-      data: { project: result.rows[0] }
+      data: { project }
     });
   } catch (error) {
     console.error('Create project error:', error);
