@@ -22,6 +22,8 @@ const generateAccessToken = (payload) => {
       id: payload.id,
       role: payload.role,
       email: payload.email || null,
+      first_name: payload.first_name || null,
+      last_name: payload.last_name || null,
     },
     JWT_SECRET,
     { expiresIn: ACCESS_TOKEN_EXPIRY }
@@ -34,6 +36,8 @@ const generateRefreshToken = (payload) => {
       id: payload.id,
       role: payload.role,
       email: payload.email || null,
+      first_name: payload.first_name || null,
+      last_name: payload.last_name || null,
       type: "refresh",
     },
     JWT_REFRESH_SECRET,

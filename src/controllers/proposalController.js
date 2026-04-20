@@ -12,6 +12,8 @@ const {
   consumeLockedToPlatform,
 } = require("../services/walletService");
 
+const { createNotification } = require("../controllers/notificationController");
+
 const normalizeStatus = (s) => (s ? String(s).toLowerCase() : null);
 
 const DEPOSIT_AMOUNT = Number(process.env.PROPOSAL_DEPOSIT_AMOUNT || 0);
@@ -23,9 +25,11 @@ const PLATFORM_USER_ID = process.env.PLATFORM_USER_ID;
 // =========================
 const createProposal = async (req, res) => {
   const client = await pool.connect();
+  const io = req.app.get("io");
   try {
     const userId = req.user.id;
     const userRole = req.user.role;
+    const freelancerName = `${req.user.first_name || ""} ${req.user.last_name || ""}`.trim() || "Freelancer";
 
     if (userRole !== "freelancer") {
       return res.status(403).json({
@@ -47,7 +51,7 @@ const createProposal = async (req, res) => {
 
     // Job mavjudmi + openmi + deleted emasmi (LOCK emas, lekin ok)
     const jobCheck = await client.query(
-      "SELECT id, client_id, status, deleted_at FROM jobs WHERE id = $1",
+      "SELECT id, client_id, title, status, deleted_at FROM jobs WHERE id = $1",
       [job_id]
     );
 
@@ -120,6 +124,16 @@ const createProposal = async (req, res) => {
 
     await client.query("COMMIT");
 
+    // 3) Notify client (background)
+    createNotification(io, {
+      userId: job.client_id,
+      type: 'proposal_received',
+      title: 'Yangi taklif!',
+      message: `"${job.title}" loyihangizga ${freelancerName} tomonidan yangi taklif keldi.`,
+      relatedId: proposal.id,
+      relatedType: 'proposal'
+    });
+
     return res.status(201).json({
       success: true,
       message: "Taklif yuborildi! Deposit walletdan vaqtincha band qilindi.",
@@ -137,6 +151,7 @@ const createProposal = async (req, res) => {
     client.release();
   }
 };
+
 
 /**
  * GET /proposals
@@ -625,6 +640,7 @@ const acceptProposal = async (req, res) => {
         p.deposit_status,
         p.milestones as proposal_milestones,
 
+        j.title AS job_title,
         j.client_id,
         j.status AS job_status,
         j.deleted_at
@@ -837,6 +853,29 @@ const acceptProposal = async (req, res) => {
 
     await client.query("COMMIT");
 
+    // 8) Notify freelancer (background)
+    const io = req.app.get("io");
+    createNotification(io, {
+      userId: row.freelancer_id,
+      type: 'proposal_accepted',
+      title: 'Taklifingiz qabul qilindi!',
+      message: `"${row.job_title}" loyihasi bo'yicha yuborgan taklifingiz qabul qilindi. Tabriklaymiz!`,
+      relatedId: contract.id,
+      relatedType: 'contract'
+    });
+
+    // Notify other freelancers (background)
+    for (const p of rejectedList.rows) {
+      createNotification(io, {
+        userId: p.freelancer_id,
+        type: 'proposal_rejected',
+        title: 'Taklif rad etildi',
+        message: `"${row.job_title}" loyihasiga yuborgan taklifingiz rad etildi. Boshqa loyihalarni ko'rib chiqing.`,
+        relatedId: row.job_id,
+        relatedType: 'project'
+      });
+    }
+
     return res.json({
       success: true,
       message: "Taklif qabul qilindi! Contract/chat yaratildi. Depositlar consume/refund qilindi.",
@@ -886,7 +925,7 @@ const rejectProposal = async (req, res) => {
       `
       SELECT 
         p.id, p.status, p.freelancer_id, p.deposit_amount, p.deposit_status,
-        j.client_id, j.deleted_at
+        j.title AS job_title, j.client_id, j.deleted_at
       FROM proposals p
       JOIN jobs j ON j.id = p.job_id
       WHERE p.id = $1
@@ -940,6 +979,18 @@ const rejectProposal = async (req, res) => {
     }
 
     await client.query("COMMIT");
+
+    // 3) Notify freelancer (background)
+    const io = req.app.get("io");
+    createNotification(io, {
+      userId: row.freelancer_id,
+      type: 'proposal_rejected',
+      title: 'Taklif rad etildi',
+      message: `"${row.job_title}" loyihasiga yuborgan taklifingiz buyurtmachi tomonidan rad etildi.`,
+      relatedId: row.id,
+      relatedType: 'proposal'
+    });
+
     return res.json({ success: true, message: "Taklif rad etildi, deposit qaytarildi." });
   } catch (error) {
     try { await client.query("ROLLBACK"); } catch {}
