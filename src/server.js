@@ -327,13 +327,9 @@ app.use(
   express.static(path.join(__dirname, "../uploads"))
 );
 
-<<<<<<< HEAD
-
-
 
 // Test route
-=======
->>>>>>> b12e5c747d5a28d6f9ff7f97cca6dbfd95f4ca3e
+
 app.get("/", async (req, res) => {
   try {
     const result = await pool.query("SELECT NOW()");
