@@ -864,7 +864,17 @@ const acceptProposal = async (req, res) => {
       relatedType: 'contract'
     });
 
-    // Notify other freelancers (background)
+    // 9) Notify client about payment (background)
+    createNotification(io, {
+      userId: row.client_id,
+      type: 'payment_sent',
+      title: "To'lov muvaffaqiyatli!",
+      message: `"${row.job_title}" loyihasi uchun ${totalAmount} UZS miqdoridagi mablag' band qilindi (escrow).`,
+      relatedId: contract.id,
+      relatedType: 'contract'
+    });
+
+    // 10) Notify other freelancers (background)
     for (const p of rejectedList.rows) {
       createNotification(io, {
         userId: p.freelancer_id,

@@ -31,6 +31,7 @@ const safeJsonToString = (v, fallback = []) => {
 const createProject = async (req, res) => {
   try {
     const userId = req.user.id;
+    
     if (req.user.role !== 'client') {
       return res.status(403).json({ success: false, message: 'Faqat clientlar loyiha yaratishi mumkin.' });
     }
@@ -38,19 +39,21 @@ const createProject = async (req, res) => {
     const {
       title,
       description,
-      budget_type, // frontend eski nom
-      job_type,    // yangi nom
+      budget_type, 
+      job_type,    
       budget_min,
       budget_max,
       currency,
       deadline,
       duration_days,
       skills,
+      required_skills, // Endi xato bermaydi
       attachments,
       visibility,
       category,
       scope,
-      duration
+      duration,
+      experience_level
     } = req.body;
 
     const jt = job_type || budget_type;
@@ -58,32 +61,18 @@ const createProject = async (req, res) => {
     if (!title || !description || !jt) {
       return res.status(400).json({
         success: false,
-        message: "title, description va job_type (yoki budget_type) majburiy."
+        message: "Sarlavha, tavsif va ish turi majburiy."
       });
     }
 
-    if (!['fixed', 'hourly'].includes(jt)) {
-      return res.status(400).json({
-        success: false,
-        message: "job_type (budget_type) faqat 'fixed' yoki 'hourly' bo‘lishi kerak."
-      });
-    }
-
-    // budget_min/budget_max DB’da bor — ikkisi ham bo‘lsin
-    if (budget_min == null || budget_max == null) {
-      return res.status(400).json({
-        success: false,
-        message: "budget_min va budget_max majburiy."
-      });
-    }
-
-    // deadline: to‘g‘ridan yoki duration_days orqali
-    let dl = null;
-    if (deadline) dl = new Date(deadline);
-    else if (duration_days) dl = new Date(Date.now() + Number(duration_days) * 24 * 60 * 60 * 1000);
-
-    const skillsArr = normalizeToArray(required_skills ?? skills);
+    // Data tayyorlash
+    const skillsArr = normalizeToArray(required_skills || skills || []);
     const attachmentsJson = safeJsonToString(attachments, []);
+    
+    let dl = deadline ? new Date(deadline) : null;
+    if (!dl && duration_days) {
+      dl = new Date(Date.now() + Number(duration_days) * 24 * 60 * 60 * 1000);
+    }
 
     const result = await pool.query(
       `
@@ -91,9 +80,9 @@ const createProject = async (req, res) => {
         client_id, title, description, job_type,
         budget_min, budget_max, currency, deadline,
         required_skills, attachments, visibility,
-        category, scope, duration
+        category, scope, duration, experience_level
       )
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb,$10::jsonb,$11, $12, $13, $14)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11, $12, $13, $14, $15)
       RETURNING *
       `,
       [
@@ -101,8 +90,8 @@ const createProject = async (req, res) => {
         title,
         description,
         jt,
-        budget_min,
-        budget_max,
+        budget_min || 0,
+        budget_max || 0,
         currency || 'UZS',
         dl,
         JSON.stringify(skillsArr),
@@ -110,14 +99,14 @@ const createProject = async (req, res) => {
         visibility || 'public',
         category,
         scope,
-        duration
+        duration,
+        experience_level
       ]
     );
 
     const project = result.rows[0];
 
-    // --- Start Notification Logic ---
-    // Mos keladigan freelancerlarga bildirishnoma yuborish (background)
+    // Notification Logic (Background)
     (async () => {
       try {
         const io = req.app.get("io");
@@ -128,7 +117,6 @@ const createProject = async (req, res) => {
           );
 
           for (const f of freelancersRes.rows) {
-            // Loyiha egasiga yubormaslik (client freelancer ham bo'lsa)
             if (String(f.user_id) === String(userId)) continue;
 
             createNotification(io, {
@@ -145,7 +133,6 @@ const createProject = async (req, res) => {
         console.error("New job notification error:", err);
       }
     })();
-    // --- End Notification Logic ---
 
     return res.status(201).json({
       success: true,
@@ -153,7 +140,7 @@ const createProject = async (req, res) => {
       data: { project }
     });
   } catch (error) {
-    console.error('Create project error:', error);
+    console.error('❌ Create project error:', error);
     return res.status(500).json({
       success: false,
       message: 'Loyiha yaratishda xato yuz berdi.',
