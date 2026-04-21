@@ -5,6 +5,7 @@ const router = express.Router();
 const {
   getChats,
   getChatHistory,
+  getUnreadCount,
   sendMessage,
   sendVoiceMessage,
   startVideoCall,
@@ -18,6 +19,9 @@ const { authenticate, authorize } = require("../middlewares/authMiddleware");
 
 // All routes require authentication
 router.use(authenticate);
+
+// Unread count
+router.get("/unread/count", getUnreadCount);
 
 // Chats list
 router.get("/", getChats);

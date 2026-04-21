@@ -327,6 +327,62 @@ const getParticipantsForChat = async (chatRow) => {
 // ---------- controllers ----------
 
 /**
+ * GET /messages/unread/count
+ * Get total unread messages count for current user
+ */
+const getUnreadCount = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const isAdmin = req.user.role === "admin";
+
+    const query = isAdmin
+      ? `
+        SELECT COUNT(*)::int AS unread_count
+        FROM messages m
+        JOIN chats c ON c.id = m.chat_id
+        WHERE m.is_read = FALSE
+          AND m.deleted_at IS NULL
+          AND m.sender_id <> $1
+      `
+      : `
+        SELECT COUNT(*)::int AS unread_count
+        FROM messages m
+        JOIN chats c ON c.id = m.chat_id
+        WHERE m.is_read = FALSE
+          AND m.deleted_at IS NULL
+          AND m.sender_id <> $1
+          AND (
+            (c.contract_id IS NOT NULL AND EXISTS (
+              SELECT 1 FROM contracts ct
+              WHERE ct.id = c.contract_id
+                AND (ct.client_id = $1 OR ct.freelancer_id = $1)
+            ))
+            OR
+            (c.job_id IS NOT NULL AND (
+              EXISTS (SELECT 1 FROM jobs j WHERE j.id = c.job_id AND j.client_id = $1)
+              OR EXISTS (SELECT 1 FROM proposals p WHERE p.job_id = c.job_id AND p.freelancer_id = $1 AND p.status = 'accepted')
+            ))
+          )
+      `;
+
+    const result = await pool.query(query, [userId]);
+    const unreadCount = result.rows[0]?.unread_count ?? 0;
+
+    return res.json({
+      success: true,
+      data: { unread_count: unreadCount },
+    });
+  } catch (error) {
+    console.error("Get unread count error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Xabarlar sonini olishda xato yuz berdi.",
+      error: error.message,
+    });
+  }
+};
+
+/**
  * GET /messages
  * Get all chats for current user
  */
@@ -495,7 +551,6 @@ const getChatHistory = async (req, res) => {
 
     const messagesResult = await pool.query(messagesQuery, [chatId]);
 
-    // ✅ mark as read for THIS user (admin ham, oddiy user ham)
     await pool.query(
       `UPDATE messages
        SET is_read = TRUE
@@ -505,6 +560,12 @@ const getChatHistory = async (req, res) => {
          AND deleted_at IS NULL`,
       [chatId, req.user.id]
     );
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(chatId).emit("messagesRead", { chatId });
+      io.to(`user_${String(req.user.id)}`).emit("messagesRead", { chatId });
+    }
 
     // ✅ participants
     const participants = await getParticipantsForChat(chat);
@@ -606,7 +667,23 @@ const sendMessage = async (req, res) => {
     };
 
     const io = req.app.get("io");
-    if (io) io.to(chat_id).emit("newMessage", enrichedMessage);
+    if (io) {
+      // 1) Chat xonasiga yuborish (o'sha xonada ochiq turganlar uchun)
+      io.to(chat_id).emit("newMessage", enrichedMessage);
+
+      // 2) Partner xonasiga yuborish (unread badge real-time o'zgarishi uchun)
+      const partner = await getPartnerForChat(chat, userId);
+      if (partner && partner.id) {
+        const partnerRoom = `user_${String(partner.id)}`;
+        io.to(partnerRoom).emit("newMessage", enrichedMessage); 
+
+        // Tepada raqam (badge) yangilanishi uchun signal yuborish
+        io.to(partnerRoom).emit("unreadUpdate", {
+          chatId: chat_id,
+          unreadCount: 1, 
+        });
+      }
+    }
 
     return res.status(201).json({
       success: true,
@@ -648,7 +725,10 @@ const markMessagesAsRead = async (req, res) => {
     );
 
     const io = req.app.get("io");
-    if (io) io.to(chatId).emit("messagesRead", { chatId });
+    if (io) {
+      io.to(chatId).emit("messagesRead", { chatId });
+      io.to(`user_${String(req.user.id)}`).emit("messagesRead", { chatId }); // O'zimning barcha qurilmalarimga
+    }
 
     return res.json({ success: true, message: "Xabarlar o'qilgan deb belgilandi" });
   } catch (error) {
@@ -709,7 +789,18 @@ const sendVoiceMessage = async (req, res) => {
     };
 
     const io = req.app.get("io");
-    if (io) io.to(chatId).emit("newMessage", enriched);
+    if (io) {
+      // 1) Chat xonasiga
+      io.to(chatId).emit("newMessage", enriched);
+
+      // 2) Partnerga (badge uchun)
+      const partner = await getPartnerForChat(chat, req.user.id);
+      if (partner && partner.id) {
+        const partnerRoom = `user_${String(partner.id)}`;
+        io.to(partnerRoom).emit("newMessage", enriched);
+        io.to(partnerRoom).emit("unreadUpdate", { chatId, unreadCount: 1 });
+      }
+    }
 
     return res.status(201).json({
       success: true,
@@ -956,6 +1047,7 @@ const updateChatStatus = async (req, res) => {
 module.exports = {
   getChats,
   getChatHistory,
+  getUnreadCount,
   sendMessage,
   sendVoiceMessage,
   startVideoCall,

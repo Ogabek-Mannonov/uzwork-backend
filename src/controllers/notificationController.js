@@ -144,9 +144,13 @@ const createNotification = async (io, {
     const values = [userId, type, title, message, data];
     const result = await pool.query(query, values);
     const notification = result.rows[0];
+    const targetRoom = `user_${String(userId)}`;
 
     if (io) {
-      io.to(`user_${userId}`).emit('newNotification', notification);
+      console.log(`📡 Emitting newNotification to room: ${targetRoom}`);
+      io.to(targetRoom).emit('newNotification', notification);
+    } else {
+      console.warn('⚠️ Socket.io (io) instance NOT FOUND in createNotification');
     }
     return notification;
   } catch (error) {
