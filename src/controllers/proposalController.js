@@ -468,7 +468,7 @@ const updateProposal = async (req, res) => {
     const userId = req.user.id;
 
     const proposalCheck = await pool.query(
-      "SELECT freelancer_id, status FROM proposals WHERE id = $1",
+      "SELECT freelancer_id, job_id, status FROM proposals WHERE id = $1",
       [id]
     );
 
@@ -500,10 +500,10 @@ const updateProposal = async (req, res) => {
       });
     }
 
-    if (proposal.status !== "pending" && proposal.status !== "shortlisted") {
+    if (proposal.status === "rejected") {
       return res.status(400).json({
         success: false,
-        message: 'Faqat "pending" yoki "shortlisted" statusdagi takliflarni yangilash mumkin.',
+        message: "Rad etilgan takliflarni o'zgartirib bo'lmaydi.",
       });
     }
 

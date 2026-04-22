@@ -57,7 +57,7 @@ const ensureChatMemberOrAdmin = async (chatId, user) => {
        FROM proposals
        WHERE job_id = $1
          AND freelancer_id = $2
-         AND status = 'accepted'
+         AND status IN ('pending', 'shortlisted', 'accepted')
        LIMIT 1`,
       [chat.job_id, user.id]
     );
@@ -133,16 +133,22 @@ const getPartnerForChat = async (chatRow, userId) => {
     if (!j) return null;
 
     // if current user is client -> partner is accepted freelancer (if exists)
+    // if current user is client -> partner is accepted freelancer (if exists) OR the freelancer linked to this chat
     if (j.client_id === userId) {
-      const pRes = await pool.query(
-        `SELECT freelancer_id
-         FROM proposals
-         WHERE job_id = $1 AND status = 'accepted'
-         ORDER BY updated_at DESC NULLS LAST, created_at DESC
-         LIMIT 1`,
-        [chatRow.job_id]
-      );
-      const freelancerId = pRes.rows[0]?.freelancer_id;
+      let freelancerId = chatRow.freelancer_id;
+
+      if (!freelancerId) {
+        const pRes = await pool.query(
+          `SELECT freelancer_id
+           FROM proposals
+           WHERE job_id = $1 AND status = 'accepted'
+           ORDER BY updated_at DESC NULLS LAST, created_at DESC
+           LIMIT 1`,
+          [chatRow.job_id]
+        );
+        freelancerId = pRes.rows[0]?.freelancer_id;
+      }
+
       if (!freelancerId) return null;
 
       const uRes = await pool.query(
@@ -281,11 +287,11 @@ const getParticipantsForChat = async (chatRow) => {
       JOIN users cu ON cu.id = j.client_id
       LEFT JOIN proposals p
         ON p.job_id = j.id AND p.status = 'accepted'
-      LEFT JOIN users fu ON fu.id = p.freelancer_id
+      LEFT JOIN users fu ON fu.id = COALESCE($2, p.freelancer_id)
       WHERE j.id = $1
       LIMIT 1
       `,
-      [chatRow.job_id]
+      [chatRow.job_id, chatRow.freelancer_id]
     );
 
     const r = res.rows[0];
@@ -1044,6 +1050,82 @@ const updateChatStatus = async (req, res) => {
   }
 };
 
+/**
+ * POST /messages/find-or-create/:proposalId
+ * Find existing chat for job/freelancer or create one
+ */
+const findOrCreateChat = async (req, res) => {
+  try {
+    const { proposalId } = req.params;
+    if (!isUuid(proposalId)) {
+      return res.status(400).json({ success: false, message: "Proposal ID noto'g'ri" });
+    }
+
+    // 1) Proposal + Job ma'lumotlarini olish
+    const pRes = await pool.query(
+      `SELECT p.id, p.job_id, p.freelancer_id, j.client_id
+       FROM proposals p
+       JOIN jobs j ON j.id = p.job_id
+       WHERE p.id = $1`,
+      [proposalId]
+    );
+
+    if (pRes.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Taklif topilmadi" });
+    }
+
+    const { job_id, freelancer_id, client_id } = pRes.rows[0];
+
+    // Faqat buyurtmachi yoki freelancer chatni boshlashi mumkin
+    const isOwner = String(req.user.id) === String(client_id);
+    const isFreelancer = String(req.user.id) === String(freelancer_id);
+    const isAdmin = req.user.role === 'admin';
+
+    if (!isOwner && !isFreelancer && !isAdmin) {
+      return res.status(403).json({ success: false, message: "Sizda ruxsat yo'q" });
+    }
+
+    // 2) Mavjud chatni qidirish (shu job va shu freelancer uchun)
+    // Aslida mantiqan bitta job uchun bitta freelancer bilan bitta chat bo'lgani ma'qul
+    const existingChat = await pool.query(
+      `SELECT id FROM chats 
+       WHERE job_id = $1 AND (
+         freelancer_id = $2 OR 
+         contract_id IN (SELECT id FROM contracts WHERE freelancer_id = $2)
+       ) LIMIT 1`,
+      [job_id, freelancer_id]
+    );
+
+    if (existingChat.rows.length > 0) {
+      return res.json({
+        success: true,
+        data: { chatId: existingChat.rows[0].id }
+      });
+    }
+
+    // 3) Yangi chat yaratish
+    const createRes = await pool.query(
+      `INSERT INTO chats (job_id, freelancer_id, status, created_at)
+       VALUES ($1, $2, 'active', NOW())
+       RETURNING id`,
+      [job_id, freelancer_id]
+    );
+
+    return res.status(201).json({
+      success: true,
+      data: { chatId: createRes.rows[0].id }
+    });
+
+  } catch (error) {
+    console.error("findOrCreateChat error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Chat yaratishda xato yuz berdi",
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   getChats,
   getChatHistory,
@@ -1055,4 +1137,5 @@ module.exports = {
   editMessage,
   deleteMessage,
   updateChatStatus,
+  findOrCreateChat,
 };

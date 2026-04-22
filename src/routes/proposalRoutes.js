@@ -26,7 +26,7 @@ router.get("/my", authenticate, authorize("freelancer"), getMyProposals);
 router.get("/project/:projectId", authenticate, getProjectProposals);
 
 router.post("/", authenticate, authorize("freelancer"), createProposal);
-router.put("/:id", authenticate, authorize("freelancer"), updateProposal);
+router.put("/:id", authenticate, authorize("freelancer", "client"), updateProposal);
 router.delete("/:id", authenticate, authorize("freelancer"), withdrawProposal);
 
 router.post("/:id/accept", authenticate, authorize("client", "admin"), acceptProposal);

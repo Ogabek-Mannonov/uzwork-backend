@@ -13,6 +13,7 @@ const {
   editMessage,
   deleteMessage,
   updateChatStatus,
+  findOrCreateChat,
 } = require("../controllers/messageController");
 
 const { authenticate, authorize } = require("../middlewares/authMiddleware");
@@ -28,6 +29,9 @@ router.get("/", getChats);
 
 // Chat history
 router.get("/:chatId", getChatHistory);
+
+// Find or create chat by proposal
+router.post("/find-or-create/:proposalId", findOrCreateChat);
 
 // Send message
 router.post("/", sendMessage);

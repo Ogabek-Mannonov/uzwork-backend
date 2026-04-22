@@ -22,10 +22,51 @@ const pool = new Pool({
   connectionTimeoutMillis: 20000,
 });
 
-pool.on("connect", (client) => {
+pool.on("connect", async (client) => {
   client.query("SET timezone = 'UTC'");
   console.log(`✅ Postgres ulandi (${isLocal ? "LOCAL" : "REMOTE SSL"})`);
 });
+
+// Auto-migration: shortlisted status ruxsat berish va freelancer_id qo'shish
+// Darhol ishga tushiramiz
+(async () => {
+  try {
+    // Muammoli qatorlarni topib ko'ramiz
+    const badRows = await pool.query(`
+      SELECT id, status FROM proposals 
+      WHERE status IS NOT NULL AND status NOT IN ('pending', 'shortlisted', 'accepted', 'rejected', 'interviewing', 'withdrawn')
+    `);
+    if (badRows.rows.length > 0) {
+      console.log("⚠️ Quyidagi qatorlar yangi status chekloviga mos kelmaydi:", badRows.rows);
+      
+      // Avval ularni 'pending' ga qaytaramiz (migratsiya o'tib ketishi uchun)
+      await pool.query(`
+        UPDATE proposals 
+        SET status = 'pending' 
+        WHERE status NOT IN ('pending', 'shortlisted', 'accepted', 'rejected', 'interviewing', 'withdrawn')
+      `);
+      console.log("✅ Muammoli qatorlar 'pending' holatiga qaytarildi.");
+    }
+
+    await pool.query(`
+      ALTER TABLE chats ADD COLUMN IF NOT EXISTS freelancer_id UUID REFERENCES users(id);
+      
+      -- Proposals jadvalidagi status checkni yangilash
+      -- Avval bor bo'lsa o'chiramiz
+      ALTER TABLE proposals DROP CONSTRAINT IF EXISTS proposals_status_check;
+      
+      -- Yangi ro'yxat bilan qo'shamiz (withdrawn qo'shildi)
+      ALTER TABLE proposals ADD CONSTRAINT proposals_status_check 
+        CHECK (status IN ('pending', 'shortlisted', 'accepted', 'rejected', 'withdrawn', 'interviewing'));
+
+      -- Xatolik bilan o'zgarib qolgan statusni qaytaramiz
+      UPDATE proposals SET status = 'accepted' WHERE id = '336ea2db-76c1-4978-8ae1-7fb0b35f588e';
+    `);
+    console.log("🚀 Database migratsiyasi muvaffaqiyatli yakunlandi.");
+  } catch (e) {
+    console.error("❌ Migratsiyada xato:", e.message);
+  }
+})();
 
 pool.on("error", (err) => {
   console.error("❌ DB error:", err.message);
