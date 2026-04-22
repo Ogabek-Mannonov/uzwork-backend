@@ -478,21 +478,36 @@ const updateProposal = async (req, res) => {
 
     const proposal = proposalCheck.rows[0];
 
-    if (proposal.freelancer_id !== userId) {
+    // Job egasini ham tekshiramiz (statusni o'zgartirish uchun)
+    const jobCheck = await pool.query("SELECT client_id FROM jobs WHERE id = $1", [proposal.job_id]);
+    const isJobOwner = jobCheck.rows.length > 0 && String(jobCheck.rows[0].client_id) === String(userId);
+    const isAdmin = req.user && req.user.role === "admin";
+
+    if (proposal.freelancer_id !== userId && !isJobOwner && !isAdmin) {
       return res.status(403).json({
         success: false,
-        message: "Siz bu taklifning muallifi emassiz.",
+        message: "Siz bu taklifni yangilash huquqiga ega emassiz.",
       });
     }
 
-    if (proposal.status !== "pending") {
+    const { cover_letter, proposed_price, proposed_duration, status } = req.body;
+
+    // Faqat buyurtmachi yoki admin statusni o'zgartira oladi
+    if (status !== undefined && !isJobOwner && !isAdmin) {
+      return res.status(403).json({
+        success: false,
+        message: "Faqat buyurtmachi statusni o'zgartirishi mumkin.",
+      });
+    }
+
+    if (proposal.status !== "pending" && proposal.status !== "shortlisted") {
       return res.status(400).json({
         success: false,
-        message: 'Faqat "pending" statusdagi takliflarni yangilash mumkin.',
+        message: 'Faqat "pending" yoki "shortlisted" statusdagi takliflarni yangilash mumkin.',
       });
     }
 
-    const { cover_letter, proposed_price, proposed_duration } = req.body;
+    // const { cover_letter, proposed_price, proposed_duration } = req.body; // Yuqorida olindi
 
     const sets = [];
     const vals = [];
@@ -509,6 +524,10 @@ const updateProposal = async (req, res) => {
     if (proposed_duration !== undefined) {
       sets.push(`proposed_duration = $${i++}`);
       vals.push(proposed_duration);
+    }
+    if (status !== undefined) {
+      sets.push(`status = $${i++}`);
+      vals.push(status);
     }
 
     if (sets.length === 0) {
@@ -664,9 +683,9 @@ const acceptProposal = async (req, res) => {
       return res.status(403).json({ success: false, message: "Siz bu job egasi emassiz." });
     }
 
-    if (normalizeStatus(row.proposal_status) !== "pending") {
+    if (!["pending", "shortlisted"].includes(normalizeStatus(row.proposal_status))) {
       await client.query("ROLLBACK");
-      return res.status(400).json({ success: false, message: 'Faqat "pending" taklif qabul qilinadi.' });
+      return res.status(400).json({ success: false, message: 'Faqat "pending" yoki "shortlisted" taklif qabul qilinadi.' });
     }
 
     if (normalizeStatus(row.job_status) !== "open") {
@@ -956,11 +975,11 @@ const rejectProposal = async (req, res) => {
       return res.status(403).json({ success: false, message: "Siz bu job egasi emassiz." });
     }
 
-    if (normalizeStatus(row.status) !== "pending") {
+    if (!["pending", "shortlisted"].includes(normalizeStatus(row.status))) {
       await client.query("ROLLBACK");
       return res.status(400).json({
         success: false,
-        message: 'Faqat "pending" statusdagi taklifni rad etish mumkin.',
+        message: 'Faqat "pending" yoki "shortlisted" statusdagi taklifni rad etish mumkin.',
       });
     }
 
