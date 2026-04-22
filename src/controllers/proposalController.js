@@ -340,9 +340,13 @@ const getMyProposals = async (req, res) => {
         j.id as job_id,
         j.title as job_title,
         j.status as job_status,
-        j.client_id as job_client_id
+        j.client_id as job_client_id,
+        u.first_name as client_first_name,
+        u.last_name as client_last_name,
+        u.avatar_url as client_avatar
       FROM proposals p
       JOIN jobs j ON j.id = p.job_id
+      JOIN users u ON u.id = j.client_id
       ${whereClause}
       ORDER BY p.created_at DESC
       LIMIT $${i} OFFSET $${i + 1}
@@ -1127,6 +1131,99 @@ const aiScore = async (req, res) => {
   }
 };
 
+/**
+ * POST /proposals/invite
+ * Invite a freelancer to a job (only clients can invite)
+ */
+const inviteFreelancer = async (req, res) => {
+  const client = await pool.connect();
+  const io = req.app.get("io");
+  try {
+    const userId = req.user.id;
+    const { job_id, freelancer_id } = req.body;
+
+    if (!job_id || !freelancer_id) {
+      return res.status(400).json({
+        success: false,
+        message: "job_id va freelancer_id majburiy.",
+      });
+    }
+
+    await client.query("BEGIN");
+
+    // 1. Check if job exists and user is owner
+    const jobCheck = await client.query(
+      "SELECT id, title, client_id, status FROM jobs WHERE id = $1",
+      [job_id]
+    );
+
+    if (jobCheck.rows.length === 0) {
+      await client.query("ROLLBACK");
+      return res.status(404).json({ success: false, message: "Loyiha topilmadi." });
+    }
+
+    const job = jobCheck.rows[0];
+
+    if (String(job.client_id) !== String(userId)) {
+      await client.query("ROLLBACK");
+      return res.status(403).json({ success: false, message: "Siz bu loyihaning egasi emassiz." });
+    }
+
+    // 2. Check if already invited or applied
+    const existing = await client.query(
+      "SELECT id FROM proposals WHERE job_id = $1 AND freelancer_id = $2",
+      [job_id, freelancer_id]
+    );
+
+    if (existing.rows.length > 0) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({
+        success: false,
+        message: "Bu mutaxassis allaqachon taklif qilingan yoki ariza topshirgan.",
+      });
+    }
+
+    // 3. Create invitation record (proposal with status='invited')
+    const result = await client.query(
+      `INSERT INTO proposals (job_id, freelancer_id, status, cover_letter)
+       VALUES ($1, $2, 'invited', $3)
+       RETURNING *`,
+      [job_id, freelancer_id, `Sizni "${job.title}" loyihasida hamkorlik qilishga taklif qilaman.`]
+    );
+
+    const proposal = result.rows[0];
+
+    await client.query("COMMIT");
+
+    // 4. Send notification to freelancer
+    const clientName = `${req.user.first_name || ""} ${req.user.last_name || ""}`.trim() || "Mijoz";
+    createNotification(io, {
+      userId: freelancer_id,
+      type: 'job_invitation',
+      title: 'Yangi ish taklifi!',
+      message: `${clientName} sizni "${job.title}" loyihasiga taklif qildi.`,
+      relatedId: job_id,
+      relatedType: 'project'
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: "Taklif muvaffaqiyatli yuborildi!",
+      data: { proposal },
+    });
+  } catch (error) {
+    if (client) await client.query("ROLLBACK");
+    console.error("Invite freelancer error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Taklif yuborishda xato yuz berdi.",
+      error: error.message,
+    });
+  } finally {
+    if (client) client.release();
+  }
+};
+
 module.exports = {
   createProposal,
   getProposals,
@@ -1139,4 +1236,5 @@ module.exports = {
   rejectProposal,
   aiWriter,
   aiScore,
+  inviteFreelancer,
 };
