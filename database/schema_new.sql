@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS proposals (
     cover_letter TEXT,
     proposed_price DECIMAL(15,2),
     proposed_duration INT, -- kunlarda
-    status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected')),
+    status VARCHAR(20) DEFAULT 'pending' CHECK (status IN ('pending', 'accepted', 'rejected', 'shortlisted', 'withdrawn', 'interviewing', 'invited')),
     ai_score DECIMAL(3,2),
     files JSONB DEFAULT '[]', -- taklifda fayllar
     milestones JSONB DEFAULT '[]', -- taklifdagi milestone lar

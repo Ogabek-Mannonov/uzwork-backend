@@ -55,9 +55,9 @@ pool.on("connect", async (client) => {
       -- Avval bor bo'lsa o'chiramiz
       ALTER TABLE proposals DROP CONSTRAINT IF EXISTS proposals_status_check;
       
-      -- Yangi ro'yxat bilan qo'shamiz (withdrawn qo'shildi)
+      -- Yangi ro'yxat bilan qo'shamiz (withdrawn va invited qo'shildi)
       ALTER TABLE proposals ADD CONSTRAINT proposals_status_check 
-        CHECK (status IN ('pending', 'shortlisted', 'accepted', 'rejected', 'withdrawn', 'interviewing'));
+        CHECK (status IN ('pending', 'shortlisted', 'accepted', 'rejected', 'withdrawn', 'interviewing', 'invited'));
 
       -- Xatolik bilan o'zgarib qolgan statusni qaytaramiz
       UPDATE proposals SET status = 'accepted' WHERE id = '336ea2db-76c1-4978-8ae1-7fb0b35f588e';
