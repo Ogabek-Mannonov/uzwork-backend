@@ -596,11 +596,35 @@ const withdrawProposal = async (req, res) => {
       });
     }
 
-    // pending bo‘lmasa ham withdrawn qilish mumkin (xohlasang cheklaysan)
+    // 1. Get job info to notify client
+    const jobRes = await pool.query(
+      `SELECT j.id, j.client_id, j.title, u.first_name, u.last_name 
+       FROM proposals p 
+       JOIN jobs j ON p.job_id = j.id 
+       JOIN users u ON p.freelancer_id = u.id
+       WHERE p.id = $1`,
+      [id]
+    );
+    const job = jobRes.rows[0];
+
+    // 2. Update status
     await pool.query(
       "UPDATE proposals SET status='withdrawn', updated_at = CURRENT_TIMESTAMP WHERE id = $1",
       [id]
     );
+
+    // 3. Notify client
+    const io = req.app.get("io");
+    if (job) {
+      createNotification(io, {
+        userId: job.client_id,
+        type: 'proposal_withdrawn',
+        title: 'Taklif bekor qilindi',
+        message: `"${job.title}" loyihangizdan ${job.first_name} ${job.last_name} o'z taklifini qaytib oldi.`,
+        relatedId: id,
+        relatedType: 'proposal'
+      });
+    }
 
     return res.json({ success: true, message: "Taklif bekor qilindi!" });
   } catch (error) {

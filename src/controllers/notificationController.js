@@ -1,5 +1,6 @@
 // src/controllers/notificationController.js
 const pool = require('../db/pool');
+const sendEmail = require('../utils/sendEmail');
 
 /**
  * GET /notifications/me
@@ -81,6 +82,12 @@ const markAsRead = async (req, res) => {
       });
     }
 
+    const notification = result.rows[0];
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`user_${userId}`).emit('notificationRead', { id, type: notification.type });
+    }
+
     res.json({
       success: true,
       message: 'Bildirishnoma o\'qilgan deb belgilandi.'
@@ -108,6 +115,11 @@ const markAllAsRead = async (req, res) => {
       [userId]
     );
 
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`user_${userId}`).emit('notificationsAllRead');
+    }
+
     res.json({
       success: true,
       message: 'Barcha bildirishnomalar o\'qilgan deb belgilandi.'
@@ -119,6 +131,65 @@ const markAllAsRead = async (req, res) => {
       message: 'Xato yuz berdi.',
       error: error.message
     });
+  }
+};
+
+/**
+ * GET /notifications/unread-proposals-count
+ */
+const getUnreadProposalsCount = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const result = await pool.query(
+      "SELECT COUNT(*) FROM notifications WHERE user_id = $1 AND is_read = FALSE AND (type LIKE 'proposal_%' OR type = 'job_invitation')",
+      [userId]
+    );
+    res.json({
+      success: true,
+      data: {
+        unread_count: parseInt(result.rows[0].count)
+      }
+    });
+  } catch (error) {
+    console.error('Get unread proposals count error:', error);
+    res.status(500).json({ success: false, message: 'Xato yuz berdi.' });
+  }
+};
+
+/**
+ * POST /notifications/mark-all-read-by-type
+ */
+const markAllAsReadByType = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { typePrefix } = req.body;
+
+    if (!typePrefix) {
+      return res.status(400).json({ success: false, message: 'typePrefix majburiy.' });
+    }
+
+    let query = "UPDATE notifications SET is_read = TRUE WHERE user_id = $1 AND is_read = FALSE AND type LIKE $2";
+    let params = [userId, `${typePrefix}%`];
+
+    // Agar proposal bo'lsa, job_invitation ni ham o'qilgan deb belgilaymiz
+    if (typePrefix === 'proposal') {
+      query = "UPDATE notifications SET is_read = TRUE WHERE user_id = $1 AND is_read = FALSE AND (type LIKE $2 OR type = 'job_invitation')";
+    }
+
+    await pool.query(query, params);
+
+    const io = req.app.get("io");
+    if (io) {
+      io.to(`user_${userId}`).emit('notificationsAllReadByType', { typePrefix });
+    }
+
+    res.json({
+      success: true,
+      message: `${typePrefix} turidagi bildirishnomalar o'qilgan deb belgilandi.`
+    });
+  } catch (error) {
+    console.error('Mark all by type as read error:', error);
+    res.status(500).json({ success: false, message: 'Xato yuz berdi.' });
   }
 };
 
@@ -135,6 +206,31 @@ const createNotification = async (io, {
   relatedType = null
 }) => {
   try {
+    // 1. Check user notification settings and get email
+    const userRes = await pool.query(
+      `SELECT s.*, u.email 
+       FROM users u 
+       LEFT JOIN user_notification_settings s ON u.id = s.user_id 
+       WHERE u.id = $1`,
+      [userId]
+    );
+    const user = userRes.rows[0];
+    const settings = user; // Contains settings and email
+
+    // If settings exist, check if this specific type is enabled
+    // Default to true if settings entry doesn't exist yet (except if user explicitly turned off)
+    const isProposalReceivedEnabled = settings?.proposal_received ?? true;
+    const isProposalWithdrawnEnabled = settings?.proposal_withdrawn ?? true;
+    const isPaymentEnabled = settings?.payment_success ?? true;
+    const isInvoiceEnabled = settings?.invoice_ready ?? true;
+    const isEmailEnabled = settings?.email_notifications ?? true;
+    const isPushEnabled = settings?.push_notifications ?? true;
+
+    if (type === 'proposal_received' && !isProposalReceivedEnabled) return null;
+    if (type === 'proposal_withdrawn' && !isProposalWithdrawnEnabled) return null;
+    if (['payment_success', 'payment_received', 'payment_sent'].includes(type) && !isPaymentEnabled) return null;
+    if (type === 'invoice_ready' && !isInvoiceEnabled) return null;
+
     const data = JSON.stringify({ related_id: relatedId, related_type: relatedType });
     const query = `
       INSERT INTO notifications (user_id, type, title, body, data)
@@ -144,14 +240,40 @@ const createNotification = async (io, {
     const values = [userId, type, title, message, data];
     const result = await pool.query(query, values);
     const notification = result.rows[0];
+    
     const targetRoom = `user_${String(userId)}`;
 
+    // Push notification (socket emit)
     if (io) {
-      console.log(`📡 Emitting newNotification to room: ${targetRoom}`);
-      io.to(targetRoom).emit('newNotification', notification);
+      if (isPushEnabled) {
+        console.log(`📡 Emitting newNotification to room: ${targetRoom}`);
+        io.to(targetRoom).emit('newNotification', notification);
+      }
     } else {
       console.warn('⚠️ Socket.io (io) instance NOT FOUND in createNotification');
     }
+
+    // Email notification
+    if (isEmailEnabled && user?.email) {
+      console.log(`📧 Sending notification email to: ${user.email}`);
+      sendEmail({
+        to: user.email,
+        subject: `UzWork: ${title}`,
+        text: message,
+        html: `
+          <div style="font-family: sans-serif; max-width: 600px; margin: auto; padding: 20px; border: 1px solid #eee; border-radius: 10px;">
+            <h2 style="color: #3b82f6; margin-top: 0;">UzWork Bildirishnomasi</h2>
+            <p style="font-size: 16px; color: #374151;">${message}</p>
+            <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;" />
+            <p style="font-size: 12px; color: #9ca3af;">
+              Siz ushbu xatni UzWork platformasidagi sozlamalaringiz asosida oldingiz. 
+              Xabarnoma sozlamalarini o'zgartirish uchun profilingizga kiring.
+            </p>
+          </div>
+        `
+      }).catch(err => console.error('Email notification failed:', err));
+    }
+
     return notification;
   } catch (error) {
     console.error('Error creating notification:', error);
@@ -159,10 +281,103 @@ const createNotification = async (io, {
   }
 };
 
+
+/**
+ * GET /notifications/settings
+ */
+const getSettings = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const result = await pool.query(
+      'SELECT * FROM user_notification_settings WHERE user_id = $1',
+      [userId]
+    );
+
+    if (result.rows.length === 0) {
+      // Default settings if none found
+      const defaultSettings = {
+        user_id: userId,
+        proposal_received: true,
+        proposal_withdrawn: true,
+        payment_success: true,
+        invoice_ready: true,
+        email_notifications: true,
+        push_notifications: true
+      };
+      return res.json({ success: true, data: defaultSettings });
+    }
+
+    res.json({ success: true, data: result.rows[0] });
+  } catch (error) {
+    console.error('Get notification settings error:', error);
+    res.status(500).json({ success: false, message: 'Sozlamalarni olishda xato yuz berdi.' });
+  }
+};
+
+/**
+ * PUT /notifications/settings
+ */
+const updateSettings = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const {
+      proposal_received,
+      proposal_withdrawn,
+      payment_success,
+      invoice_ready,
+      email_notifications,
+      push_notifications
+    } = req.body;
+
+    const query = `
+      INSERT INTO user_notification_settings (
+        user_id, proposal_received, proposal_withdrawn, 
+        payment_success, invoice_ready, email_notifications, push_notifications,
+        updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+      ON CONFLICT (user_id) DO UPDATE SET
+        proposal_received = COALESCE(EXCLUDED.proposal_received, user_notification_settings.proposal_received),
+        proposal_withdrawn = COALESCE(EXCLUDED.proposal_withdrawn, user_notification_settings.proposal_withdrawn),
+        payment_success = COALESCE(EXCLUDED.payment_success, user_notification_settings.payment_success),
+        invoice_ready = COALESCE(EXCLUDED.invoice_ready, user_notification_settings.invoice_ready),
+        email_notifications = COALESCE(EXCLUDED.email_notifications, user_notification_settings.email_notifications),
+        push_notifications = COALESCE(EXCLUDED.push_notifications, user_notification_settings.push_notifications),
+        updated_at = NOW()
+      RETURNING *
+    `;
+
+    const values = [
+      userId,
+      proposal_received,
+      proposal_withdrawn,
+      payment_success,
+      invoice_ready,
+      email_notifications,
+      push_notifications
+    ];
+
+    const result = await pool.query(query, values);
+
+    res.json({
+      success: true,
+      message: 'Sozlamalar yangilandi.',
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Update notification settings error:', error);
+    res.status(500).json({ success: false, message: 'Sozlamalarni yangilashda xato yuz berdi.' });
+  }
+};
+
 module.exports = {
   getMyNotifications,
   markAsRead,
   markAllAsRead,
-  createNotification
+  createNotification,
+  getSettings,
+  updateSettings,
+  getUnreadProposalsCount,
+  markAllAsReadByType
 };
 
