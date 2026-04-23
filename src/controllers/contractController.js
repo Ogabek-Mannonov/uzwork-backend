@@ -1,5 +1,6 @@
 // src/controllers/contractController.js
 const pool = require('../db/pool');
+const { createNotification } = require('./notificationController');
 
 
 /**
@@ -494,10 +495,25 @@ const updateContract = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Shartnoma topilmadi.' });
     }
 
+    const contract = r.rows[0];
+
+    // ✅ Notify parties
+    const io = req.app.get("io");
+    [contract.client_id, contract.freelancer_id].forEach(uid => {
+      createNotification(io, {
+        userId: uid,
+        type: 'contract_updated',
+        title: 'Shartnoma yangilandi',
+        message: `Admin tomonidan shartnoma holati yangilandi: ${status}.`,
+        relatedId: id,
+        relatedType: 'contract'
+      });
+    });
+
     return res.json({
       success: true,
       message: 'Contract yangilandi.',
-      data: { contract: r.rows[0] }
+      data: { contract }
     });
   } catch (error) {
     console.error('Update contract error:', error);
@@ -696,6 +712,17 @@ const completeContract = async (req, res) => {
 
     await client.query("COMMIT");
 
+    // ✅ Notify freelancer
+    const io = req.app.get("io");
+    createNotification(io, {
+      userId: c.freelancer_id,
+      type: 'contract_completed',
+      title: 'Shartnoma yakunlandi!',
+      message: `"${c.job_title || 'Loyiha'}" shartnomasi mijoz tomonidan yakunlandi va mablag' balansingizga o'tkazildi.`,
+      relatedId: contractId,
+      relatedType: 'contract'
+    });
+
     return res.json({
       success: true,
       message: "Shartnoma yakunlandi! Escrow freelancerga o‘tdi, fee platformaga yechildi.",
@@ -770,6 +797,20 @@ const cancelContract = async (req, res) => {
     );
 
     await client.query('COMMIT');
+
+    // ✅ Notify other party
+    const io = req.app.get("io");
+    const otherPartyId = (userId === c.client_id) ? c.freelancer_id : c.client_id;
+    const actorRole = (userId === c.client_id) ? 'Mijoz' : 'Freelancer';
+    
+    createNotification(io, {
+      userId: otherPartyId,
+      type: 'contract_cancelled',
+      title: 'Shartnoma bekor qilindi',
+      message: `${actorRole} "${c.job_title || 'Loyiha'}" shartnomasini bekor qildi.`,
+      relatedId: id,
+      relatedType: 'contract'
+    });
 
     return res.json({ success: true, message: 'Shartnoma bekor qilindi!' });
   } catch (error) {

@@ -876,8 +876,16 @@ const acceptProposal = async (req, res) => {
 
     await client.query("COMMIT");
 
-    // 8) Notify freelancer (background)
+    // 8) Notify freelancer about contract and milestones (background)
     const io = req.app.get("io");
+    createNotification(io, {
+      userId: row.freelancer_id,
+      type: 'contract_started',
+      title: 'Shartnoma boshlandi!',
+      message: `"${row.job_title}" loyihasi bo'yicha shartnoma imzolandi. Siz uchun yangi bosqichlar (milestones) yaratildi va mablag' muzlatildi.`,
+      relatedId: contract.id,
+      relatedType: 'contract'
+    });
     createNotification(io, {
       userId: row.freelancer_id,
       type: 'proposal_accepted',

@@ -1,5 +1,6 @@
 // src/controllers/reviewController.js
 const pool = require('../db/pool');
+const { createNotification } = require('./notificationController');
 
 /**
  * POST /reviews
@@ -80,6 +81,17 @@ const createReview = async (req, res) => {
        RETURNING *`,
       [contract_id, userId, revieweeId, rating, comment || null]
     );
+
+    // ✅ Notify reviewee
+    const io = req.app.get("io");
+    createNotification(io, {
+      userId: revieweeId,
+      type: 'new_review',
+      title: 'Yangi sharh!',
+      message: `Sizga yangi sharh qoldirildi: "${(comment || '').substring(0, 50)}${(comment || '').length > 50 ? '...' : ''}"`,
+      relatedId: result.rows[0].id,
+      relatedType: 'review'
+    });
 
     res.status(201).json({
       success: true,

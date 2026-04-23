@@ -1,5 +1,6 @@
 // src/controllers/adminController.js
 const pool = require('../db/pool');
+const { createNotification } = require('./notificationController');
 
 /**
  * Admin middleware – foydalanuvchi admin ekanligini tekshiradi
@@ -977,7 +978,9 @@ const updateUserByAdmin = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const { first_name, last_name, username, email, phone, role, status } = req.body;
+    const {
+      first_name, last_name, username, email, phone, role, status, is_verified
+    } = req.body;
 
     const allowedRoles = ['admin', 'client', 'freelancer'];
     const allowedStatuses = ['active', 'blocked'];
@@ -1005,6 +1008,7 @@ const updateUserByAdmin = async (req, res) => {
     if (phone !== undefined) push('phone', phone);
     if (role !== undefined) push('role', role);
     if (status !== undefined) push('status', status);
+    if (is_verified !== undefined) push('is_verified', is_verified);
 
     if (updateFields.length === 0) {
       return res.status(400).json({ success: false, message: 'Yangilash uchun kamida 1 ta maydon yuboring.' });
@@ -1059,6 +1063,21 @@ const updateUserByAdmin = async (req, res) => {
       data: { user: out.rows[0] },
       message: 'User muvaffaqiyatli yangilandi.',
     });
+
+    // ✅ Notify user about verification if changed
+    if (is_verified !== undefined) {
+      const io = req.app.get("io");
+      createNotification(io, {
+        userId: id,
+        type: 'verification_status',
+        title: is_verified ? 'Hujjatlaringiz tasdiqlandi!' : 'Hujjatlaringiz rad etildi',
+        message: is_verified 
+          ? 'Sizning shaxsingiz muvaffaqiyatli tasdiqlandi. Endi siz ko\'proq imkoniyatlarga egasiz.'
+          : 'Afsuski, yuborgan hujjatlaringiz talabga javob bermadi. Iltimos, qaytadan urinib ko\'ring.',
+        relatedId: id,
+        relatedType: 'user'
+      });
+    }
   } catch (error) {
     try { await client.query('ROLLBACK'); } catch {}
     console.error('updateUserByAdmin error:', error);

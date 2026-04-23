@@ -1,4 +1,5 @@
 const pool = require("../db/pool");
+const { createNotification } = require("./notificationController");
 
 const normalizeRole = (r) => String(r || "").toLowerCase();
 
@@ -77,7 +78,20 @@ const submitMilestone = async (req, res) => {
     );
 
     await client.query("COMMIT");
+
+    // ✅ Notify client
+    const io = req.app.get("io");
+    createNotification(io, {
+      userId: m.client_id,
+      type: 'milestone_submitted',
+      title: 'Milestone topshirildi',
+      message: `Freelancer ishni topshirdi va to'lovni yechishni so'radi.`,
+      relatedId: m.contract_id,
+      relatedType: 'contract'
+    });
+
     return res.json({ success: true, data: { milestone: up.rows[0] } });
+
   } catch (e) {
     try { await client.query("ROLLBACK"); } catch {}
     console.error("submitMilestone error:", e);

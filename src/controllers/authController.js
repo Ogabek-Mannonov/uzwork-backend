@@ -1,5 +1,6 @@
 // src/controllers/authController.js
 const pool = require("../db/pool");
+const { createNotification } = require("./notificationController");
 const crypto = require("crypto");
 const { OAuth2Client } = require("google-auth-library");
 const { hashPassword, comparePassword } = require("../utils/hashPassword");
@@ -765,9 +766,22 @@ const resetPassword = async (req, res) => {
 
     await client.query("COMMIT");
 
+    // ✅ Notify user
+    const io = req.app.get("io");
+    if (io) {
+      createNotification(io, {
+        userId: user.id,
+        type: 'security_update',
+        title: 'Parol o\'zgartirildi',
+        message: 'Hisobingizdagi parol muvaffaqiyatli yangilandi. Agar bu siz bo\'lmasangiz, darhol qo\'llab-quvvatlash bilan bog\'laning.',
+        relatedId: user.id,
+        relatedType: 'user'
+      });
+    }
+
     return res.json({
       success: true,
-      message: "Parol muvaffaqiyatli yangilandi.",
+      message: "Parol muvaffaqiyatli o‘zgartirildi.",
     });
   } catch (error) {
     try {
