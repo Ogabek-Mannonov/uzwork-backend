@@ -1,5 +1,6 @@
 // src/controllers/profileController.js
 const pool = require("../db/pool");
+const { createNotification } = require("./notificationController");
 
 // ---------------- helpers ----------------
 const isUUID = (v) =>
@@ -332,6 +333,29 @@ const updateMyProfile = async (req, res) => {
         `UPDATE users SET ${userUpdateCols.join(", ")}, updated_at = NOW() WHERE id = $${paramIdx}`,
         userUpdateVals
       );
+
+      // ✅ Security Notifications
+      const io = req.app.get("io");
+      if (email !== undefined) {
+        createNotification(io, {
+          userId: userId,
+          type: 'security_update',
+          title: 'Email o\'zgartirildi',
+          message: 'Hisobingizdagi email manzili yangilandi. Agar bu siz bo\'lmasangiz, darhol parolni almashtiring.',
+          relatedId: userId,
+          relatedType: 'user'
+        });
+      }
+      if (phone !== undefined) {
+        createNotification(io, {
+          userId: userId,
+          type: 'security_update',
+          title: 'Telefon raqami o\'zgartirildi',
+          message: 'Hisobingizdagi telefon raqami yangilandi.',
+          relatedId: userId,
+          relatedType: 'user'
+        });
+      }
     }
 
     let roleProfile = null;

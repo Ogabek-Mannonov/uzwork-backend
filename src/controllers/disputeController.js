@@ -1,4 +1,5 @@
 const pool = require("../db/pool");
+const { createNotification } = require("./notificationController");
 
 // helper: role normalize
 const normalizeRole = (r) => String(r || "").toLowerCase();
@@ -163,6 +164,17 @@ const createDispute = async (req, res) => {
     });
 
     await client.query("COMMIT");
+
+    // ✅ Notify other party
+    const io = req.app.get("io");
+    createNotification(io, {
+      userId: againstUser,
+      type: 'dispute_opened',
+      title: 'Sizga nisbatan bahs ochildi',
+      message: `"${reason.substring(0, 50)}${reason.length > 50 ? '...' : ''}" sababi bilan sizga nisbatan bahs ochildi.`,
+      relatedId: dispute.id,
+      relatedType: 'dispute'
+    });
 
     return res.status(201).json({
       success: true,
@@ -665,6 +677,26 @@ const resolveDispute = async (req, res) => {
     });
 
     await client.query("COMMIT");
+
+    // ✅ Notify both parties
+    const io = req.app.get("io");
+    const dRes = await client.query(`SELECT raised_by, against_user, winner_user_id FROM disputes WHERE id = $1`, [id]);
+    const dData = dRes.rows[0];
+    
+    if (dData) {
+      [dData.raised_by, dData.against_user].forEach(uid => {
+        if (!uid) return;
+        const isWinner = uid === dData.winner_user_id;
+        createNotification(io, {
+          userId: uid,
+          type: 'dispute_resolved',
+          title: 'Bahs yopildi',
+          message: `Admin bahsni ko'rib chiqdi va qaror qabul qildi. ${isWinner ? "Qaror sizning foydangizga hal qilindi." : "Qaror qarshi tomon foydasiga hal qilindi."}`,
+          relatedId: id,
+          relatedType: 'dispute'
+        });
+      });
+    }
 
     res.json({ success: true, data: { dispute: q.rows[0] } });
   } catch (error) {
