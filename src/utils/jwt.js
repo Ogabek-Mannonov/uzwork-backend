@@ -61,10 +61,31 @@ const verifyRefreshToken = (token) => {
 const generateSMSCode = () =>
   Math.floor(100000 + Math.random() * 900000).toString();
 
+const generate2FAToken = (payload) => {
+  return jwt.sign(
+    {
+      id: payload.id,
+      purpose: "2fa_pending",
+    },
+    JWT_SECRET,
+    { expiresIn: "5m" } // 2FA code typically expires fast
+  );
+};
+
+const verify2FAToken = (token) => {
+  const decoded = jwt.verify(token, JWT_SECRET);
+  if (decoded?.purpose !== "2fa_pending") {
+    throw new Error("Invalid 2FA token purpose");
+  }
+  return decoded;
+};
+
 module.exports = {
   generateAccessToken,
   generateRefreshToken,
   verifyAccessToken,
   verifyRefreshToken,
   generateSMSCode,
+  generate2FAToken,
+  verify2FAToken,
 };
