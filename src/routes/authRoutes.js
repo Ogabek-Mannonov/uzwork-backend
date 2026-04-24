@@ -14,6 +14,10 @@ const {
   forgotPassword,
   resetPassword,
   googleLogin,
+  enable2FA,
+  confirm2FA,
+  disable2FA,
+  verify2FALogin,
 } = require("../controllers/authController");
 
 const { authenticate } = require("../middlewares/authMiddleware");
@@ -31,4 +35,11 @@ router.post("/verify-signup", verifySignup);
 router.post("/kyc", authenticate, kyc);
 router.get("/me", authenticate, getMe);
 router.post("/logout", authenticate, logout);
+
+// 2FA Routes
+router.post("/2fa/enable", authenticate, enable2FA);
+router.post("/2fa/confirm", authenticate, confirm2FA);
+router.post("/2fa/disable", authenticate, disable2FA);
+router.post("/2fa/verify-login", verify2FALogin);
+
 module.exports = router;

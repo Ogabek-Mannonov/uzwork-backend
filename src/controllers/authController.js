@@ -8,6 +8,8 @@ const {
   generateAccessToken,
   generateRefreshToken,
   verifyRefreshToken,
+  generate2FAToken,
+  verify2FAToken,
 } = require("../utils/jwt");
 const sendEmail = require("../utils/sendEmail");
 
@@ -208,7 +210,7 @@ const login = async (req, res) => {
 
     let q, params;
     if (email && phone) {
-      q = `SELECT u.id, u.username, u.email, u.phone, u.password_hash, u.role, u.first_name, u.last_name, u.display_name, u.is_verified, u.avatar_url, u.status,
+      q = `SELECT u.id, u.username, u.email, u.phone, u.password_hash, u.role, u.first_name, u.last_name, u.display_name, u.is_verified, u.avatar_url, u.status, u.two_factor_enabled,
                fp.category_id
            FROM users u
            LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
@@ -216,7 +218,7 @@ const login = async (req, res) => {
            LIMIT 1`;
       params = [email, phone];
     } else if (email) {
-      q = `SELECT u.id, u.username, u.email, u.phone, u.password_hash, u.role, u.first_name, u.last_name, u.display_name, u.is_verified, u.avatar_url, u.status,
+      q = `SELECT u.id, u.username, u.email, u.phone, u.password_hash, u.role, u.first_name, u.last_name, u.display_name, u.is_verified, u.avatar_url, u.status, u.two_factor_enabled,
                fp.category_id
            FROM users u
            LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
@@ -224,7 +226,7 @@ const login = async (req, res) => {
            LIMIT 1`;
       params = [email];
     } else {
-      q = `SELECT u.id, u.username, u.email, u.phone, u.password_hash, u.role, u.first_name, u.last_name, u.display_name, u.is_verified, u.avatar_url, u.status,
+      q = `SELECT u.id, u.username, u.email, u.phone, u.password_hash, u.role, u.first_name, u.last_name, u.display_name, u.is_verified, u.avatar_url, u.status, u.two_factor_enabled,
                fp.category_id
            FROM users u
            LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
@@ -247,6 +249,43 @@ const login = async (req, res) => {
     const ok = await comparePassword(password, user.password_hash);
     if (!ok) {
       return res.status(401).json({ success: false, message: "Login yoki parol noto‘g‘ri." });
+    }
+
+    // Check 2FA
+    if (user.two_factor_enabled) {
+      const twoFactorCode = genOtp6();
+      const codeHash = sha256(twoFactorCode);
+      const expiresAt2FA = addMinutes(new Date(), 5);
+
+      await pool.query(
+        `UPDATE users SET two_factor_code_hash = $1, two_factor_expires_at = $2 WHERE id = $3`,
+        [codeHash, expiresAt2FA, user.id]
+      );
+
+      // Send 2FA code (Email/SMS)
+      if (user.email) {
+        await sendEmail({
+          to: user.email,
+          subject: "Ikki bosqichli tasdiqlash kodi",
+          html: `
+            <h2>Salom, ${user.first_name}!</h2>
+            <p>Tizimga kirish uchun ikki bosqichli tasdiqlash kodingiz:</p>
+            <h1 style="color: #4CAF50; letter-spacing: 5px;">${twoFactorCode}</h1>
+            <p>Ushbu kod 5 daqiqa davomida amal qiladi.</p>
+            <br />
+            <p>Hurmat bilan,<br/><b>UzWork Platformasi</b></p>
+          `,
+        }).catch(err => console.error("2FA Login Email error:", err));
+      }
+
+      // Return 2FA pending state
+      const twoFactorToken = generate2FAToken(user);
+      return res.json({
+        success: true,
+        requires_2fa: true,
+        message: "Ikki bosqichli tasdiqlash kodi yuborildi.",
+        twoFactorToken,
+      });
     }
 
     const accessToken = generateAccessToken(user);
@@ -275,6 +314,7 @@ const login = async (req, res) => {
           is_verified: user.is_verified,
           avatar_url: user.avatar_url,
           category_id: user.category_id || null,
+          two_factor_enabled: user.two_factor_enabled,
         },
         accessToken,
         refreshToken,
@@ -567,21 +607,29 @@ const logout = async (req, res) => {
  */
 const forgotPassword = async (req, res) => {
   try {
-    const { email, phone } = req.body || {};
+    const { email, phone, identifier } = req.body || {};
 
-    if (!email && !phone) {
+    let finalEmail = email;
+    let finalPhone = phone;
+
+    if (identifier) {
+      if (identifier.includes("@")) finalEmail = identifier;
+      else finalPhone = identifier;
+    }
+
+    if (!finalEmail && !finalPhone) {
       return res.status(400).json({
         success: false,
-        message: "Email yoki phone yuboring.",
+        message: "Email, phone yoki identifier yuboring.",
       });
     }
 
     const userQ = await pool.query(
-      `SELECT id, reset_sent_at
+      `SELECT id, email, phone, first_name, reset_sent_at
        FROM users
        WHERE (email = $1 OR phone = $2) AND deleted_at IS NULL
        LIMIT 1`,
-      [email || null, phone || null]
+      [finalEmail || null, finalPhone || null]
     );
 
     // privacy: user yo‘q bo‘lsa ham "ok"
@@ -620,14 +668,14 @@ const forgotPassword = async (req, res) => {
 
     console.log("🔐 Password reset OTP:", {
       user_id: user.id,
-      to: email || phone,
+      to: user.email || user.phone,
       otp,
       expiresAt,
     });
 
-    if (email) {
+    if (user.email) {
       await sendEmail({
-        to: email,
+        to: user.email,
         subject: "Parolni tiklash tasdiqlash kodi",
         html: `
           <h2>Salom, ${user.first_name || "Hurmatli foydalanuvchi"}!</h2>
@@ -902,6 +950,176 @@ const googleLogin = async (req, res) => {
 
 /* ======================================================================= */
 
+/* ===================== 2FA ACTIONS ===================== */
+
+const enable2FA = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const userQ = await pool.query("SELECT email, phone, first_name FROM users WHERE id = $1", [userId]);
+    const user = userQ.rows[0];
+
+    if (!user.email && !user.phone) {
+      return res.status(400).json({
+        success: false,
+        message: "2FA yoqish uchun email yoki telefon raqam bo'lishi kerak.",
+      });
+    }
+
+    const code = genOtp6();
+    const codeHash = sha256(code);
+    const expiresAt = addMinutes(new Date(), 10);
+
+    await pool.query(
+      `UPDATE users SET two_factor_code_hash = $1, two_factor_expires_at = $2 WHERE id = $3`,
+      [codeHash, expiresAt, userId]
+    );
+
+    if (user.email) {
+      await sendEmail({
+        to: user.email,
+        subject: "Ikki bosqichli tasdiqlashni yoqish",
+        html: `
+          <h2>Salom, ${user.first_name}!</h2>
+          <p>Ikki bosqichli tasdiqlashni faollashtirish uchun kodingiz:</p>
+          <h1 style="color: #4CAF50; letter-spacing: 5px;">${code}</h1>
+          <p>Ushbu kod 10 daqiqa davomida amal qiladi.</p>
+        `,
+      });
+    }
+
+    return res.json({
+      success: true,
+      message: "Tasdiqlash kodi yuborildi.",
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: "2FA enable error." });
+  }
+};
+
+const confirm2FA = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { code } = req.body;
+
+    const userQ = await pool.query(
+      "SELECT two_factor_code_hash, two_factor_expires_at FROM users WHERE id = $1",
+      [userId]
+    );
+    const user = userQ.rows[0];
+
+    if (!user.two_factor_code_hash) {
+      return res.status(400).json({ success: false, message: "Tasdiqlash kodi topilmadi. Avval kodni yuboring." });
+    }
+
+    if (new Date(user.two_factor_expires_at) < new Date()) {
+      return res.status(400).json({ success: false, message: "Kodning amal qilish muddati tugagan. Qayta yuboring." });
+    }
+
+    const trimmedCode = String(code).trim();
+    if (sha256(trimmedCode) !== user.two_factor_code_hash) {
+      return res.status(400).json({ success: false, message: "Kiritilgan kod noto'g'ri." });
+    }
+
+    await pool.query(
+      `UPDATE users SET two_factor_enabled = TRUE, two_factor_code_hash = NULL, two_factor_expires_at = NULL WHERE id = $1`,
+      [userId]
+    );
+
+    return res.json({
+      success: true,
+      message: "Ikki bosqichli tasdiqlash muvaffaqiyatli yoqildi!",
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: "2FA confirm error." });
+  }
+};
+
+const disable2FA = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    await pool.query(`UPDATE users SET two_factor_enabled = FALSE WHERE id = $1`, [userId]);
+    return res.json({ success: true, message: "Ikki bosqichli tasdiqlash o'chirildi." });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: "2FA disable error." });
+  }
+};
+
+const verify2FALogin = async (req, res) => {
+  try {
+    const { twoFactorToken, code } = req.body;
+    if (!twoFactorToken || !code) {
+      return res.status(400).json({ success: false, message: "Token va kod majburiy." });
+    }
+
+    const decoded = verify2FAToken(twoFactorToken);
+    const userId = decoded.id;
+
+    const userQ = await pool.query(
+      `SELECT u.id, u.username, u.email, u.phone, u.password_hash, u.role, u.first_name, u.last_name, u.display_name, u.is_verified, u.avatar_url, u.status, u.two_factor_code_hash, u.two_factor_expires_at,
+              fp.category_id
+       FROM users u
+       LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
+       WHERE u.id = $1 AND u.deleted_at IS NULL`,
+      [userId]
+    );
+
+    if (userQ.rowCount === 0) {
+      return res.status(404).json({ success: false, message: "User topilmadi." });
+    }
+
+    const user = userQ.rows[0];
+
+    if (!user.two_factor_code_hash || new Date(user.two_factor_expires_at) < new Date()) {
+      return res.status(400).json({ success: false, message: "Kod eskirgan." });
+    }
+
+    if (sha256(code) !== user.two_factor_code_hash) {
+      return res.status(400).json({ success: false, message: "Noto'g'ri kod." });
+    }
+
+    // Success - clear 2FA session fields
+    await pool.query(
+      `UPDATE users SET two_factor_code_hash = NULL, two_factor_expires_at = NULL WHERE id = $1`,
+      [userId]
+    );
+
+    const accessToken = generateAccessToken(user);
+    const refreshToken = generateRefreshToken(user);
+    const expiresAt = getTokenExpiryDate(refreshToken);
+
+    await pool.query(
+      `INSERT INTO refresh_tokens (user_id, token, expires_at)
+       VALUES ($1, $2, $3)`,
+      [user.id, refreshToken, expiresAt || new Date(Date.now() + 7 * 24 * 3600 * 1000)]
+    );
+
+    return res.json({
+      success: true,
+      message: "Kirdingiz!",
+      data: {
+        user: {
+          id: user.id,
+          username: user.username,
+          email: user.email,
+          phone: user.phone,
+          role: user.role,
+          first_name: user.first_name,
+          last_name: user.last_name,
+          display_name: user.display_name || user.username,
+          is_verified: user.is_verified,
+          avatar_url: user.avatar_url,
+          category_id: user.category_id || null,
+          two_factor_enabled: true
+        },
+        accessToken,
+        refreshToken,
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: "2FA verify login error." });
+  }
+};
+
 module.exports = {
   signup,
   login,
@@ -914,4 +1132,8 @@ module.exports = {
   forgotPassword,
   resetPassword,
   googleLogin,
+  enable2FA,
+  confirm2FA,
+  disable2FA,
+  verify2FALogin,
 };
