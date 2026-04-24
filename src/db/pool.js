@@ -69,6 +69,21 @@ pool.on("connect", async (client) => {
       ADD COLUMN IF NOT EXISTS title_ru TEXT,
       ADD COLUMN IF NOT EXISTS body_en TEXT,
       ADD COLUMN IF NOT EXISTS body_ru TEXT;
+
+      -- Messages jadvaliga metadata va submission turi uchun tayyorgarlik
+      ALTER TABLE messages ADD COLUMN IF NOT EXISTS metadata JSONB;
+      
+      -- Xabarlar turi uchun check constraintni tekshirish va yangilash (agar bo'lsa)
+      -- Eslatma: PostgreSQLda constraintni o'zgartirish uchun uni o'chirib qayta qo'shish kerak
+      DO $$ 
+      BEGIN 
+        IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'messages_type_check') THEN
+          ALTER TABLE messages DROP CONSTRAINT messages_type_check;
+        END IF;
+      END $$;
+
+      ALTER TABLE messages ADD CONSTRAINT messages_type_check 
+        CHECK (type IN ('text', 'image', 'file', 'voice', 'video_call', 'submission', 'system'));
     `);
     console.log("🚀 Database migratsiyasi muvaffaqiyatli yakunlandi.");
   } catch (e) {

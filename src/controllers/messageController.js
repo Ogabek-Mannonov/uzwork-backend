@@ -554,6 +554,7 @@ const getChatHistory = async (req, res) => {
         m.is_edited,
         m.reply_to_id,
         m.reactions,
+        m.metadata,
         m.created_at,
         m.updated_at,
         m.deleted_at,
@@ -628,7 +629,7 @@ const getChatHistory = async (req, res) => {
 const sendMessage = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { chat_id, message_text, type = "text", file_url, reply_to_id } = req.body;
+    const { chat_id, message_text, type = "text", file_url, reply_to_id, metadata } = req.body;
 
     if (!chat_id || !isUuid(chat_id)) {
       return res.status(400).json({ success: false, message: "chat_id noto'g'ri" });
@@ -645,7 +646,7 @@ const sendMessage = async (req, res) => {
       return res.status(403).json({ success: false, message: "Bu chat admin tomonidan bloklangan" });
     }
 
-    const allowedTypes = ["text", "image", "file", "voice", "video_call"];
+    const allowedTypes = ["text", "image", "file", "voice", "video_call", "submission", "system"];
     const safeType = allowedTypes.includes(type) ? type : "text";
 
     const insertRes = await pool.query(
@@ -656,12 +657,13 @@ const sendMessage = async (req, res) => {
         type,
         file_url,
         reply_to_id,
+        metadata,
         is_read,
         created_at
       )
-      VALUES ($1, $2, $3, $4, $5, $6, FALSE, NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, $7, FALSE, NOW())
       RETURNING *`,
-      [chat_id, userId, message_text || null, safeType, file_url || null, reply_to_id || null]
+      [chat_id, userId, message_text || null, safeType, file_url || null, reply_to_id || null, metadata ? JSON.stringify(metadata) : null]
     );
 
     const newMessage = insertRes.rows[0];

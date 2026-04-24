@@ -361,6 +361,8 @@ app.get("/health", (req, res) => {
   });
 });
 
+app.use("/milestones", milestoneRoutes);
+app.use("/api/milestones", milestoneRoutes);
 app.use("/auth", authRoutes);
 app.use("/projects", projectRoutes);
 app.use("/proposals", proposalRoutes);
@@ -381,7 +383,6 @@ app.use("/currencies", currencyRoutes);
 app.use("/files", fileRoutes);
 app.use("/upload", uploadRoutes);
 app.use("/disputes", disputeRoutes);
-app.use("/milestones", milestoneRoutes);
 app.use("/api/landing", landingRoutes);
 
 app.use((req, res) => {
