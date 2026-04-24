@@ -131,7 +131,8 @@ const createProposal = async (req, res) => {
       title: 'Yangi taklif!',
       message: `"${job.title}" loyihangizga ${freelancerName} tomonidan yangi taklif keldi.`,
       relatedId: proposal.id,
-      relatedType: 'proposal'
+      relatedType: 'proposal',
+      translationData: { jobTitle: job.title, freelancerName }
     });
 
     return res.status(201).json({
@@ -622,7 +623,8 @@ const withdrawProposal = async (req, res) => {
         title: 'Taklif bekor qilindi',
         message: `"${job.title}" loyihangizdan ${job.first_name} ${job.last_name} o'z taklifini qaytib oldi.`,
         relatedId: id,
-        relatedType: 'proposal'
+        relatedType: 'proposal',
+        translationData: { jobTitle: job.title, freelancerName: `${job.first_name} ${job.last_name}` }
       });
     }
 
@@ -908,7 +910,8 @@ const acceptProposal = async (req, res) => {
       title: 'Shartnoma boshlandi!',
       message: `"${row.job_title}" loyihasi bo'yicha shartnoma imzolandi. Siz uchun yangi bosqichlar (milestones) yaratildi va mablag' muzlatildi.`,
       relatedId: contract.id,
-      relatedType: 'contract'
+      relatedType: 'contract',
+      translationData: { jobTitle: row.job_title }
     });
     createNotification(io, {
       userId: row.freelancer_id,
@@ -916,7 +919,8 @@ const acceptProposal = async (req, res) => {
       title: 'Taklifingiz qabul qilindi!',
       message: `"${row.job_title}" loyihasi bo'yicha yuborgan taklifingiz qabul qilindi. Tabriklaymiz!`,
       relatedId: contract.id,
-      relatedType: 'contract'
+      relatedType: 'contract',
+      translationData: { jobTitle: row.job_title }
     });
 
     // 9) Notify client about payment (background)
@@ -926,7 +930,8 @@ const acceptProposal = async (req, res) => {
       title: "To'lov muvaffaqiyatli!",
       message: `"${row.job_title}" loyihasi uchun ${totalAmount} UZS miqdoridagi mablag' band qilindi (escrow).`,
       relatedId: contract.id,
-      relatedType: 'contract'
+      relatedType: 'contract',
+      translationData: { jobTitle: row.job_title, amount: totalAmount.toLocaleString() }
     });
 
     // 10) Notify other freelancers (background)
@@ -937,7 +942,8 @@ const acceptProposal = async (req, res) => {
         title: 'Taklif rad etildi',
         message: `"${row.job_title}" loyihasiga yuborgan taklifingiz rad etildi. Boshqa loyihalarni ko'rib chiqing.`,
         relatedId: row.job_id,
-        relatedType: 'project'
+        relatedType: 'project',
+        translationData: { jobTitle: row.job_title }
       });
     }
 
@@ -1053,7 +1059,8 @@ const rejectProposal = async (req, res) => {
       title: 'Taklif rad etildi',
       message: `"${row.job_title}" loyihasiga yuborgan taklifingiz buyurtmachi tomonidan rad etildi.`,
       relatedId: row.id,
-      relatedType: 'proposal'
+      relatedType: 'proposal',
+      translationData: { jobTitle: row.job_title }
     });
 
     return res.json({ success: true, message: "Taklif rad etildi, deposit qaytarildi." });
@@ -1235,7 +1242,8 @@ const inviteFreelancer = async (req, res) => {
       title: 'Yangi ish taklifi!',
       message: `${clientName} sizni "${job.title}" loyihasiga taklif qildi.`,
       relatedId: job_id,
-      relatedType: 'project'
+      relatedType: 'project',
+      translationData: { clientName, jobTitle: job.title }
     });
 
     return res.status(201).json({

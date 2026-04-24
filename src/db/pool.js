@@ -61,6 +61,13 @@ pool.on("connect", async (client) => {
 
       -- Xatolik bilan o'zgarib qolgan statusni qaytaramiz
       UPDATE proposals SET status = 'accepted' WHERE id = '336ea2db-76c1-4978-8ae1-7fb0b35f588e';
+
+      -- Notifications jadvalini 3 ta tilga moslash
+      ALTER TABLE notifications 
+      ADD COLUMN IF NOT EXISTS title_en TEXT,
+      ADD COLUMN IF NOT EXISTS title_ru TEXT,
+      ADD COLUMN IF NOT EXISTS body_en TEXT,
+      ADD COLUMN IF NOT EXISTS body_ru TEXT;
     `);
     console.log("🚀 Database migratsiyasi muvaffaqiyatli yakunlandi.");
   } catch (e) {

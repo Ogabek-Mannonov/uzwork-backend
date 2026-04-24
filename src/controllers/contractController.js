@@ -506,7 +506,8 @@ const updateContract = async (req, res) => {
         title: 'Shartnoma yangilandi',
         message: `Admin tomonidan shartnoma holati yangilandi: ${status}.`,
         relatedId: id,
-        relatedType: 'contract'
+        relatedType: 'contract',
+        translationData: { status }
       });
     });
 
@@ -720,7 +721,8 @@ const completeContract = async (req, res) => {
       title: 'Shartnoma yakunlandi!',
       message: `"${c.job_title || 'Loyiha'}" shartnomasi mijoz tomonidan yakunlandi va mablag' balansingizga o'tkazildi.`,
       relatedId: contractId,
-      relatedType: 'contract'
+      relatedType: 'contract',
+      translationData: { jobTitle: c.job_title || 'Loyiha' }
     });
 
     return res.json({
@@ -809,7 +811,8 @@ const cancelContract = async (req, res) => {
       title: 'Shartnoma bekor qilindi',
       message: `${actorRole} "${c.job_title || 'Loyiha'}" shartnomasini bekor qildi.`,
       relatedId: id,
-      relatedType: 'contract'
+      relatedType: 'contract',
+      translationData: { jobTitle: c.job_title || 'Loyiha', actorRole }
     });
 
     return res.json({ success: true, message: 'Shartnoma bekor qilindi!' });

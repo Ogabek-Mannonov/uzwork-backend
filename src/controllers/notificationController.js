@@ -26,7 +26,11 @@ const getMyNotifications = async (req, res) => {
     const total = parseInt(countResult.rows[0].count);
 
     const notificationsQuery = `
-      SELECT id, user_id, type, title, body as message, is_read, data, created_at
+      SELECT 
+        id, user_id, type, 
+        title, body as message, 
+        title_en, title_ru, body_en, body_ru,
+        is_read, data, created_at
       FROM notifications
       ${whereClause}
       ORDER BY created_at DESC
@@ -193,6 +197,8 @@ const markAllAsReadByType = async (req, res) => {
   }
 };
 
+const { getNotificationTranslations } = require('../utils/translations');
+
 /**
  * Internal helper to create a notification and emit socket event
  * Can be called from other controllers
@@ -203,10 +209,22 @@ const createNotification = async (io, {
   title,
   message,
   relatedId = null,
-  relatedType = null
+  relatedType = null,
+  translationData = {} // Dynamic data for translations (e.g. { jobTitle: '...', freelancerName: '...' })
 }) => {
   try {
-    // 1. Check user notification settings and get email
+    // 1. Get translations if available
+    const trans = getNotificationTranslations(type, translationData);
+    
+    // Use translations if available, otherwise fallback to provided title/message
+    const title_uz = trans?.title_uz || title;
+    const title_en = trans?.title_en || title;
+    const title_ru = trans?.title_ru || title;
+    const body_uz = trans?.body_uz || message;
+    const body_en = trans?.body_en || message;
+    const body_ru = trans?.body_ru || message;
+
+    // 2. Check user notification settings and get email
     const userRes = await pool.query(
       `SELECT s.*, u.email 
        FROM users u 
@@ -215,29 +233,47 @@ const createNotification = async (io, {
       [userId]
     );
     const user = userRes.rows[0];
-    const settings = user; // Contains settings and email
-
+    const settings = user;
+    
     // If settings exist, check if this specific type is enabled
-    // Default to true if settings entry doesn't exist yet (except if user explicitly turned off)
     const isProposalReceivedEnabled = settings?.proposal_received ?? true;
     const isProposalWithdrawnEnabled = settings?.proposal_withdrawn ?? true;
     const isPaymentEnabled = settings?.payment_success ?? true;
     const isInvoiceEnabled = settings?.invoice_ready ?? true;
-    const isEmailEnabled = settings?.email_notifications ?? true;
-    const isPushEnabled = settings?.push_notifications ?? true;
 
     if (type === 'proposal_received' && !isProposalReceivedEnabled) return null;
     if (type === 'proposal_withdrawn' && !isProposalWithdrawnEnabled) return null;
     if (['payment_success', 'payment_received', 'payment_sent'].includes(type) && !isPaymentEnabled) return null;
     if (type === 'invoice_ready' && !isInvoiceEnabled) return null;
 
-    const data = JSON.stringify({ related_id: relatedId, related_type: relatedType });
+    const isPushEnabled = settings?.push_notifications ?? true;
+    const isEmailEnabled = settings?.email_notifications ?? true;
+
+
+    const data = JSON.stringify({ 
+      related_id: relatedId, 
+      related_type: relatedType,
+      ...translationData  // Store clientName, jobTitle, etc. for future reconstruction
+    });
+
     const query = `
-      INSERT INTO notifications (user_id, type, title, body, data)
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING id, user_id, type, title, body as message, is_read, data, created_at
+      INSERT INTO notifications (
+        user_id, type, title, body, 
+        title_en, title_ru, body_en, body_ru,
+        data
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      RETURNING 
+        id, user_id, type, 
+        title, body as message, 
+        title_en, title_ru, body_en, body_ru,
+        is_read, data, created_at
     `;
-    const values = [userId, type, title, message, data];
+    const values = [
+      userId, type, title_uz, body_uz, 
+      title_en, title_ru, body_en, body_ru,
+      data
+    ];
     const result = await pool.query(query, values);
     const notification = result.rows[0];
     
