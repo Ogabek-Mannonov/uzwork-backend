@@ -23,7 +23,7 @@ const { authenticate, authorize } = require("../middlewares/authMiddleware");
 router.get("/", getProposals);
 
 // ✅ Protected FIRST (static routes)
-router.get("/my", authenticate, authorize("freelancer"), getMyProposals);
+router.get("/my", authenticate, authorize("freelancer", "client"), getMyProposals);
 router.get("/project/:projectId", authenticate, getProjectProposals);
 
 router.post("/", authenticate, authorize("freelancer"), createProposal);

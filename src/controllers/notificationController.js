@@ -123,6 +123,50 @@ const markAllAsRead = async (req, res) => {
 };
 
 /**
+ * GET /notifications/unread-proposals-count
+ */
+const getUnreadProposalsCount = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const role = req.user.role;
+
+    let query = "";
+    if (role === "client") {
+      // Count unread proposals for jobs owned by this client
+      query = `
+        SELECT COUNT(*)::int as count 
+        FROM proposals p
+        JOIN jobs j ON j.id = p.job_id
+        WHERE j.client_id = $1 AND p.viewed_at IS NULL AND j.deleted_at IS NULL
+      `;
+    } else {
+      // Count unread invitations for this freelancer
+      query = `
+        SELECT COUNT(*)::int as count 
+        FROM proposals p
+        JOIN jobs j ON j.id = p.job_id
+        WHERE p.freelancer_id = $1 AND p.status = 'invited' AND p.viewed_at IS NULL AND j.deleted_at IS NULL
+      `;
+    }
+
+    const result = await pool.query(query, [userId]);
+    return res.json({
+      success: true,
+      data: {
+        unread_count: result.rows[0]?.count || 0
+      }
+    });
+  } catch (error) {
+    console.error('Get unread proposals count error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Xato yuz berdi.',
+      error: error.message
+    });
+  }
+};
+
+/**
  * Internal helper to create a notification and emit socket event
  * Can be called from other controllers
  */
@@ -163,6 +207,7 @@ module.exports = {
   getMyNotifications,
   markAsRead,
   markAllAsRead,
+  getUnreadProposalsCount,
   createNotification
 };
 

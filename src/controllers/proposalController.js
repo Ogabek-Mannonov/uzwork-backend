@@ -308,13 +308,22 @@ const getProposalById = async (req, res) => {
 const getMyProposals = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { status, page = 1, limit = 20 } = req.query;
+    const role = req.user.role;
+    const { status, page = 1, limit = 50 } = req.query;
 
     const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
 
-    let where = ["p.freelancer_id = $1", "j.deleted_at IS NULL"];
-    let params = [userId];
-    let i = 2;
+    let where = ["j.deleted_at IS NULL"];
+    let params = [];
+    let i = 1;
+
+    if (role?.toLowerCase() === "client") {
+      where.push(`j.client_id = $${i++}`);
+      params.push(userId);
+    } else {
+      where.push(`p.freelancer_id = $${i++}`);
+      params.push(userId);
+    }
 
     if (status) {
       where.push(`p.status = $${i++}`);
@@ -341,12 +350,18 @@ const getMyProposals = async (req, res) => {
         j.title as job_title,
         j.status as job_status,
         j.client_id as job_client_id,
-        u.first_name as client_first_name,
-        u.last_name as client_last_name,
-        u.avatar_url as client_avatar
+        u_client.first_name as client_first_name,
+        u_client.last_name as client_last_name,
+        u_client.avatar_url as client_avatar,
+        u_freelancer.first_name as freelancer_first_name,
+        u_freelancer.last_name as freelancer_last_name,
+        u_freelancer.avatar_url as freelancer_avatar,
+        f.title as freelancer_title
       FROM proposals p
       JOIN jobs j ON j.id = p.job_id
-      JOIN users u ON u.id = j.client_id
+      JOIN users u_client ON u_client.id = j.client_id
+      JOIN users u_freelancer ON u_freelancer.id = p.freelancer_id
+      LEFT JOIN freelancer_profiles f ON f.user_id = u_freelancer.id
       ${whereClause}
       ORDER BY p.created_at DESC
       LIMIT $${i} OFFSET $${i + 1}
@@ -1193,8 +1208,8 @@ const inviteFreelancer = async (req, res) => {
 
     // 3. Create invitation record (proposal with status='invited')
     const result = await client.query(
-      `INSERT INTO proposals (job_id, freelancer_id, status, cover_letter)
-       VALUES ($1, $2, 'invited', $3)
+      `INSERT INTO proposals (job_id, freelancer_id, status, cover_letter, is_invitation)
+       VALUES ($1, $2, 'invited', $3, TRUE)
        RETURNING *`,
       [job_id, freelancer_id, `Sizni "${job.title}" loyihasida hamkorlik qilishga taklif qilaman.`]
     );

@@ -80,7 +80,7 @@ const authorize = (...roles) => {
       });
     }
 
-    if (!roles.includes(req.user.role)) {
+    if (!roles.some(role => role.toLowerCase() === req.user.role?.toLowerCase())) {
       return res.status(403).json({
         success: false,
         message: "Bu amal uchun ruxsat yo‘q.",

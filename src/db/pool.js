@@ -52,12 +52,13 @@ pool.on("connect", async (client) => {
       ALTER TABLE chats ADD COLUMN IF NOT EXISTS freelancer_id UUID REFERENCES users(id);
       
       -- Proposals jadvalidagi status checkni yangilash
-      -- Avval bor bo'lsa o'chiramiz
       ALTER TABLE proposals DROP CONSTRAINT IF EXISTS proposals_status_check;
-      
-      -- Yangi ro'yxat bilan qo'shamiz (withdrawn va invited qo'shildi)
       ALTER TABLE proposals ADD CONSTRAINT proposals_status_check 
         CHECK (status IN ('pending', 'shortlisted', 'accepted', 'rejected', 'withdrawn', 'interviewing', 'invited'));
+
+      -- is_invitation kolonkasi qo'shish
+      ALTER TABLE proposals ADD COLUMN IF NOT EXISTS is_invitation BOOLEAN DEFAULT FALSE;
+      UPDATE proposals SET is_invitation = TRUE WHERE status = 'invited' AND is_invitation = FALSE;
 
       -- Xatolik bilan o'zgarib qolgan statusni qaytaramiz
       UPDATE proposals SET status = 'accepted' WHERE id = '336ea2db-76c1-4978-8ae1-7fb0b35f588e';
