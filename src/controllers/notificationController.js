@@ -144,11 +144,10 @@ const markAllAsRead = async (req, res) => {
 const getUnreadProposalsCount = async (req, res) => {
   try {
     const userId = req.user.id;
-<<<<<<< HEAD
     const role = req.user.role;
 
     let query = "";
-    if (role === "client") {
+    if (role?.toLowerCase() === "client") {
       // Count unread proposals for jobs owned by this client
       query = `
         SELECT COUNT(*)::int as count 
@@ -171,29 +170,15 @@ const getUnreadProposalsCount = async (req, res) => {
       success: true,
       data: {
         unread_count: result.rows[0]?.count || 0
-=======
-    const result = await pool.query(
-      "SELECT COUNT(*) FROM notifications WHERE user_id = $1 AND is_read = FALSE AND (type LIKE 'proposal_%' OR type = 'job_invitation')",
-      [userId]
-    );
-    res.json({
-      success: true,
-      data: {
-        unread_count: parseInt(result.rows[0].count)
->>>>>>> 50cfd563230cde0712e254426c4f8c3e9e2b4cad
       }
     });
   } catch (error) {
     console.error('Get unread proposals count error:', error);
-<<<<<<< HEAD
     res.status(500).json({
       success: false,
       message: 'Xato yuz berdi.',
       error: error.message
     });
-=======
-    res.status(500).json({ success: false, message: 'Xato yuz berdi.' });
->>>>>>> 50cfd563230cde0712e254426c4f8c3e9e2b4cad
   }
 };
 
@@ -239,7 +224,6 @@ const markAllAsReadByType = async (req, res) => {
 const { getNotificationTranslations } = require('../utils/translations');
 
 /**
->>>>>>> 50cfd563230cde0712e254426c4f8c3e9e2b4cad
  * Internal helper to create a notification and emit socket event
  * Can be called from other controllers
  */
@@ -450,15 +434,10 @@ module.exports = {
   getMyNotifications,
   markAsRead,
   markAllAsRead,
-<<<<<<< HEAD
-  getUnreadProposalsCount,
-  createNotification
-=======
-  createNotification,
   getSettings,
   updateSettings,
   getUnreadProposalsCount,
-  markAllAsReadByType
->>>>>>> 50cfd563230cde0712e254426c4f8c3e9e2b4cad
+  markAllAsReadByType,
+  createNotification
 };
 
