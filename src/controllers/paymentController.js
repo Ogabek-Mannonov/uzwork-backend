@@ -231,7 +231,8 @@ const deposit = async (req, res) => {
       title: 'Hisob to\'ldirildi',
       message: `${a.toLocaleString()} UZS miqdoridagi mablag' hisobingizga muvaffaqiyatli kelib tushdi.`,
       relatedId: tx.id,
-      relatedType: 'transaction'
+      relatedType: 'transaction',
+      translationData: { amount: a.toLocaleString() }
     });
 
     return res.status(201).json({
@@ -316,7 +317,8 @@ const withdraw = async (req, res) => {
       title: 'Yechib olish so\'rovi',
       message: `${a.toLocaleString()} UZS miqdoridagi mablag'ni yechib olish uchun so'rovingiz qabul qilindi.`,
       relatedId: tx.rows[0].id,
-      relatedType: 'transaction'
+      relatedType: 'transaction',
+      translationData: { amount: a.toLocaleString() }
     });
 
     res.status(201).json({ success: true, data: { transaction: tx.rows[0] } });
@@ -441,7 +443,8 @@ const escrowHold = async (req, res) => {
         title: 'Mablag\' band qilindi',
         message: `${a.toLocaleString()} UZS miqdoridagi mablag' shartnoma uchun escrow hamyoningizda band qilindi.`,
         relatedId: txR.rows[0].id,
-        relatedType: 'transaction'
+        relatedType: 'transaction',
+        translationData: { amount: a.toLocaleString() }
       });
 
       return res.status(201).json({
@@ -700,7 +703,8 @@ const releaseMilestone = async (req, res) => {
         title: 'To\'lov o\'tkazildi',
         message: `Freelancerga ${a.toLocaleString()} UZS miqdoridagi to'lov muvaffaqiyatli o'tkazildi.`,
         relatedId: releaseTx.id,
-        relatedType: 'transaction'
+        relatedType: 'transaction',
+        translationData: { amount: a.toLocaleString() }
       });
 
       // Notify Freelancer (Credit)
@@ -710,7 +714,8 @@ const releaseMilestone = async (req, res) => {
         title: 'To\'lov qabul qilindi',
         message: `Sizga ${netToFreelancer.toLocaleString()} UZS miqdoridagi to'lov kelib tushdi.`,
         relatedId: releaseTx.id,
-        relatedType: 'transaction'
+        relatedType: 'transaction',
+        translationData: { amount: netToFreelancer.toLocaleString() }
       });
 
       return res.json({

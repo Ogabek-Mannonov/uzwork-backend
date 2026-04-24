@@ -131,7 +131,8 @@ const createProposal = async (req, res) => {
       title: 'Yangi taklif!',
       message: `"${job.title}" loyihangizga ${freelancerName} tomonidan yangi taklif keldi.`,
       relatedId: proposal.id,
-      relatedType: 'proposal'
+      relatedType: 'proposal',
+      translationData: { jobTitle: job.title, freelancerName }
     });
 
     return res.status(201).json({
@@ -611,11 +612,36 @@ const withdrawProposal = async (req, res) => {
       });
     }
 
-    // pending bo‘lmasa ham withdrawn qilish mumkin (xohlasang cheklaysan)
+    // 1. Get job info to notify client
+    const jobRes = await pool.query(
+      `SELECT j.id, j.client_id, j.title, u.first_name, u.last_name 
+       FROM proposals p 
+       JOIN jobs j ON p.job_id = j.id 
+       JOIN users u ON p.freelancer_id = u.id
+       WHERE p.id = $1`,
+      [id]
+    );
+    const job = jobRes.rows[0];
+
+    // 2. Update status
     await pool.query(
       "UPDATE proposals SET status='withdrawn', updated_at = CURRENT_TIMESTAMP WHERE id = $1",
       [id]
     );
+
+    // 3. Notify client
+    const io = req.app.get("io");
+    if (job) {
+      createNotification(io, {
+        userId: job.client_id,
+        type: 'proposal_withdrawn',
+        title: 'Taklif bekor qilindi',
+        message: `"${job.title}" loyihangizdan ${job.first_name} ${job.last_name} o'z taklifini qaytib oldi.`,
+        relatedId: id,
+        relatedType: 'proposal',
+        translationData: { jobTitle: job.title, freelancerName: `${job.first_name} ${job.last_name}` }
+      });
+    }
 
     return res.json({ success: true, message: "Taklif bekor qilindi!" });
   } catch (error) {
@@ -899,7 +925,8 @@ const acceptProposal = async (req, res) => {
       title: 'Shartnoma boshlandi!',
       message: `"${row.job_title}" loyihasi bo'yicha shartnoma imzolandi. Siz uchun yangi bosqichlar (milestones) yaratildi va mablag' muzlatildi.`,
       relatedId: contract.id,
-      relatedType: 'contract'
+      relatedType: 'contract',
+      translationData: { jobTitle: row.job_title }
     });
     createNotification(io, {
       userId: row.freelancer_id,
@@ -907,7 +934,8 @@ const acceptProposal = async (req, res) => {
       title: 'Taklifingiz qabul qilindi!',
       message: `"${row.job_title}" loyihasi bo'yicha yuborgan taklifingiz qabul qilindi. Tabriklaymiz!`,
       relatedId: contract.id,
-      relatedType: 'contract'
+      relatedType: 'contract',
+      translationData: { jobTitle: row.job_title }
     });
 
     // 9) Notify client about payment (background)
@@ -917,7 +945,8 @@ const acceptProposal = async (req, res) => {
       title: "To'lov muvaffaqiyatli!",
       message: `"${row.job_title}" loyihasi uchun ${totalAmount} UZS miqdoridagi mablag' band qilindi (escrow).`,
       relatedId: contract.id,
-      relatedType: 'contract'
+      relatedType: 'contract',
+      translationData: { jobTitle: row.job_title, amount: totalAmount.toLocaleString() }
     });
 
     // 10) Notify other freelancers (background)
@@ -928,7 +957,8 @@ const acceptProposal = async (req, res) => {
         title: 'Taklif rad etildi',
         message: `"${row.job_title}" loyihasiga yuborgan taklifingiz rad etildi. Boshqa loyihalarni ko'rib chiqing.`,
         relatedId: row.job_id,
-        relatedType: 'project'
+        relatedType: 'project',
+        translationData: { jobTitle: row.job_title }
       });
     }
 
@@ -1044,7 +1074,8 @@ const rejectProposal = async (req, res) => {
       title: 'Taklif rad etildi',
       message: `"${row.job_title}" loyihasiga yuborgan taklifingiz buyurtmachi tomonidan rad etildi.`,
       relatedId: row.id,
-      relatedType: 'proposal'
+      relatedType: 'proposal',
+      translationData: { jobTitle: row.job_title }
     });
 
     return res.json({ success: true, message: "Taklif rad etildi, deposit qaytarildi." });
@@ -1226,7 +1257,8 @@ const inviteFreelancer = async (req, res) => {
       title: 'Yangi ish taklifi!',
       message: `${clientName} sizni "${job.title}" loyihasiga taklif qildi.`,
       relatedId: job_id,
-      relatedType: 'project'
+      relatedType: 'project',
+      translationData: { clientName, jobTitle: job.title }
     });
 
     return res.status(201).json({
