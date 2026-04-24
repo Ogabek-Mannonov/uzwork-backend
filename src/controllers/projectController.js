@@ -125,7 +125,8 @@ const createProject = async (req, res) => {
               title: 'Yangi loyiha!',
               message: `Sizning ko'nikmalaringizga mos keladigan yangi loyiha joylandi: "${title}"`,
               relatedId: project.id,
-              relatedType: 'project'
+              relatedType: 'project',
+              translationData: { jobTitle: title }
             });
           }
         }

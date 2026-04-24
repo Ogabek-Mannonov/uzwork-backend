@@ -34,15 +34,18 @@ const submitMilestone = async (req, res) => {
     const mQ = await client.query(
       `
       SELECT
-        m.id, m.contract_id, m.status, m.amount,
-        c.freelancer_id, c.client_id, c.status AS contract_status
+        m.id, m.contract_id, m.status, m.amount, m.title AS milestone_name,
+        c.freelancer_id, c.client_id, c.status AS contract_status,
+        j.title AS job_title
       FROM milestones m
       JOIN contracts c ON c.id = m.contract_id
+      JOIN jobs j ON j.id = c.job_id
       WHERE m.id = $1
       FOR UPDATE
       `,
       [id]
     );
+
 
     if (mQ.rowCount === 0) {
       await client.query("ROLLBACK");
@@ -87,7 +90,8 @@ const submitMilestone = async (req, res) => {
       title: 'Milestone topshirildi',
       message: `Freelancer ishni topshirdi va to'lovni yechishni so'radi.`,
       relatedId: m.contract_id,
-      relatedType: 'contract'
+      relatedType: 'contract',
+      translationData: { jobTitle: m.job_title || '', milestoneName: m.milestone_name || '' }
     });
 
     return res.json({ success: true, data: { milestone: up.rows[0] } });
