@@ -19,6 +19,8 @@ const {
   disable2FA,
   verify2FALogin,
   changePassword,
+  getSessions,
+  revokeSession,
 } = require("../controllers/authController");
 
 const { authenticate } = require("../middlewares/authMiddleware");
@@ -43,5 +45,7 @@ router.post("/2fa/enable", authenticate, enable2FA);
 router.post("/2fa/confirm", authenticate, confirm2FA);
 router.post("/2fa/disable", authenticate, disable2FA);
 router.post("/2fa/verify-login", verify2FALogin);
+router.get("/sessions", authenticate, getSessions);
+router.delete("/sessions/:sessionId", authenticate, revokeSession);
 
 module.exports = router;
