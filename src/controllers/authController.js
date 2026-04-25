@@ -1120,6 +1120,54 @@ const verify2FALogin = async (req, res) => {
   }
 };
 
+const changePassword = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { current_password, new_password, confirm_password } = req.body;
+
+    if (!current_password || !new_password || !confirm_password) {
+      return res.status(400).json({ success: false, message: "Barcha maydonlarni to'ldiring." });
+    }
+
+    if (new_password !== confirm_password) {
+      return res.status(400).json({ success: false, message: "Yangi parollar mos emas." });
+    }
+
+    if (new_password.length < 8) {
+      return res.status(400).json({ success: false, message: "Yangi parol kamida 8 ta belgi bo'lishi kerak." });
+    }
+
+    const userQ = await pool.query("SELECT password_hash FROM users WHERE id = $1", [userId]);
+    const user = userQ.rows[0];
+
+    const isMatch = await comparePassword(current_password, user.password_hash);
+    if (!isMatch) {
+      return res.status(400).json({ success: false, message: "Joriy parol noto'g'ri." });
+    }
+
+    const salt = await hashPassword(new_password);
+    await pool.query("UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2", [salt, userId]);
+
+    // Optional: Notify user
+    const io = req.app.get("io");
+    if (io) {
+      createNotification(io, {
+        userId,
+        type: 'security_update',
+        title: 'Parol o\'zgartirildi',
+        message: 'Hisobingizdagi parol muvaffaqiyatli yangilandi.',
+        relatedId: userId,
+        relatedType: 'user'
+      });
+    }
+
+    return res.json({ success: true, message: "Parol muvaffaqiyatli o'zgartirildi." });
+  } catch (error) {
+    console.error("Change Password Error:", error);
+    return res.status(500).json({ success: false, message: "Parolni o'zgartirishda xatolik yuz berdi." });
+  }
+};
+
 module.exports = {
   signup,
   login,
@@ -1136,4 +1184,5 @@ module.exports = {
   confirm2FA,
   disable2FA,
   verify2FALogin,
+  changePassword,
 };

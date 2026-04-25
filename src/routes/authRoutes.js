@@ -18,6 +18,7 @@ const {
   confirm2FA,
   disable2FA,
   verify2FALogin,
+  changePassword,
 } = require("../controllers/authController");
 
 const { authenticate } = require("../middlewares/authMiddleware");
@@ -29,6 +30,7 @@ router.post("/google", googleLogin);
 
 router.post("/forgot-password", forgotPassword);
 router.post("/reset-password", resetPassword);
+router.post("/change-password", authenticate, changePassword);
 
 router.post("/verify", authenticate, verify);
 router.post("/verify-signup", verifySignup);
