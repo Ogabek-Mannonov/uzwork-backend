@@ -198,6 +198,8 @@ const signup = async (req, res) => {
 };
 
 const login = async (req, res) => {
+  const ip_address = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  const user_agent = req.headers['user-agent'];
   try {
     const { email, phone, password } = req.body;
 
@@ -293,9 +295,9 @@ const login = async (req, res) => {
     const expiresAt = getTokenExpiryDate(refreshToken);
 
     await pool.query(
-      `INSERT INTO refresh_tokens (user_id, token, expires_at)
-       VALUES ($1, $2, $3)`,
-      [user.id, refreshToken, expiresAt || new Date(Date.now() + 7 * 24 * 3600 * 1000)]
+      `INSERT INTO refresh_tokens (user_id, token, expires_at, ip_address, user_agent, last_active)
+       VALUES ($1, $2, $3, $4, $5, NOW())`,
+      [user.id, refreshToken, expiresAt || new Date(Date.now() + 7 * 24 * 3600 * 1000), ip_address, user_agent]
     );
 
     return res.json({
@@ -330,6 +332,8 @@ const login = async (req, res) => {
 };
 
 const refresh = async (req, res) => {
+  const ip_address = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  const user_agent = req.headers['user-agent'];
   try {
     const { refreshToken } = req.body;
     if (!refreshToken) {
@@ -389,9 +393,9 @@ const refresh = async (req, res) => {
     await pool.query("BEGIN");
     await pool.query(`DELETE FROM refresh_tokens WHERE token = $1`, [refreshToken]);
     await pool.query(
-      `INSERT INTO refresh_tokens (user_id, token, expires_at)
-       VALUES ($1, $2, $3)`,
-      [user.id, newRefreshToken, expiresAt || new Date(Date.now() + 7 * 24 * 3600 * 1000)]
+      `INSERT INTO refresh_tokens (user_id, token, expires_at, ip_address, user_agent, last_active)
+       VALUES ($1, $2, $3, $4, $5, NOW())`,
+      [user.id, newRefreshToken, expiresAt || new Date(Date.now() + 7 * 24 * 3600 * 1000), ip_address, user_agent]
     );
     await pool.query("COMMIT");
 
@@ -645,7 +649,7 @@ const forgotPassword = async (req, res) => {
       if (diffMs < 60 * 1000) {
         return res.status(429).json({
           success: false,
-          message: "Kod juda tez so‘raldi. 1 daqiqadan keyin urinib ko‘ring.",
+          message: "Kod juda tez so‘raldi. 1 daqiqaqadan keyin urinib ko‘ring.",
         });
       }
     }
@@ -904,10 +908,13 @@ const googleLogin = async (req, res) => {
       const accessToken = generateAccessToken(user);
       const refreshToken = generateRefreshToken(user);
       const expiresAt = getTokenExpiryDate(refreshToken);
+      const ip_address = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+      const user_agent = req.headers['user-agent'];
 
       await client.query(
-        `INSERT INTO refresh_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)`,
-        [user.id, refreshToken, expiresAt || new Date(Date.now() + 7 * 24 * 3600 * 1000)]
+        `INSERT INTO refresh_tokens (user_id, token, expires_at, ip_address, user_agent, last_active)
+         VALUES ($1, $2, $3, $4, $5, NOW())`,
+        [user.id, refreshToken, expiresAt || new Date(Date.now() + 7 * 24 * 3600 * 1000), ip_address, user_agent]
       );
 
       client.release();
@@ -1086,11 +1093,13 @@ const verify2FALogin = async (req, res) => {
     const accessToken = generateAccessToken(user);
     const refreshToken = generateRefreshToken(user);
     const expiresAt = getTokenExpiryDate(refreshToken);
+    const ip_address = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    const user_agent = req.headers['user-agent'];
 
     await pool.query(
-      `INSERT INTO refresh_tokens (user_id, token, expires_at)
-       VALUES ($1, $2, $3)`,
-      [user.id, refreshToken, expiresAt || new Date(Date.now() + 7 * 24 * 3600 * 1000)]
+      `INSERT INTO refresh_tokens (user_id, token, expires_at, ip_address, user_agent, last_active)
+       VALUES ($1, $2, $3, $4, $5, NOW())`,
+      [user.id, refreshToken, expiresAt || new Date(Date.now() + 7 * 24 * 3600 * 1000), ip_address, user_agent]
     );
 
     return res.json({
@@ -1168,6 +1177,65 @@ const changePassword = async (req, res) => {
   }
 };
 
+const getSessions = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const ip_address = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    const user_agent = req.headers['user-agent'];
+    const refreshToken = req.cookies?.refreshToken;
+
+    // Auto-update current session if metadata is missing
+    if (refreshToken) {
+      await pool.query(
+        'UPDATE refresh_tokens SET ip_address = COALESCE(ip_address, $1), user_agent = COALESCE(user_agent, $2), last_active = NOW() WHERE token = $3 AND user_id = $4',
+        [ip_address, user_agent, refreshToken, userId]
+      );
+    }
+
+    const q = await pool.query(
+      `SELECT id, COALESCE(ip_address, 'Noma''lum IP') as ip_address, 
+              COALESCE(user_agent, 'Eski seans/Noma''lum qurilma') as user_agent, 
+              last_active, expires_at, token
+       FROM refresh_tokens 
+       WHERE user_id = $1 
+       ORDER BY last_active DESC`,
+      [userId]
+    );
+
+    return res.json({
+      success: true,
+      data: q.rows
+    });
+  } catch (error) {
+    console.error("Get Sessions Error:", error);
+    return res.status(500).json({ success: false, message: "Sessiyalarni yuklashda xatolik" });
+  }
+};
+
+const revokeSession = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { sessionId } = req.params;
+
+    const q = await pool.query(
+      "DELETE FROM refresh_tokens WHERE id = $1 AND user_id = $2 RETURNING id",
+      [sessionId, userId]
+    );
+
+    if (q.rowCount === 0) {
+      return res.status(404).json({ success: true, message: "Sessiya topilmadi" });
+    }
+
+    return res.json({
+      success: true,
+      message: "Sessiya yopildi"
+    });
+  } catch (error) {
+    console.error("Revoke Session Error:", error);
+    return res.status(500).json({ success: false, message: "Sessiyani yopishda xatolik" });
+  }
+};
+
 module.exports = {
   signup,
   login,
@@ -1185,4 +1253,6 @@ module.exports = {
   disable2FA,
   verify2FALogin,
   changePassword,
+  getSessions,
+  revokeSession,
 };
