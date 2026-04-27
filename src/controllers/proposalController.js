@@ -72,43 +72,77 @@ const createProposal = async (req, res) => {
 
     // allaqachon yuborganmi (LOCK uchun FOR UPDATE qilamiz)
     const existing = await client.query(
-      "SELECT id FROM proposals WHERE job_id = $1 AND freelancer_id = $2 FOR UPDATE",
+      "SELECT id, status FROM proposals WHERE job_id = $1 AND freelancer_id = $2 FOR UPDATE",
       [job_id, userId]
     );
 
+    let proposal;
     if (existing.rows.length > 0) {
-      await client.query("ROLLBACK");
-      return res.status(409).json({
-        success: false,
-        message: "Siz bu loyihaga allaqachon taklif yuborgansiz.",
-      });
+      const existingProposal = existing.rows[0];
+      
+      // Agar taklif 'invited' (taklif qilingan) bo'lsa, uni yangilashga ruxsat beramiz
+      if (existingProposal.status === 'invited') {
+        const updateResult = await client.query(
+          `UPDATE proposals SET 
+            cover_letter = $1,
+            proposed_price = $2,
+            proposed_duration = $3,
+            status = 'pending',
+            deposit_amount = $4,
+            deposit_status = $5,
+            deposit_locked_at = $6,
+            milestones = $7,
+            files = $8,
+            is_invitation = FALSE,
+            updated_at = NOW()
+          WHERE id = $9
+          RETURNING *`,
+          [
+            cover_letter,
+            proposed_price,
+            proposed_duration,
+            DEPOSIT_AMOUNT > 0 ? DEPOSIT_AMOUNT : 0,
+            DEPOSIT_AMOUNT > 0 ? "locked" : "none",
+            DEPOSIT_AMOUNT > 0 ? new Date() : null,
+            JSON.stringify(milestones),
+            JSON.stringify(files),
+            existingProposal.id
+          ]
+        );
+        proposal = updateResult.rows[0];
+      } else {
+        await client.query("ROLLBACK");
+        return res.status(409).json({
+          success: false,
+          message: "Siz bu loyihaga allaqachon taklif yuborgansiz.",
+        });
+      }
+    } else {
+      // 1) Yangi Proposal insert (pending)
+      const result = await client.query(
+        `INSERT INTO proposals (
+          job_id, freelancer_id, cover_letter,
+          proposed_price, proposed_duration,
+          status,
+          deposit_amount, deposit_status, deposit_locked_at,
+          milestones, files
+        ) VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10)
+        RETURNING *`,
+        [
+          job_id,
+          userId,
+          cover_letter,
+          proposed_price,
+          proposed_duration,
+          DEPOSIT_AMOUNT > 0 ? DEPOSIT_AMOUNT : 0,
+          DEPOSIT_AMOUNT > 0 ? "locked" : "none",
+          DEPOSIT_AMOUNT > 0 ? new Date() : null,
+          JSON.stringify(milestones),
+          JSON.stringify(files)
+        ]
+      );
+      proposal = result.rows[0];
     }
-
-    // 1) Proposal insert (pending)
-    const result = await client.query(
-      `INSERT INTO proposals (
-        job_id, freelancer_id, cover_letter,
-        proposed_price, proposed_duration,
-        status,
-        deposit_amount, deposit_status, deposit_locked_at,
-        milestones, files
-      ) VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10)
-      RETURNING *`,
-      [
-        job_id,
-        userId,
-        cover_letter,
-        proposed_price,
-        proposed_duration,
-        DEPOSIT_AMOUNT > 0 ? DEPOSIT_AMOUNT : 0,
-        DEPOSIT_AMOUNT > 0 ? "locked" : "none",
-        DEPOSIT_AMOUNT > 0 ? new Date() : null,
-        JSON.stringify(milestones),
-        JSON.stringify(files)
-      ]
-    );
-
-    const proposal = result.rows[0];
 
     // 2) Deposit lock (available -> locked)
     if (DEPOSIT_AMOUNT > 0) {
