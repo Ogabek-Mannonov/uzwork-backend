@@ -35,7 +35,7 @@ const getFreelancers = async (req, res) => {
     const l = Math.min(Math.max(parseInt(limit, 10) || 20, 1), 100);
     const offset = (p - 1) * l;
 
-    let where = `WHERE u.role ILIKE 'freelancer'`;
+    let where = `WHERE u.role = 'freelancer' AND u.deleted_at IS NULL`;
     const params = [];
     let i = 1;
 
@@ -110,14 +110,16 @@ const getFreelancers = async (req, res) => {
         fp.rating,
         fp.completed_jobs,
         fp.created_at,
-        fp.updated_at
+        fp.updated_at,
+        (s.id IS NOT NULL) AS is_saved
       FROM users u
       LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
+      LEFT JOIN saved_items s ON s.item_id = u.id AND s.user_id = $${i + 2} AND s.item_type = 'freelancer'
       ${where}
       ORDER BY COALESCE(fp.rating, 0) DESC, u.created_at DESC
       LIMIT $${i} OFFSET $${i + 1}
       `,
-      [...params, l, offset]
+      [...params, l, offset, req.user?.id || null]
     );
 
     return res.json({
@@ -424,10 +426,11 @@ const saveFreelancer = async (req, res) => {
     );
 
     if (existing.rows.length > 0) {
-      return res.status(409).json({
-        success: false,
-        message: "Freelancer allaqachon saqlangan.",
-      });
+      await pool.query(
+        `DELETE FROM saved_items WHERE id = $1`,
+        [existing.rows[0].id]
+      );
+      return res.json({ success: true, message: "Freelancer saqlanganlardan olib tashlandi!", saved: false });
     }
 
     await pool.query(
@@ -436,7 +439,7 @@ const saveFreelancer = async (req, res) => {
       [userId, freelancerId]
     );
 
-    return res.json({ success: true, message: "Freelancer saqlandi!" });
+    return res.json({ success: true, message: "Freelancer saqlandi!", saved: true });
   } catch (error) {
     console.error("Save freelancer error:", error);
     return res.status(500).json({

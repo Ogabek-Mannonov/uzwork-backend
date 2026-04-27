@@ -31,13 +31,13 @@ const {
   deleteCertificationFile,
 } = require("../controllers/freelancerCertificationsController");
 
-const { authenticate, authorize } = require("../middlewares/authMiddleware");
+const { authenticate, authorize, optionalAuthenticate } = require("../middlewares/authMiddleware");
 const uploadCv = require("../middlewares/uploadCv");
 const uploadPortfolio = require("../middlewares/uploadPortfolio");
 const uploadCertification = require("../middlewares/uploadCertification");
 
 // ✅ Public
-router.get("/", getFreelancers);
+router.get("/", optionalAuthenticate, getFreelancers);
 router.get("/recommended", getRecommendedFreelancers);
 
 // ✅ Protected STATIC ROUTES (AVVAL!)

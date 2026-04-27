@@ -86,6 +86,18 @@ pool.on("connect", async (client) => {
 
       ALTER TABLE messages ADD CONSTRAINT messages_type_check 
         CHECK (type IN ('text', 'image', 'file', 'voice', 'video_call', 'submission', 'system'));
+
+      -- saved_items jadvalini yaratish
+      CREATE TABLE IF NOT EXISTS saved_items (
+        id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id     UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        item_type   VARCHAR(20) NOT NULL, -- 'freelancer', 'job', 'project'
+        item_id     UUID        NOT NULL,
+        created_at  TIMESTAMP   NOT NULL DEFAULT NOW(),
+        UNIQUE(user_id, item_type, item_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_saved_items_user_id ON saved_items(user_id);
+      CREATE INDEX IF NOT EXISTS idx_saved_items_item ON saved_items(item_type, item_id);
     `);
     console.log("🚀 Database migratsiyasi muvaffaqiyatli yakunlandi.");
   } catch (e) {
