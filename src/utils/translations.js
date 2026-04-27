@@ -260,9 +260,75 @@ const translations = {
       ru: "Статус верификации"
     },
     message: {
-      uz: (data) => `Sizning hisobingiz holati yangilandi${data.status ? ': ' + data.status : ''}.`,
-      en: (data) => `Your account verification status has been updated${data.status ? ': ' + data.status : ''}.`,
-      ru: (data) => `Статус верификации вашего аккаунта обновлен${data.status ? ': ' + data.status : ''}.`
+      uz: (data) => data.isVerified 
+        ? "Sizning shaxsingiz muvaffaqiyatli tasdiqlandi. Endi siz ko'proq imkoniyatlarga egasiz."
+        : "Afsuski, yuborgan hujjatlaringiz talabga javob bermadi. Iltimos, qaytadan urinib ko'ring.",
+      en: (data) => data.isVerified
+        ? "Your identity has been successfully verified. You now have more opportunities."
+        : "Unfortunately, the documents you submitted did not meet the requirements. Please try again.",
+      ru: (data) => data.isVerified
+        ? "Ваша личность была успешно подтверждена. Теперь у вас больше возможностей."
+        : "К сожалению, представленные вами документы не соответствуют требованиям. Пожалуйста, попробуйте еще раз."
+    }
+  },
+  milestone_rejected: {
+    title: {
+      uz: "Ish qabul qilinmadi",
+      en: "Milestone rejected",
+      ru: "Этап отклонен"
+    },
+    message: {
+      uz: (data) => `Mijoz ishni rad etdi va tuzatish so'radi. Sabab: ${data.reason || 'Ko\'rsatilmadi'}`,
+      en: (data) => `The client has rejected the work and requested revisions. Reason: ${data.reason || 'Not specified'}`,
+      ru: (data) => `Клиент отклонил работу и запросил доработку. Причина: ${data.reason || 'Не указана'}`
+    }
+  },
+  security_update: {
+    title: {
+      uz: "Xavfsizlik bildirishnomasi",
+      en: "Security notification",
+      ru: "Уведомление о безопасности"
+    },
+    message: {
+      uz: (data) => data.message || "Hisobingiz xavfsizlik sozlamalarida o'zgarish sodir bo'ldi.",
+      en: (data) => data.message_en || "Changes have been made to your account security settings.",
+      ru: (data) => data.message_ru || "В настройки безопасности вашего аккаунта были внесены изменения."
+    }
+  },
+  email_updated: {
+    title: {
+      uz: "Email o'zgartirildi",
+      en: "Email updated",
+      ru: "Email изменен"
+    },
+    message: {
+      uz: "Hisobingizdagi email manzili yangilandi. Agar bu siz bo'lmasangiz, darhol parolni almashtiring.",
+      en: "The email address on your account has been updated. If this was not you, please change your password immediately.",
+      ru: "Адрес электронной почты в вашей учетной записи был обновлен. Если это были не вы, немедленно смените пароль."
+    }
+  },
+  phone_updated: {
+    title: {
+      uz: "Telefon raqami o'zgartirildi",
+      en: "Phone number updated",
+      ru: "Номер телефона изменен"
+    },
+    message: {
+      uz: "Hisobingizdagi telefon raqami yangilandi.",
+      en: "The phone number on your account has been updated.",
+      ru: "Номер телефона в вашей учетной записи был обновлен."
+    }
+  },
+  password_updated: {
+    title: {
+      uz: "Parol o'zgartirildi",
+      en: "Password changed",
+      ru: "Пароль изменен"
+    },
+    message: {
+      uz: "Hisobingizdagi parol muvaffaqiyatli yangilandi.",
+      en: "Your account password has been successfully updated.",
+      ru: "Пароль вашей учетной записи был успешно обновлен."
     }
   }
 };

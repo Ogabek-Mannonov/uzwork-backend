@@ -9,7 +9,7 @@ const isUuid = (v) =>
 const ensureChatMemberOrAdmin = async (chatId, user) => {
   // returns chat row if allowed, else throws {status, message}
   const chatRes = await pool.query(
-    `SELECT id, job_id, contract_id, status
+    `SELECT id, job_id, contract_id, status, freelancer_id
      FROM chats
      WHERE id = $1`,
     [chatId]
@@ -403,6 +403,7 @@ const getChats = async (req, res) => {
           c.id AS chat_id,
           c.job_id,
           c.contract_id,
+          c.freelancer_id,
           c.status,
           c.created_at AS chat_created_at,
           COALESCE((
@@ -442,6 +443,7 @@ const getChats = async (req, res) => {
           c.id AS chat_id,
           c.job_id,
           c.contract_id,
+          c.freelancer_id,
           c.status,
           c.created_at AS chat_created_at,
           COALESCE((
@@ -1104,7 +1106,7 @@ const findOrCreateChat = async (req, res) => {
     // 2) Mavjud chatni qidirish (shu job va shu freelancer uchun)
     // Aslida mantiqan bitta job uchun bitta freelancer bilan bitta chat bo'lgani ma'qul
     const existingChat = await pool.query(
-      `SELECT id FROM chats 
+      `SELECT id, freelancer_id FROM chats 
        WHERE job_id = $1 AND (
          freelancer_id = $2 OR 
          contract_id IN (SELECT id FROM contracts WHERE freelancer_id = $2)
@@ -1113,9 +1115,17 @@ const findOrCreateChat = async (req, res) => {
     );
 
     if (existingChat.rows.length > 0) {
+      const chatRow = existingChat.rows[0];
+      // If freelancer_id is missing, update it now
+      if (!chatRow.freelancer_id) {
+        await pool.query(
+          `UPDATE chats SET freelancer_id = $1 WHERE id = $2`,
+          [freelancer_id, chatRow.id]
+        );
+      }
       return res.json({
         success: true,
-        data: { chatId: existingChat.rows[0].id }
+        data: { chatId: chatRow.id }
       });
     }
 
