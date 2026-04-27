@@ -435,7 +435,8 @@ const escrowHold = async (req, res) => {
 
       await pool.query("COMMIT");
 
-      // Notify client (background)
+      // Notify client (background) - Redundant
+      /*
       const io = req.app.get("io");
       createNotification(io, {
         userId: clientId,
@@ -446,6 +447,7 @@ const escrowHold = async (req, res) => {
         relatedType: 'transaction',
         translationData: { amount: a.toLocaleString() }
       });
+      */
 
       return res.status(201).json({
         success: true,
@@ -696,7 +698,8 @@ const releaseMilestone = async (req, res) => {
       // Notify both parties (background)
       const io = req.app.get("io");
       
-      // Notify Client (Debit)
+      // Notify Client (Debit) - Redundant
+      /*
       createNotification(io, {
         userId: clientId,
         type: 'payment_sent',
@@ -706,6 +709,7 @@ const releaseMilestone = async (req, res) => {
         relatedType: 'transaction',
         translationData: { amount: a.toLocaleString() }
       });
+      */
 
       // Notify Freelancer (Credit)
       createNotification(io, {

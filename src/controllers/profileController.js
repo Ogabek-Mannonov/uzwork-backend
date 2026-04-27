@@ -339,9 +339,7 @@ const updateMyProfile = async (req, res) => {
       if (email !== undefined) {
         createNotification(io, {
           userId: userId,
-          type: 'security_update',
-          title: 'Email o\'zgartirildi',
-          message: 'Hisobingizdagi email manzili yangilandi. Agar bu siz bo\'lmasangiz, darhol parolni almashtiring.',
+          type: 'email_updated',
           relatedId: userId,
           relatedType: 'user'
         });
@@ -349,9 +347,7 @@ const updateMyProfile = async (req, res) => {
       if (phone !== undefined) {
         createNotification(io, {
           userId: userId,
-          type: 'security_update',
-          title: 'Telefon raqami o\'zgartirildi',
-          message: 'Hisobingizdagi telefon raqami yangilandi.',
+          type: 'phone_updated',
           relatedId: userId,
           relatedType: 'user'
         });

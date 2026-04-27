@@ -62,6 +62,13 @@ const createProposal = async (req, res) => {
 
     const job = jobCheck.rows[0];
 
+    if (job.client_id === userId) {
+      return res.status(400).json({
+        success: false,
+        message: "O'zingizning loyihangizga taklif yubora olmaysiz.",
+      });
+    }
+
     if (normalizeStatus(job.status) !== "open") {
       await client.query("ROLLBACK");
       return res.status(400).json({
@@ -158,16 +165,18 @@ const createProposal = async (req, res) => {
 
     await client.query("COMMIT");
 
-    // 3) Notify client (background)
-    createNotification(io, {
-      userId: job.client_id,
-      type: 'proposal_received',
-      title: 'Yangi taklif!',
-      message: `"${job.title}" loyihangizga ${freelancerName} tomonidan yangi taklif keldi.`,
-      relatedId: proposal.id,
-      relatedType: 'proposal',
-      translationData: { jobTitle: job.title, freelancerName }
-    });
+    // 3) Notify client (background) - faqat boshqa user bo'lsa
+    if (String(job.client_id) !== String(userId)) {
+      createNotification(io, {
+        userId: job.client_id,
+        type: 'proposal_received',
+        title: 'Yangi taklif!',
+        message: `"${job.title}" loyihangizga ${freelancerName} tomonidan yangi taklif keldi.`,
+        relatedId: proposal.id,
+        relatedType: 'proposal',
+        translationData: { jobTitle: job.title, freelancerName }
+      });
+    }
 
     return res.status(201).json({
       success: true,
@@ -666,15 +675,17 @@ const withdrawProposal = async (req, res) => {
     // 3. Notify client
     const io = req.app.get("io");
     if (job) {
-      createNotification(io, {
-        userId: job.client_id,
-        type: 'proposal_withdrawn',
-        title: 'Taklif bekor qilindi',
-        message: `"${job.title}" loyihangizdan ${job.first_name} ${job.last_name} o'z taklifini qaytib oldi.`,
-        relatedId: id,
-        relatedType: 'proposal',
-        translationData: { jobTitle: job.title, freelancerName: `${job.first_name} ${job.last_name}` }
-      });
+      if (String(job.client_id) !== String(userId)) {
+        createNotification(io, {
+          userId: job.client_id,
+          type: 'proposal_withdrawn',
+          title: 'Taklif qaytib olindi',
+          message: `"${job.title}" loyihangizdan ${job.first_name} ${job.last_name} o'z taklifini qaytib oldi.`,
+          relatedId: id,
+          relatedType: 'proposal',
+          translationData: { jobTitle: job.title, freelancerName: `${job.first_name} ${job.last_name}` }
+        });
+      }
     }
 
     return res.json({ success: true, message: "Taklif bekor qilindi!" });
@@ -850,12 +861,12 @@ const acceptProposal = async (req, res) => {
     // 6) chat create (sizdagi kabi)
     const chatIns = await client.query(
       `
-      INSERT INTO chats (contract_id, job_id, status, created_at)
-      VALUES ($1,$2,'active',NOW())
+      INSERT INTO chats (contract_id, job_id, freelancer_id, status, created_at)
+      VALUES ($1, $2, $3, 'active', NOW())
       ON CONFLICT (contract_id) DO NOTHING
       RETURNING *
       `,
-      [contract.id, row.job_id]
+      [contract.id, row.job_id, row.freelancer_id]
     );
 
     const chat =
@@ -973,6 +984,8 @@ const acceptProposal = async (req, res) => {
     });
 
     // 9) Notify client about payment (background)
+    // 4) Notify client (payment success) - Skip if redundant
+    /*
     createNotification(io, {
       userId: row.client_id,
       type: 'payment_sent',
@@ -982,6 +995,7 @@ const acceptProposal = async (req, res) => {
       relatedType: 'contract',
       translationData: { jobTitle: row.job_title, amount: totalAmount.toLocaleString() }
     });
+    */
 
     // 10) Notify other freelancers (background)
     for (const p of rejectedList.rows) {
@@ -1100,17 +1114,19 @@ const rejectProposal = async (req, res) => {
 
     await client.query("COMMIT");
 
-    // 3) Notify freelancer (background)
+    // 3. Send notification
     const io = req.app.get("io");
-    createNotification(io, {
-      userId: row.freelancer_id,
-      type: 'proposal_rejected',
-      title: 'Taklif rad etildi',
-      message: `"${row.job_title}" loyihasiga yuborgan taklifingiz buyurtmachi tomonidan rad etildi.`,
-      relatedId: row.id,
-      relatedType: 'proposal',
-      translationData: { jobTitle: row.job_title }
-    });
+    if (String(row.freelancer_id) !== String(userId)) {
+      createNotification(io, {
+        userId: row.freelancer_id,
+        type: 'proposal_rejected',
+        title: 'Taklif rad etildi',
+        message: `"${row.job_title}" loyihasiga yuborgan taklifingiz buyurtmachi tomonidan rad etildi.`,
+        relatedId: id,
+        relatedType: 'proposal',
+        translationData: { jobTitle: row.job_title }
+      });
+    }
 
     return res.json({ success: true, message: "Taklif rad etildi, deposit qaytarildi." });
   } catch (error) {
@@ -1284,16 +1300,18 @@ const inviteFreelancer = async (req, res) => {
     await client.query("COMMIT");
 
     // 4. Send notification to freelancer
-    const clientName = `${req.user.first_name || ""} ${req.user.last_name || ""}`.trim() || "Mijoz";
-    createNotification(io, {
-      userId: freelancer_id,
-      type: 'job_invitation',
-      title: 'Yangi ish taklifi!',
-      message: `${clientName} sizni "${job.title}" loyihasiga taklif qildi.`,
-      relatedId: job_id,
-      relatedType: 'project',
-      translationData: { clientName, jobTitle: job.title }
-    });
+    if (String(freelancer_id) !== String(userId)) {
+      const clientName = `${req.user.first_name || ""} ${req.user.last_name || ""}`.trim() || "Mijoz";
+      createNotification(io, {
+        userId: freelancer_id,
+        type: 'job_invitation',
+        title: 'Yangi ish taklifi!',
+        message: `${clientName} sizni "${job.title}" loyihasiga taklif qildi.`,
+        relatedId: job_id,
+        relatedType: 'project',
+        translationData: { clientName, jobTitle: job.title }
+      });
+    }
 
     return res.status(201).json({
       success: true,

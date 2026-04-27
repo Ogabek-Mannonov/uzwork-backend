@@ -1070,12 +1070,9 @@ const updateUserByAdmin = async (req, res) => {
       createNotification(io, {
         userId: id,
         type: 'verification_status',
-        title: is_verified ? 'Hujjatlaringiz tasdiqlandi!' : 'Hujjatlaringiz rad etildi',
-        message: is_verified 
-          ? 'Sizning shaxsingiz muvaffaqiyatli tasdiqlandi. Endi siz ko\'proq imkoniyatlarga egasiz.'
-          : 'Afsuski, yuborgan hujjatlaringiz talabga javob bermadi. Iltimos, qaytadan urinib ko\'ring.',
         relatedId: id,
-        relatedType: 'user'
+        relatedType: 'user',
+        translationData: { isVerified: is_verified }
       });
     }
   } catch (error) {

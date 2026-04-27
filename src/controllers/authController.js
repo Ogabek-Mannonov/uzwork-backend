@@ -823,9 +823,7 @@ const resetPassword = async (req, res) => {
     if (io) {
       createNotification(io, {
         userId: user.id,
-        type: 'security_update',
-        title: 'Parol o\'zgartirildi',
-        message: 'Hisobingizdagi parol muvaffaqiyatli yangilandi. Agar bu siz bo\'lmasangiz, darhol qo\'llab-quvvatlash bilan bog\'laning.',
+        type: 'password_updated',
         relatedId: user.id,
         relatedType: 'user'
       });
@@ -1162,9 +1160,7 @@ const changePassword = async (req, res) => {
     if (io) {
       createNotification(io, {
         userId,
-        type: 'security_update',
-        title: 'Parol o\'zgartirildi',
-        message: 'Hisobingizdagi parol muvaffaqiyatli yangilandi.',
+        type: 'password_updated',
         relatedId: userId,
         relatedType: 'user'
       });
