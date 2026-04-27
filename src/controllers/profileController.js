@@ -405,17 +405,24 @@ const updateMyProfile = async (req, res) => {
       const result = await client.query(
         `
         INSERT INTO client_profiles (
-          user_id, company_name, company_website, company_size
+          user_id, company_name, company_website, company_size, bio
         )
-        VALUES ($1, $2, $3, $4)
+        VALUES ($1, $2, $3, $4, $5)
         ON CONFLICT (user_id) DO UPDATE SET
           company_name = COALESCE(EXCLUDED.company_name, client_profiles.company_name),
           company_website = COALESCE(EXCLUDED.company_website, client_profiles.company_website),
           company_size = COALESCE(EXCLUDED.company_size, client_profiles.company_size),
+          bio = COALESCE(EXCLUDED.bio, client_profiles.bio),
           updated_at = NOW()
         RETURNING *
         `,
-        [userId, toStrOrNull(company_name), toStrOrNull(company_website), toStrOrNull(company_size)]
+        [
+          userId, 
+          toStrOrNull(company_name), 
+          toStrOrNull(company_website), 
+          toStrOrNull(company_size),
+          toStrOrNull(bio)
+        ]
       );
       roleProfile = result.rows[0];
     }
