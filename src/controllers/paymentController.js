@@ -159,7 +159,7 @@ const deposit = async (req, res) => {
 
   try {
     const userId = req.user.id;
-    const { amount, gateway = "payme", currency = "UZS" } = req.body;
+    const { amount, gateway = "payme", currency = "UZS", originalAmount } = req.body;
 
     const a = toAmount(amount);
     if (!a || a <= 0) {
@@ -225,14 +225,15 @@ const deposit = async (req, res) => {
 
     // Notify user (background)
     const io = req.app.get("io");
+    const displayAmt = originalAmount || a;
     createNotification(io, {
       userId,
       type: 'payment_received',
       title: 'Hisob to\'ldirildi',
-      message: `${a.toLocaleString()} UZS miqdoridagi mablag' hisobingizga muvaffaqiyatli kelib tushdi.`,
+      message: `${displayAmt.toLocaleString()} ${currency} miqdoridagi mablag' hisobingizga muvaffaqiyatli kelib tushdi.`,
       relatedId: tx.id,
       relatedType: 'transaction',
-      translationData: { amount: a.toLocaleString() }
+      translationData: { amount: `${displayAmt.toLocaleString()} ${currency}` }
     });
 
     return res.status(201).json({
@@ -262,15 +263,15 @@ const deposit = async (req, res) => {
 const withdraw = async (req, res) => {
   try {
     const userId = req.user.id;
-    if (req.user.role !== "freelancer") {
-      return res.status(403).json({ success: false, message: "Only freelancer" });
+    if (req.user.role !== "freelancer" && req.user.role !== "client") {
+      return res.status(403).json({ success: false, message: "Faqat frilanser yoki mijozlar pul yechishi mumkin." });
     }
 
-    const { amount, currency = "UZS", gateway = "card" } = req.body;
+    const { amount, currency = "UZS", gateway = "card", originalAmount } = req.body;
     const a = toAmount(amount);
 
     if (!a || a <= 0) {
-      return res.status(400).json({ success: false, message: "Invalid amount" });
+      return res.status(400).json({ success: false, message: `Noto'g'ri summa kiritildi: ${amount}` });
     }
 
     await ensureBalanceRow(userId);
@@ -284,7 +285,10 @@ const withdraw = async (req, res) => {
 
     if (Number(bal.rows[0].available_balance) < a) {
       await pool.query("ROLLBACK");
-      return res.status(400).json({ success: false, message: "Insufficient balance" });
+      return res.status(400).json({ 
+        success: false, 
+        message: `Balansda mablag' yetarli emas. Mavjud: ${bal.rows[0].available_balance}, So'ralgan: ${a}` 
+      });
     }
 
     const tx = await pool.query(
@@ -293,7 +297,7 @@ const withdraw = async (req, res) => {
       VALUES ($1,'withdrawal',$2,$3,$4,'pending',$5)
       RETURNING *
       `,
-      [userId, a, currency, gateway, { requested: true }]
+      [userId, a, currency, gateway, JSON.stringify({ requested: true, originalAmount })]
     );
 
     await pool.query(
@@ -311,20 +315,27 @@ const withdraw = async (req, res) => {
 
     // Notify user (background)
     const io = req.app.get("io");
+    const displayAmt = originalAmount || a;
     createNotification(io, {
       userId,
       type: 'withdrawal_request',
       title: 'Yechib olish so\'rovi',
-      message: `${a.toLocaleString()} UZS miqdoridagi mablag'ni yechib olish uchun so'rovingiz qabul qilindi.`,
+      message: `${displayAmt.toLocaleString()} ${currency} miqdoridagi mablag'ni yechib olish uchun so'rovingiz qabul qilindi.`,
       relatedId: tx.rows[0].id,
       relatedType: 'transaction',
-      translationData: { amount: a.toLocaleString() }
+      translationData: { amount: `${displayAmt.toLocaleString()} ${currency}` }
     });
 
     res.status(201).json({ success: true, data: { transaction: tx.rows[0] } });
   } catch (e) {
     await pool.query("ROLLBACK").catch(() => {});
-    res.status(500).json({ success: false, message: "Withdraw error", error: e.message });
+    console.error("Withdraw error details:", e);
+    res.status(500).json({ 
+      success: false, 
+      message: `Withdraw error: ${e.message}`, 
+      stack: e.stack,
+      details: e
+    });
   }
 };
 

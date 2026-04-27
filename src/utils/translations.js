@@ -32,9 +32,9 @@ const translations = {
       ru: "Платеж получен"
     },
     message: {
-      uz: (data) => `${data.amount || ''} UZS miqdoridagi mablag' hisobingizga kelib tushdi.`,
-      en: (data) => `You received a payment of ${data.amount || ''} UZS.`,
-      ru: (data) => `Вы получили платеж в размере ${data.amount || ''} UZS.`
+      uz: (data) => `${data.amount || ''} miqdoridagi mablag' hisobingizga kelib tushdi.`,
+      en: (data) => `You received a payment of ${data.amount || ''}.`,
+      ru: (data) => `Вы получили платеж в размере ${data.amount || ''}.`
     }
   },
   message_received: {
@@ -56,9 +56,9 @@ const translations = {
       ru: "Запрос на вывод"
     },
     message: {
-      uz: (data) => `${data.amount || ''} UZS miqdoridagi mablag'ni yechib olish uchun so'rovingiz qabul qilindi.`,
-      en: (data) => `Your request to withdraw ${data.amount || ''} UZS has been received.`,
-      ru: (data) => `Ваш запрос на вывод ${data.amount || ''} UZS был принят.`
+      uz: (data) => `${data.amount || ''} miqdoridagi mablag'ni yechib olish uchun so'rovingiz qabul qilindi.`,
+      en: (data) => `Your request to withdraw ${data.amount || ''} has been received.`,
+      ru: (data) => `Ваш запрос на вывод ${data.amount || ''} был принят.`
     }
   },
   escrow_hold: {
@@ -68,9 +68,9 @@ const translations = {
       ru: "Средства заблокированы"
     },
     message: {
-      uz: (data) => `${data.amount || ''} UZS miqdoridagi mablag' shartnoma uchun band qilindi.`,
-      en: (data) => `${data.amount || ''} UZS has been held in escrow for the contract.`,
-      ru: (data) => `Средства в размере ${data.amount || ''} UZS были заблокированы для контракта.`
+      uz: (data) => `${data.amount || ''} miqdoridagi mablag' shartnoma uchun band qilindi.`,
+      en: (data) => `${data.amount || ''} has been held in escrow for the contract.`,
+      ru: (data) => `Средства в размере ${data.amount || ''} были заблокированы для контракта.`
     }
   },
   payment_sent: {
@@ -80,9 +80,9 @@ const translations = {
       ru: "Платеж отправлен"
     },
     message: {
-      uz: (data) => `Freelancerga ${data.amount || ''} UZS miqdoridagi to'lov muvaffaqiyatli o'tkazildi.`,
-      en: (data) => `Payment of ${data.amount || ''} UZS has been successfully sent to the freelancer.`,
-      ru: (data) => `Платеж в размере ${data.amount || ''} UZS был успешно отправлен фрилансеру.`
+      uz: (data) => `Freelancerga ${data.amount || ''} miqdoridagi to'lov muvaffaqiyatli o'tkazildi.`,
+      en: (data) => `Payment of ${data.amount || ''} has been successfully sent to the freelancer.`,
+      ru: (data) => `Платеж в размере ${data.amount || ''} был успешно отправлен фрилансеру.`
     }
   },
   contract_updated: {

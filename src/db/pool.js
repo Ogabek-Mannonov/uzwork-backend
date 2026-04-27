@@ -98,6 +98,18 @@ pool.on("connect", async (client) => {
       );
       CREATE INDEX IF NOT EXISTS idx_saved_items_user_id ON saved_items(user_id);
       CREATE INDEX IF NOT EXISTS idx_saved_items_item ON saved_items(item_type, item_id);
+
+      -- Balans ustunlarini kattalashtirish (katta summalar uchun)
+      ALTER TABLE user_balances ALTER COLUMN available_balance TYPE DECIMAL(20, 2);
+      ALTER TABLE user_balances ALTER COLUMN escrow_balance TYPE DECIMAL(20, 2);
+      ALTER TABLE user_balances ALTER COLUMN total_earned TYPE DECIMAL(20, 2);
+      ALTER TABLE user_balances ALTER COLUMN total_spent TYPE DECIMAL(20, 2);
+      ALTER TABLE transactions ALTER COLUMN amount TYPE DECIMAL(20, 2);
+
+      -- Currency check constraint yangilash (RUB qo'shish)
+      ALTER TABLE transactions DROP CONSTRAINT IF EXISTS tx_currency_check;
+      ALTER TABLE transactions ADD CONSTRAINT tx_currency_check 
+        CHECK (currency IN ('UZS', 'USD', 'RUB'));
     `);
     console.log("🚀 Database migratsiyasi muvaffaqiyatli yakunlandi.");
   } catch (e) {
