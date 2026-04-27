@@ -51,6 +51,7 @@ pool.on("connect", async (client) => {
     await pool.query(`
       ALTER TABLE chats ADD COLUMN IF NOT EXISTS freelancer_id UUID REFERENCES users(id);
       ALTER TABLE client_profiles ADD COLUMN IF NOT EXISTS bio TEXT;
+      ALTER TABLE client_profiles ADD COLUMN IF NOT EXISTS cover_url TEXT;
       
       -- Proposals jadvalidagi status checkni yangilash
       ALTER TABLE proposals DROP CONSTRAINT IF EXISTS proposals_status_check;

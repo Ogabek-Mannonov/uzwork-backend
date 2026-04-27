@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS client_profiles (
     company_website TEXT,
     company_size VARCHAR(50),
     bio TEXT,
+    cover_url TEXT,
     rating DECIMAL(3,2) DEFAULT 0,
     spent_total DECIMAL(15,2) DEFAULT 0,
     created_at TIMESTAMP DEFAULT NOW(),
