@@ -1120,7 +1120,6 @@ const findOrCreateChat = async (req, res) => {
     }
 
     // 2) Mavjud chatni qidirish (shu job va shu freelancer uchun)
-    // Aslida mantiqan bitta job uchun bitta freelancer bilan bitta chat bo'lgani ma'qul
     const existingChat = await pool.query(
       `SELECT id, freelancer_id FROM chats 
        WHERE job_id = $1 AND (
@@ -1132,16 +1131,32 @@ const findOrCreateChat = async (req, res) => {
 
     if (existingChat.rows.length > 0) {
       const chatRow = existingChat.rows[0];
-      // If freelancer_id is missing, update it now
       if (!chatRow.freelancer_id) {
         await pool.query(
           `UPDATE chats SET freelancer_id = $1 WHERE id = $2`,
           [freelancer_id, chatRow.id]
         );
       }
+      return res.json({ success: true, data: { chatId: chatRow.id } });
+    }
+
+    // 2.1) Fallback: Agar bu job uchun chat bo'lmasa, shu mijoz va freelancer o'rtasidagi ISTALGAN eski chatni qidirish
+    const universalChat = await pool.query(
+      `SELECT c.id FROM chats c
+       LEFT JOIN jobs j ON j.id = c.job_id
+       LEFT JOIN contracts con ON con.id = c.contract_id
+       WHERE (j.client_id = $1 OR con.client_id = $1)
+         AND (c.freelancer_id = $2 OR con.freelancer_id = $2)
+       ORDER BY c.created_at DESC
+       LIMIT 1`,
+      [client_id, freelancer_id]
+    );
+
+    if (universalChat.rows.length > 0) {
+      // Topildi! Yangi ochish o'rniga eskisiga yo'naltiramiz
       return res.json({
         success: true,
-        data: { chatId: chatRow.id }
+        data: { chatId: universalChat.rows[0].id }
       });
     }
 
@@ -1168,6 +1183,69 @@ const findOrCreateChat = async (req, res) => {
   }
 };
 
+const cleanupEmptyChats = async (req, res) => {
+  try {
+    // 1. Get all chats with info
+    const chatsRes = await pool.query(`
+      SELECT c.id, c.created_at, c.freelancer_id as cf_id, con.freelancer_id as conf_id,
+             j.client_id as jc_id, con.client_id as conc_id,
+             (SELECT COUNT(*) FROM messages m WHERE m.chat_id = c.id) as msg_count
+      FROM chats c
+      LEFT JOIN jobs j ON j.id = c.job_id
+      LEFT JOIN contracts con ON con.id = c.contract_id
+    `);
+
+    const chats = chatsRes.rows;
+    const toDelete = [];
+
+    for (let i = 0; i < chats.length; i++) {
+      const c1 = chats[i];
+      if (parseInt(c1.msg_count) > 0) continue;
+
+      const client1 = c1.jc_id || c1.conc_id;
+      const freelancer1 = c1.cf_id || c1.conf_id;
+
+      if (!client1 || !freelancer1) continue;
+
+      // Check if another chat exists for the same pair
+      const hasDuplicate = chats.some((c2, idx) => {
+        if (i === idx) return false;
+        const client2 = c2.jc_id || c2.conc_id;
+        const freelancer2 = c2.cf_id || c2.conf_id;
+        
+        if (client1 === client2 && freelancer1 === freelancer2) {
+          // If the other one has messages, this one is definitely redundant
+          if (parseInt(c2.msg_count) > 0) return true;
+          // If both are empty, delete the older one
+          if (new Date(c2.created_at) > new Date(c1.created_at)) return true;
+        }
+        return false;
+      });
+
+      if (hasDuplicate) {
+        toDelete.push(c1.id);
+      }
+    }
+
+    if (toDelete.length > 0) {
+      await pool.query(`DELETE FROM chats WHERE id = ANY($1)`, [toDelete]);
+    }
+
+    return res.json({ success: true, deletedCount: toDelete.length, deletedIds: toDelete });
+  } catch (error) {
+    console.error("Cleanup error:", error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+const listChatsDebug = async (req, res) => {
+  try {
+    return res.json({ message: "Debug route" });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+};
+
 module.exports = {
   getChats,
   getChatHistory,
@@ -1180,4 +1258,6 @@ module.exports = {
   deleteMessage,
   updateChatStatus,
   findOrCreateChat,
+  cleanupEmptyChats,
+  listChatsDebug,
 };
