@@ -1,5 +1,7 @@
 const pool = require("../db/pool");
 const { createNotification } = require("./notificationController");
+const PLATFORM_USER_ID = process.env.PLATFORM_USER_ID;
+const PLATFORM_FEE_PCT = Number(process.env.PLATFORM_FEE_PCT || 0);
 
 const normalizeRole = (r) => String(r || "").toLowerCase();
 
@@ -157,11 +159,19 @@ const approveMilestone = async (req, res) => {
     }
 
     const amt = Number(m.amount || 0);
+    const fee = Math.max(0, Math.round((amt * PLATFORM_FEE_PCT) / 100));
+    const net = Math.max(0, amt - fee);
 
-    // 2) Release Funds: Client Escrow -> Freelancer Available
+    // 2) Release Funds: Client Escrow -> Freelancer Available + Platform Fee
+    if (!PLATFORM_USER_ID) {
+      await client.query("ROLLBACK");
+      return res.status(500).json({ success: false, message: "PLATFORM_USER_ID .env da yo'q." });
+    }
+
     // Ensure balance rows exist
     await ensureBalanceRow(client, m.client_id);
     await ensureBalanceRow(client, m.freelancer_id);
+    await ensureBalanceRow(client, PLATFORM_USER_ID);
 
     // Check client escrow
     const cBal = await client.query(
@@ -175,27 +185,72 @@ const approveMilestone = async (req, res) => {
     }
 
     // Move funds
+    // Client escrowdan to'liq amount yechiladi
     await client.query(
       `UPDATE user_balances SET escrow_balance = escrow_balance - $1, total_spent = COALESCE(total_spent,0) + $1, updated_at = NOW() WHERE user_id = $2`,
       [amt, m.client_id]
     );
-    await client.query(
-      `UPDATE user_balances SET available_balance = available_balance + $1, total_earned = COALESCE(total_earned,0) + $1, updated_at = NOW() WHERE user_id = $2`,
-      [amt, m.freelancer_id]
-    );
 
-    // Log transaction
-    await client.query(
+    // Freelancerga net tushadi
+    if (net > 0) {
+      await client.query(
+        `UPDATE user_balances SET available_balance = available_balance + $1, total_earned = COALESCE(total_earned,0) + $1, updated_at = NOW() WHERE user_id = $2`,
+        [net, m.freelancer_id]
+      );
+    }
+
+    // Platformaga fee tushadi
+    if (fee > 0) {
+      await client.query(
+        `UPDATE user_balances SET available_balance = available_balance + $1, updated_at = NOW() WHERE user_id = $2`,
+        [fee, PLATFORM_USER_ID]
+      );
+    }
+
+    // Log transaction (escrow_release - freelancer olgan net)
+    const releaseTx = await client.query(
       `
       INSERT INTO transactions (user_id, type, amount, currency, gateway, status, metadata, job_id, contract_id, created_at, updated_at)
       VALUES ($1, 'escrow_release', $2, 'UZS', 'internal', 'completed', $3, $4, $5, NOW(), NOW())
+      RETURNING id
       `,
       [
-        m.freelancer_id, amt,
-        JSON.stringify({ milestone_id: id, contract_id: m.contract_id, reason: "milestone_approved" }),
+        m.freelancer_id, net,
+        JSON.stringify({
+          milestone_id: id,
+          contract_id: m.contract_id,
+          from_client: m.client_id,
+          gross_amount: amt,
+          fee_amount: fee,
+          fee_pct: PLATFORM_FEE_PCT,
+          reason: "milestone_approved"
+        }),
         m.job_id, m.contract_id
       ]
     );
+
+    // Log fee transaction
+    if (fee > 0) {
+      await client.query(
+        `
+        INSERT INTO transactions (user_id, type, amount, currency, gateway, status, metadata, job_id, contract_id, created_at, updated_at)
+        VALUES ($1, 'fee', $2, 'UZS', 'internal', 'completed', $3, $4, $5, NOW(), NOW())
+        `,
+        [
+          PLATFORM_USER_ID, fee,
+          JSON.stringify({
+            release_tx_id: releaseTx.rows[0].id,
+            contract_id: m.contract_id,
+            milestone_id: id,
+            from_client: m.client_id,
+            freelancer_id: m.freelancer_id,
+            gross_amount: amt,
+            fee_pct: PLATFORM_FEE_PCT
+          }),
+          m.job_id, m.contract_id
+        ]
+      );
+    }
 
     // 3) Update Milestone status
     const up = await client.query(
@@ -335,9 +390,18 @@ const releaseMilestone = async (req, res) => {
       return res.status(400).json({ success: false, message: "Milestone amount noto‘g‘ri." });
     }
 
+    const fee = Math.max(0, Math.round((amt * PLATFORM_FEE_PCT) / 100));
+    const net = Math.max(0, amt - fee);
+
+    if (!PLATFORM_USER_ID) {
+      await client.query("ROLLBACK");
+      return res.status(500).json({ success: false, message: "PLATFORM_USER_ID .env da yo'q." });
+    }
+
     // ensure balances
     await ensureBalanceRow(client, m.client_id);
     await ensureBalanceRow(client, m.freelancer_id);
+    await ensureBalanceRow(client, PLATFORM_USER_ID);
 
     // lock client balance
     const cBal = await client.query(
@@ -359,18 +423,7 @@ const releaseMilestone = async (req, res) => {
       });
     }
 
-    // lock freelancer balance
-    await client.query(
-      `
-      SELECT available_balance, escrow_balance
-      FROM user_balances
-      WHERE user_id = $1
-      FOR UPDATE
-      `,
-      [m.freelancer_id]
-    );
-
-    // move funds: client escrow -> freelancer available
+    // move funds: client escrow -> freelancer available + platform
     await client.query(
       `
       UPDATE user_balances
@@ -381,39 +434,80 @@ const releaseMilestone = async (req, res) => {
       [amt, m.client_id]
     );
 
-    await client.query(
-      `
-      UPDATE user_balances
-      SET available_balance = COALESCE(available_balance,0) + $1,
-          updated_at = NOW()
-      WHERE user_id = $2
-      `,
-      [amt, m.freelancer_id]
-    );
+    if (net > 0) {
+      await client.query(
+        `
+        UPDATE user_balances
+        SET available_balance = COALESCE(available_balance,0) + $1,
+            total_earned = COALESCE(total_earned,0) + $1,
+            updated_at = NOW()
+        WHERE user_id = $2
+        `,
+        [net, m.freelancer_id]
+      );
+    }
+
+    if (fee > 0) {
+      await client.query(
+        `
+        UPDATE user_balances
+        SET available_balance = COALESCE(available_balance,0) + $1,
+            updated_at = NOW()
+        WHERE user_id = $2
+        `,
+        [fee, PLATFORM_USER_ID]
+      );
+    }
 
     // transaction log (escrow_release)
-    await client.query(
+    const releaseTx = await client.query(
       `
       INSERT INTO transactions (
         user_id, type, amount, currency, gateway, status,
         metadata, job_id, contract_id, created_at, updated_at
       )
       VALUES ($1,'escrow_release',$2,'UZS','internal','completed',$3,$4,$5,NOW(),NOW())
+      RETURNING id
       `,
       [
         m.freelancer_id,
-        amt,
+        net,
         JSON.stringify({
           milestone_id: String(m.id),
           contract_id: String(m.contract_id),
           from_client_id: String(m.client_id),
           to_freelancer_id: String(m.freelancer_id),
+          gross_amount: amt,
+          fee_amount: fee,
+          fee_pct: PLATFORM_FEE_PCT,
           reason: "milestone_release",
         }),
         m.job_id,
         m.contract_id,
       ]
     );
+
+    if (fee > 0) {
+      await client.query(
+        `
+        INSERT INTO transactions (user_id, type, amount, currency, gateway, status, metadata, job_id, contract_id, created_at, updated_at)
+        VALUES ($1, 'fee', $2, 'UZS', 'internal', 'completed', $3, $4, $5, NOW(), NOW())
+        `,
+        [
+          PLATFORM_USER_ID, fee,
+          JSON.stringify({
+            release_tx_id: releaseTx.rows[0].id,
+            contract_id: m.contract_id,
+            milestone_id: String(m.id),
+            from_client_id: String(m.client_id),
+            freelancer_id: String(m.freelancer_id),
+            gross_amount: amt,
+            fee_pct: PLATFORM_FEE_PCT
+          }),
+          m.job_id, m.contract_id
+        ]
+      );
+    }
 
     // milestone -> released
     const up = await client.query(
