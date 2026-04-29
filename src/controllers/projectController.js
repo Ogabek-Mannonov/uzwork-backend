@@ -53,16 +53,20 @@ const createProject = async (req, res) => {
       category,
       scope,
       duration,
-      experience_level
+      experience_level,
+      status
     } = req.body;
 
     const jt = job_type || budget_type;
+    const finalStatus = status === 'draft' ? 'draft' : 'open';
 
-    if (!title || !description || !jt) {
-      return res.status(400).json({
-        success: false,
-        message: "Sarlavha, tavsif va ish turi majburiy."
-      });
+    if (finalStatus !== 'draft') {
+      if (!title || !description || !jt) {
+        return res.status(400).json({
+          success: false,
+          message: "Sarlavha, tavsif va ish turi majburiy."
+        });
+      }
     }
 
     // Data tayyorlash
@@ -80,16 +84,16 @@ const createProject = async (req, res) => {
         client_id, title, description, job_type,
         budget_min, budget_max, currency, deadline,
         required_skills, attachments, visibility,
-        category, scope, duration, experience_level
+        category, scope, duration, experience_level, status
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11, $12, $13, $14, $15)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10::jsonb, $11, $12, $13, $14, $15, $16)
       RETURNING *
       `,
       [
         userId,
-        title,
-        description,
-        jt,
+        title || '',
+        description || '',
+        jt || 'fixed',
         budget_min || 0,
         budget_max || 0,
         currency || 'UZS',
@@ -100,7 +104,8 @@ const createProject = async (req, res) => {
         category,
         scope,
         duration,
-        experience_level
+        experience_level,
+        finalStatus
       ]
     );
 
@@ -369,10 +374,10 @@ const updateProject = async (req, res) => {
       return res.status(403).json({ success: false, message: "Bu loyihaning egasi emassiz." });
     }
 
-    if (!admin && job.status !== 'open') {
+    if (!admin && !['open', 'draft'].includes(job.status)) {
       return res.status(400).json({
         success: false,
-        message: 'Faqat "open" statusdagi loyihani yangilash mumkin.'
+        message: 'Faqat "open" yoki "draft" statusdagi loyihani yangilash mumkin.'
       });
     }
 
@@ -389,10 +394,21 @@ const updateProject = async (req, res) => {
       required_skills,
       attachments,
       visibility,
-      status, // admin only
+      status, 
       is_boosted, // admin only (ixtiyoriy)
       boosted_until // admin only
     } = req.body;
+
+    const finalStatus = status === 'active' ? 'open' : (status === 'draft' ? 'draft' : status);
+
+    if (finalStatus === 'open') {
+      if (!title || !description || !(job_type || budget_type)) {
+        return res.status(400).json({
+          success: false,
+          message: "Nashr qilish uchun sarlavha, tavsif va ish turi majburiy."
+        });
+      }
+    }
 
     const fields = [];
     const values = [];
@@ -427,11 +443,15 @@ const updateProject = async (req, res) => {
     if (scope !== undefined) add(`scope = $$`, scope);
     if (duration !== undefined) add(`duration = $$`, duration);
 
-    // admin only fields
+    // Status ruxsatlari
     if (admin) {
-      if (status !== undefined) add(`status = $$`, status);
+      if (finalStatus !== undefined) add(`status = $$`, finalStatus);
       if (is_boosted !== undefined) add(`is_boosted = $$`, is_boosted);
       if (boosted_until !== undefined) add(`boosted_until = $$`, boosted_until ? new Date(boosted_until) : null);
+    } else {
+      if (finalStatus === 'open' || finalStatus === 'draft') {
+        add(`status = $$`, finalStatus);
+      }
     }
 
     if (fields.length === 0) {
