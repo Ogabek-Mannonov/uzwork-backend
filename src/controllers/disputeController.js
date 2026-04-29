@@ -83,9 +83,12 @@ const createDispute = async (req, res) => {
       });
     }
 
-    // 2) contractdan client/freelancer
+    // 2) contractdan client/freelancer va job_title
     const contractQ = await client.query(
-      `SELECT id, client_id, freelancer_id, total_amount FROM contracts WHERE id = $1`,
+      `SELECT c.id, c.client_id, c.freelancer_id, c.total_amount, j.title AS job_title
+       FROM contracts c 
+       LEFT JOIN jobs j ON c.job_id = j.id
+       WHERE c.id = $1`,
       [contractId]
     );
     if (contractQ.rowCount === 0) {
@@ -173,7 +176,8 @@ const createDispute = async (req, res) => {
       title: 'Sizga nisbatan bahs ochildi',
       message: `"${reason.substring(0, 50)}${reason.length > 50 ? '...' : ''}" sababi bilan sizga nisbatan bahs ochildi.`,
       relatedId: dispute.id,
-      relatedType: 'dispute'
+      relatedType: 'dispute',
+      translationData: { jobTitle: contract.job_title || '' }
     });
 
     return res.status(201).json({
@@ -680,7 +684,15 @@ const resolveDispute = async (req, res) => {
 
     // ✅ Notify both parties
     const io = req.app.get("io");
-    const dRes = await client.query(`SELECT raised_by, against_user, winner_user_id FROM disputes WHERE id = $1`, [id]);
+    const dRes = await client.query(
+      `SELECT d.raised_by, d.against_user, d.winner_user_id, j.title AS job_title
+       FROM disputes d
+       LEFT JOIN chats ch ON d.chat_id = ch.id
+       LEFT JOIN contracts c ON c.id = COALESCE(d.contract_id, ch.contract_id)
+       LEFT JOIN jobs j ON j.id = c.job_id
+       WHERE d.id = $1`, 
+      [id]
+    );
     const dData = dRes.rows[0];
     
     if (dData) {
@@ -693,7 +705,8 @@ const resolveDispute = async (req, res) => {
           title: 'Bahs yopildi',
           message: `Admin bahsni ko'rib chiqdi va qaror qabul qildi. ${isWinner ? "Qaror sizning foydangizga hal qilindi." : "Qaror qarshi tomon foydasiga hal qilindi."}`,
           relatedId: id,
-          relatedType: 'dispute'
+          relatedType: 'dispute',
+          translationData: { jobTitle: dData.job_title || '' }
         });
       });
     }

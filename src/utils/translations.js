@@ -326,9 +326,9 @@ const translations = {
       ru: "Пароль изменен"
     },
     message: {
-      uz: "Hisobingizdagi parol muvaffaqiyatli yangilandi.",
-      en: "Your account password has been successfully updated.",
-      ru: "Пароль вашей учетной записи был успешно обновлен."
+      uz: "Hisobingizdagi parol muvaffaqiyatli yangilandi. Agar bu siz bo'lmasangiz, darhol yordam markaziga murojaat qiling.",
+      en: "Your account password has been successfully updated. If this was not you, please contact support immediately.",
+      ru: "Пароль вашей учетной записи был успешно обновлен. Если это были не вы, немедленно обратитесь в службу поддержки."
     }
   }
 };

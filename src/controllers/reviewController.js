@@ -82,6 +82,9 @@ const createReview = async (req, res) => {
       [contract_id, userId, revieweeId, rating, comment || null]
     );
 
+    const reviewerRes = await pool.query(`SELECT first_name, last_name FROM users WHERE id = $1`, [userId]);
+    const reviewerName = reviewerRes.rows[0] ? `${reviewerRes.rows[0].first_name || ''} ${reviewerRes.rows[0].last_name || ''}`.trim() : 'Foydalanuvchi';
+
     // ✅ Notify reviewee
     const io = req.app.get("io");
     createNotification(io, {
@@ -90,7 +93,8 @@ const createReview = async (req, res) => {
       title: 'Yangi sharh!',
       message: `Sizga yangi sharh qoldirildi: "${(comment || '').substring(0, 50)}${(comment || '').length > 50 ? '...' : ''}"`,
       relatedId: result.rows[0].id,
-      relatedType: 'review'
+      relatedType: 'review',
+      translationData: { reviewerName }
     });
 
     res.status(201).json({
