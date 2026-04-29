@@ -307,16 +307,18 @@ const getContractById = async (req, res) => {
         uc.first_name AS client_first_name,
         uc.last_name  AS client_last_name,
         uc.email      AS client_email,
-        uc.avatar_url AS client_avatar_url,
+        COALESCE(uc.avatar_url, cp.avatar_url) AS client_avatar_url,
 
         uf.first_name AS freelancer_first_name,
         uf.last_name  AS freelancer_last_name,
         uf.email      AS freelancer_email,
-        uf.avatar_url AS freelancer_avatar_url
+        COALESCE(uf.avatar_url, fp.avatar_url) AS freelancer_avatar_url
       FROM contracts c
       JOIN jobs j ON j.id = c.job_id
       JOIN users uc ON uc.id = c.client_id
+      LEFT JOIN client_profiles cp ON cp.user_id = uc.id
       JOIN users uf ON uf.id = c.freelancer_id
+      LEFT JOIN freelancer_profiles fp ON fp.user_id = uf.id
       WHERE c.id = $1
       LIMIT 1
       `,
@@ -416,14 +418,16 @@ const getMyContracts = async (req, res) => {
         j.status AS job_status,
         uc.first_name AS client_first_name,
         uc.last_name  AS client_last_name,
-        uc.avatar_url AS client_avatar_url,
+        COALESCE(uc.avatar_url, cp.avatar_url) AS client_avatar_url,
         uf.first_name AS freelancer_first_name,
         uf.last_name  AS freelancer_last_name,
-        uf.avatar_url AS freelancer_avatar_url
+        COALESCE(uf.avatar_url, fp.avatar_url) AS freelancer_avatar_url
       FROM contracts c
       JOIN jobs j ON j.id = c.job_id
       JOIN users uc ON uc.id = c.client_id
+      LEFT JOIN client_profiles cp ON cp.user_id = uc.id
       JOIN users uf ON uf.id = c.freelancer_id
+      LEFT JOIN freelancer_profiles fp ON fp.user_id = uf.id
 
       ${whereClause}
       ORDER BY c.created_at DESC

@@ -48,6 +48,7 @@ const getClients = async (req, res) => {
         u.phone,
         u.is_kyc_verified,
         u.kyc_status,
+        COALESCE(u.avatar_url, cp.avatar_url) as avatar_url,
 
         cp.company_name,
         cp.company_website,
@@ -109,6 +110,7 @@ const getClientById = async (req, res) => {
         u.phone,
         u.is_kyc_verified,
         u.kyc_status,
+        COALESCE(u.avatar_url, cp.avatar_url) as avatar_url,
 
         cp.company_name,
         cp.company_website,

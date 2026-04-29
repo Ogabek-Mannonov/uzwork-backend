@@ -101,9 +101,12 @@ const getPartnerForChat = async (chatRow, userId) => {
     if (!partnerId) return null;
 
     const uRes = await pool.query(
-      `SELECT id, first_name, last_name, role, username, avatar_url
-       FROM users
-       WHERE id = $1`,
+      `SELECT u.id, u.first_name, u.last_name, u.role, u.username, 
+              COALESCE(u.avatar_url, fp.avatar_url, cp.avatar_url) as avatar_url
+       FROM users u
+       LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
+       LEFT JOIN client_profiles cp ON cp.user_id = u.id
+       WHERE u.id = $1`,
       [partnerId]
     );
     const user = uRes.rows[0];
@@ -152,9 +155,12 @@ const getPartnerForChat = async (chatRow, userId) => {
       if (!freelancerId) return null;
 
       const uRes = await pool.query(
-        `SELECT id, first_name, last_name, role, username, avatar_url
-         FROM users
-         WHERE id = $1`,
+        `SELECT u.id, u.first_name, u.last_name, u.role, u.username,
+                COALESCE(u.avatar_url, fp.avatar_url, cp.avatar_url) as avatar_url
+         FROM users u
+         LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
+         LEFT JOIN client_profiles cp ON cp.user_id = u.id
+         WHERE u.id = $1`,
         [freelancerId]
       );
       const user = uRes.rows[0];
@@ -171,9 +177,12 @@ const getPartnerForChat = async (chatRow, userId) => {
 
     // else partner is client
     const uRes = await pool.query(
-      `SELECT id, first_name, last_name, role, username, avatar_url
-       FROM users
-       WHERE id = $1`,
+      `SELECT u.id, u.first_name, u.last_name, u.role, u.username,
+              COALESCE(u.avatar_url, fp.avatar_url, cp.avatar_url) as avatar_url
+       FROM users u
+       LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
+       LEFT JOIN client_profiles cp ON cp.user_id = u.id
+       WHERE u.id = $1`,
       [j.client_id]
     );
     const user = uRes.rows[0];
@@ -671,9 +680,12 @@ const sendMessage = async (req, res) => {
     const newMessage = insertRes.rows[0];
 
     const senderRes = await pool.query(
-      `SELECT role, first_name, last_name, username, avatar_url
-       FROM users
-       WHERE id = $1`,
+      `SELECT u.role, u.first_name, u.last_name, u.username,
+              COALESCE(u.avatar_url, fp.avatar_url, cp.avatar_url) as avatar_url
+       FROM users u
+       LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
+       LEFT JOIN client_profiles cp ON cp.user_id = u.id
+       WHERE u.id = $1`,
       [userId]
     );
 
@@ -796,8 +808,12 @@ const sendVoiceMessage = async (req, res) => {
     const msg = insertRes.rows[0];
 
     const senderRes = await pool.query(
-      `SELECT role, first_name, last_name, username, avatar_url
-       FROM users WHERE id = $1`,
+      `SELECT u.role, u.first_name, u.last_name, u.username,
+              COALESCE(u.avatar_url, fp.avatar_url, cp.avatar_url) as avatar_url
+       FROM users u
+       LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
+       LEFT JOIN client_profiles cp ON cp.user_id = u.id
+       WHERE u.id = $1`,
       [req.user.id]
     );
 
