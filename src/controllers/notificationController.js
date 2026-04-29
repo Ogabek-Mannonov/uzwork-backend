@@ -183,8 +183,6 @@ const getUnreadProposalsCount = async (req, res) => {
 };
 
 /**
-<<<<<<< HEAD
-=======
  * POST /notifications/mark-all-read-by-type
  */
 const markAllAsReadByType = async (req, res) => {

@@ -254,7 +254,8 @@ const approveMilestone = async (req, res) => {
           ? `"${m.job_title}" loyihasi to'liq yakunlandi va so'nggi to'lov o'tkazildi.` 
           : `"${m.milestone_name}" bosqichi tasdiqlandi va ${amt} so'm balansingizga o'tkazildi.`,
         relatedId: m.contract_id,
-        relatedType: 'contract'
+        relatedType: 'contract',
+        translationData: { jobTitle: m.job_title || '', milestoneName: m.milestone_name || '' }
       });
     }
 
