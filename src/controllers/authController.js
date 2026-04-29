@@ -212,28 +212,34 @@ const login = async (req, res) => {
 
     let q, params;
     if (email && phone) {
-      q = `SELECT u.id, u.username, u.email, u.phone, u.password_hash, u.role, u.first_name, u.last_name, u.display_name, u.is_verified, u.avatar_url, u.status, u.two_factor_enabled,
-               fp.category_id
-           FROM users u
-           LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
-           WHERE (u.email=$1 OR u.phone=$2) AND u.deleted_at IS NULL
-           LIMIT 1`;
+      q = `SELECT u.id, u.username, u.email, u.phone, u.password_hash, u.role, u.first_name, u.last_name, u.display_name, u.is_verified, 
+                   COALESCE(u.avatar_url, fp.avatar_url, cp.avatar_url) as avatar_url, u.status, u.two_factor_enabled,
+                   fp.category_id
+            FROM users u
+            LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
+            LEFT JOIN client_profiles cp ON cp.user_id = u.id
+            WHERE (u.email=$1 OR u.phone=$2) AND u.deleted_at IS NULL
+            LIMIT 1`;
       params = [email, phone];
     } else if (email) {
-      q = `SELECT u.id, u.username, u.email, u.phone, u.password_hash, u.role, u.first_name, u.last_name, u.display_name, u.is_verified, u.avatar_url, u.status, u.two_factor_enabled,
-               fp.category_id
-           FROM users u
-           LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
-           WHERE u.email=$1 AND u.deleted_at IS NULL
-           LIMIT 1`;
+      q = `SELECT u.id, u.username, u.email, u.phone, u.password_hash, u.role, u.first_name, u.last_name, u.display_name, u.is_verified, 
+                   COALESCE(u.avatar_url, fp.avatar_url, cp.avatar_url) as avatar_url, u.status, u.two_factor_enabled,
+                   fp.category_id
+            FROM users u
+            LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
+            LEFT JOIN client_profiles cp ON cp.user_id = u.id
+            WHERE u.email=$1 AND u.deleted_at IS NULL
+            LIMIT 1`;
       params = [email];
     } else {
-      q = `SELECT u.id, u.username, u.email, u.phone, u.password_hash, u.role, u.first_name, u.last_name, u.display_name, u.is_verified, u.avatar_url, u.status, u.two_factor_enabled,
-               fp.category_id
-           FROM users u
-           LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
-           WHERE u.phone=$1 AND u.deleted_at IS NULL
-           LIMIT 1`;
+      q = `SELECT u.id, u.username, u.email, u.phone, u.password_hash, u.role, u.first_name, u.last_name, u.display_name, u.is_verified, 
+                   COALESCE(u.avatar_url, fp.avatar_url, cp.avatar_url) as avatar_url, u.status, u.two_factor_enabled,
+                   fp.category_id
+            FROM users u
+            LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
+            LEFT JOIN client_profiles cp ON cp.user_id = u.id
+            WHERE u.phone=$1 AND u.deleted_at IS NULL
+            LIMIT 1`;
       params = [phone];
     }
 
@@ -453,9 +459,12 @@ const verifySignup = async (req, res) => {
     );
 
     const updatedUserQ = await pool.query(
-      `SELECT id, username, email, phone, role, first_name, last_name, display_name, is_verified, avatar_url
-       FROM users 
-       WHERE id = $1`,
+      `SELECT u.id, u.username, u.email, u.phone, u.role, u.first_name, u.last_name, u.display_name, u.is_verified, 
+              COALESCE(u.avatar_url, fp.avatar_url, cp.avatar_url) as avatar_url
+       FROM users u
+       LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
+       LEFT JOIN client_profiles cp ON cp.user_id = u.id
+       WHERE u.id = $1`,
       [userId]
     );
     const userRow = updatedUserQ.rows[0];
@@ -874,10 +883,12 @@ const googleLogin = async (req, res) => {
 
       // Check if user exists by email
       let userQ = await client.query(
-        `SELECT u.id, u.username, u.email, u.phone, u.role, u.status, u.first_name, u.last_name, u.display_name, u.is_verified, u.avatar_url,
+        `SELECT u.id, u.username, u.email, u.phone, u.role, u.status, u.first_name, u.last_name, u.display_name, u.is_verified, 
+                COALESCE(u.avatar_url, fp.avatar_url, cp.avatar_url) as avatar_url,
                 fp.category_id
          FROM users u
          LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
+         LEFT JOIN client_profiles cp ON cp.user_id = u.id
          WHERE u.email = $1 AND u.deleted_at IS NULL LIMIT 1`,
         [email]
       );

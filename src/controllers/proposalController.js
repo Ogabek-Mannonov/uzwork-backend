@@ -396,14 +396,15 @@ const getMyProposals = async (req, res) => {
         j.client_id as job_client_id,
         u_client.first_name as client_first_name,
         u_client.last_name as client_last_name,
-        u_client.avatar_url as client_avatar,
+        COALESCE(u_client.avatar_url, cp.avatar_url) as client_avatar,
         u_freelancer.first_name as freelancer_first_name,
         u_freelancer.last_name as freelancer_last_name,
-        u_freelancer.avatar_url as freelancer_avatar,
+        COALESCE(u_freelancer.avatar_url, f.avatar_url) as freelancer_avatar,
         f.title as freelancer_title
       FROM proposals p
       JOIN jobs j ON j.id = p.job_id
       JOIN users u_client ON u_client.id = j.client_id
+      LEFT JOIN client_profiles cp ON cp.user_id = u_client.id
       JOIN users u_freelancer ON u_freelancer.id = p.freelancer_id
       LEFT JOIN freelancer_profiles f ON f.user_id = u_freelancer.id
       ${whereClause}
@@ -488,9 +489,11 @@ const getProjectProposals = async (req, res) => {
         u.id as freelancer_id,
         u.first_name as freelancer_first_name,
         u.last_name as freelancer_last_name,
-        u.email as freelancer_email
+        u.email as freelancer_email,
+        COALESCE(u.avatar_url, fp.avatar_url) as freelancer_avatar
       FROM proposals p
       JOIN users u ON u.id = p.freelancer_id
+      LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
       ${whereClause}
       ORDER BY p.created_at DESC
       LIMIT $${i} OFFSET $${i + 1}

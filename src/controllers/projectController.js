@@ -262,6 +262,7 @@ const getProjects = async (req, res) => {
         u.first_name as client_first_name,
         u.last_name as client_last_name,
         u.username as client_username,
+        COALESCE(u.avatar_url, cp.avatar_url) as client_avatar,
         cp.spent_total as client_spent_total,
         cp.rating as client_rating,
         (SELECT COUNT(*)::int FROM proposals pr WHERE pr.job_id = j.id) as proposals_count
@@ -317,6 +318,7 @@ const getProjectById = async (req, res) => {
         u.last_name as client_last_name,
         u.username as client_username,
         u.created_at as client_member_since,
+        COALESCE(u.avatar_url, cp.avatar_url) as client_avatar,
         cp.rating as client_rating,
         cp.spent_total as client_spent_total,
         cp.location as client_location,
