@@ -727,6 +727,7 @@ const acceptProposal = async (req, res) => {
   try {
     const { id } = req.params; // proposal id
     const userId = req.user.id;
+    const io = req.app.get("io");
     const userRole = req.user.role;
     const isAdmin = userRole === "admin";
 
@@ -861,21 +862,38 @@ const acceptProposal = async (req, res) => {
       );
     }
 
-    // 6) chat create (sizdagi kabi)
-    const chatIns = await client.query(
-      `
-      INSERT INTO chats (contract_id, job_id, freelancer_id, status, created_at)
-      VALUES ($1, $2, $3, 'active', NOW())
-      ON CONFLICT (contract_id) DO NOTHING
-      RETURNING *
-      `,
-      [contract.id, row.job_id, row.freelancer_id]
+    // 6) chat check/create (Reusing existing chat between this pair)
+    const existingChatRes = await client.query(
+      `SELECT id FROM chats 
+       WHERE (job_id = $1 AND freelancer_id = $2)
+          OR (freelancer_id = $2 AND job_id IN (SELECT id FROM jobs WHERE client_id = $3))
+       ORDER BY created_at DESC LIMIT 1`,
+      [row.job_id, row.freelancer_id, row.client_id]
     );
 
-    const chat =
-      chatIns.rows[0] ||
-      (await client.query(`SELECT * FROM chats WHERE contract_id=$1 LIMIT 1`, [contract.id])).rows[0] ||
-      null;
+    let chat;
+    if (existingChatRes.rows.length > 0) {
+      const updateRes = await client.query(
+        `UPDATE chats SET contract_id = $1, job_id = $2, status = 'active' 
+         WHERE id = $3 
+         RETURNING *`,
+        [contract.id, row.job_id, existingChatRes.rows[0].id]
+      );
+      chat = updateRes.rows[0];
+      // Notify members that chat info (contract/job) has changed
+      io.to(`user_${row.client_id}`).emit('chat_info_updated', chat);
+      io.to(`user_${row.freelancer_id}`).emit('chat_info_updated', chat);
+    } else {
+      const chatIns = await client.query(
+        `INSERT INTO chats (contract_id, job_id, freelancer_id, status, created_at)
+         VALUES ($1, $2, $3, 'active', NOW())
+         RETURNING *`,
+        [contract.id, row.job_id, row.freelancer_id]
+      );
+      chat = chatIns.rows[0];
+      io.to(`user_${row.client_id}`).emit('chat_info_updated', chat);
+      io.to(`user_${row.freelancer_id}`).emit('chat_info_updated', chat);
+    }
 
     // 7) auto escrow hold (sizdagi logika qoldi)
     await ensureBalanceRow(client, row.client_id);
@@ -966,7 +984,6 @@ const acceptProposal = async (req, res) => {
     await client.query("COMMIT");
 
     // 8) Notify freelancer about contract and milestones (background)
-    const io = req.app.get("io");
     createNotification(io, {
       userId: row.freelancer_id,
       type: 'contract_started',

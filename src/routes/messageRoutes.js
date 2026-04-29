@@ -14,9 +14,14 @@ const {
   deleteMessage,
   updateChatStatus,
   findOrCreateChat,
+  cleanupEmptyChats,
+  listChatsDebug,
 } = require("../controllers/messageController");
 
 const { authenticate, authorize } = require("../middlewares/authMiddleware");
+
+router.get("/cleanup-empty", cleanupEmptyChats);
+router.get("/debug", listChatsDebug);
 
 // All routes require authentication
 router.use(authenticate);
