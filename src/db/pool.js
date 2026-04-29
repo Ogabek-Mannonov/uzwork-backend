@@ -110,6 +110,17 @@ pool.on("connect", async (client) => {
       ALTER TABLE transactions DROP CONSTRAINT IF EXISTS tx_currency_check;
       ALTER TABLE transactions ADD CONSTRAINT tx_currency_check 
         CHECK (currency IN ('UZS', 'USD', 'RUB'));
+
+      -- Skills jadvalini yaratish
+      CREATE TABLE IF NOT EXISTS skills (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        name VARCHAR(100) UNIQUE NOT NULL,
+        usage_count INT DEFAULT 0,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      );
+      
+      ALTER TABLE skills ADD COLUMN IF NOT EXISTS usage_count INT DEFAULT 0;
+      ALTER TABLE skills ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
     `);
     console.log("🚀 Database migratsiyasi muvaffaqiyatli yakunlandi.");
   } catch (e) {

@@ -43,6 +43,7 @@ const uploadRoutes = require("./routes/uploadRoutes");
 const disputeRoutes = require("./routes/disputeRoutes");
 const milestoneRoutes = require("./routes/milestoneRoutes");
 const landingRoutes = require("./routes/landingRoutes");
+const skillRoutes = require("./routes/skillRoutes");
 
 const localeMiddleware = require("./middlewares/localeMiddleware");
 
@@ -384,6 +385,8 @@ app.use("/files", fileRoutes);
 app.use("/upload", uploadRoutes);
 app.use("/disputes", disputeRoutes);
 app.use("/api/landing", landingRoutes);
+app.use("/skills", skillRoutes);
+app.use("/api/skills", skillRoutes);
 
 app.use((req, res) => {
   res.status(404).json({

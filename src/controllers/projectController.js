@@ -23,6 +23,24 @@ const safeJsonToString = (v, fallback = []) => {
   return JSON.stringify(v);
 };
 
+// Async function to organically grow skills database
+const upsertSkillsToDB = async (skillsArr) => {
+  if (!skillsArr || !skillsArr.length) return;
+  try {
+    for (const skill of skillsArr) {
+      const s = skill.trim();
+      if (!s) continue;
+      await pool.query(`
+        INSERT INTO skills (name, usage_count) 
+        VALUES ($1, 1)
+        ON CONFLICT (name) DO UPDATE SET usage_count = skills.usage_count + 1
+      `, [s]);
+    }
+  } catch (err) {
+    console.error('Error upserting skills:', err.message);
+  }
+};
+
 /**
  * POST /projects
  * Create job (client only)
@@ -140,9 +158,12 @@ const createProject = async (req, res) => {
       }
     })();
 
+    // Organically grow skills DB
+    upsertSkillsToDB(skillsArr).catch(() => {});
+
     return res.status(201).json({
       success: true,
-      message: 'Loyiha muvaffaqiyatli yaratildi!',
+      message: finalStatus === 'draft' ? "Loyiha qoralama sifatida saqlandi." : "Loyiha muvaffaqiyatli yaratildi.",
       data: { project }
     });
   } catch (error) {
@@ -395,6 +416,9 @@ const updateProject = async (req, res) => {
       attachments,
       visibility,
       status, 
+      category,
+      scope,
+      duration,
       is_boosted, // admin only (ixtiyoriy)
       boosted_until // admin only
     } = req.body;
@@ -430,9 +454,10 @@ const updateProject = async (req, res) => {
 
     if (visibility !== undefined) add(`visibility = $$`, visibility);
 
+    let skillsArr = [];
     if (required_skills !== undefined || skills !== undefined) {
-      const arr = normalizeToArray(required_skills ?? skills);
-      add(`required_skills = $$::jsonb`, JSON.stringify(arr));
+      skillsArr = normalizeToArray(required_skills ?? skills);
+      add(`required_skills = $$::jsonb`, JSON.stringify(skillsArr));
     }
 
     if (attachments !== undefined) {
@@ -470,6 +495,11 @@ const updateProject = async (req, res) => {
     `;
 
     const result = await pool.query(q, values);
+    
+    // Organically grow skills DB
+    if (skillsArr.length > 0) {
+      upsertSkillsToDB(skillsArr).catch(() => {});
+    }
 
     return res.json({
       success: true,
@@ -603,7 +633,7 @@ const getMyProjects = async (req, res) => {
         JOIN jobs j ON j.id = pr.job_id
         WHERE pr.freelancer_id = $1
           AND j.deleted_at IS NULL
-          ${status ? `AND j.status = $2` : ''}
+          ${status ? `AND status = $2` : ''}
       `;
       countParams = status ? [userId, status] : [userId];
     }
@@ -827,10 +857,16 @@ const boostProject = async (req, res) => {
           boosted_until = NOW() + INTERVAL '7 days',
           updated_at = NOW()
       WHERE id = $1
-      RETURNING id, is_boosted, boosted_until
+      RETURNING id, is_boosted, boosted_until, required_skills
       `,
       [id]
     );
+
+    // Organically grow skills DB
+    const skills = updated.rows[0].required_skills;
+    if (skills) {
+      upsertSkillsToDB(skills).catch(() => {});
+    }
 
     return res.json({
       success: true,
