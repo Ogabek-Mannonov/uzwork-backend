@@ -52,7 +52,7 @@ async function lockFromAvailableToLocked(client, { userId, amount, currency = "U
 
   const available = Number(balR.rows[0]?.available_balance ?? 0);
   if (available < amount) {
-    const err = new Error("Insufficient available balance");
+    const err = new Error("wallet.insufficientBalance");
     err.statusCode = 400;
     throw err;
   }
@@ -96,7 +96,7 @@ async function refundLockedToAvailable(client, { userId, amount, currency = "UZS
   );
   const locked = Number(balR.rows[0]?.locked_balance ?? 0);
   if (locked < amount) {
-    const err = new Error("Locked balance not enough to refund");
+    const err = new Error("wallet.lockedBalanceLow");
     err.statusCode = 400;
     throw err;
   }
@@ -156,7 +156,7 @@ async function consumeLockedToPlatform(client, {
   );
   const locked = Number(balR.rows[0]?.locked_balance ?? 0);
   if (locked < amount) {
-    const err = new Error("Locked balance not enough to consume");
+    const err = new Error("wallet.lockedBalanceLow");
     err.statusCode = 400;
     throw err;
   }

@@ -35,7 +35,7 @@ const createProposal = async (req, res) => {
     if (userRole !== "freelancer") {
       return res.status(403).json({
         success: false,
-        message: "Faqat freelancerlar taklif yaratishi mumkin.",
+        message: "proposals.error.freelancerOnly",
       });
     }
 
@@ -44,7 +44,7 @@ const createProposal = async (req, res) => {
     if (!job_id || !cover_letter || proposed_price == null || proposed_duration == null) {
       return res.status(400).json({
         success: false,
-        message: "job_id, cover_letter, proposed_price va proposed_duration majburiy.",
+        message: "proposals.error.missingFields",
       });
     }
 
@@ -58,7 +58,7 @@ const createProposal = async (req, res) => {
 
     if (jobCheck.rows.length === 0 || jobCheck.rows[0].deleted_at) {
       await client.query("ROLLBACK");
-      return res.status(404).json({ success: false, message: "Loyiha topilmadi." });
+      return res.status(404).json({ success: false, message: "job.error.notFound" });
     }
 
     const job = jobCheck.rows[0];
@@ -68,7 +68,7 @@ const createProposal = async (req, res) => {
     if (job.client_id === userId) {
       return res.status(400).json({
         success: false,
-        message: "O'zingizning loyihangizga taklif yubora olmaysiz.",
+        message: "proposals.error.ownJob",
       });
     }
 
@@ -76,7 +76,7 @@ const createProposal = async (req, res) => {
       await client.query("ROLLBACK");
       return res.status(400).json({
         success: false,
-        message: 'Faqat "open" statusdagi loyihalarga taklif yuborish mumkin.',
+        message: "proposals.error.jobNotOpen",
       });
     }
 
@@ -125,7 +125,7 @@ const createProposal = async (req, res) => {
         await client.query("ROLLBACK");
         return res.status(409).json({
           success: false,
-          message: "Siz bu loyihaga allaqachon taklif yuborgansiz.",
+          message: "proposals.error.alreadySubmitted",
         });
       }
     } else {
@@ -185,7 +185,7 @@ const createProposal = async (req, res) => {
 
     return res.status(201).json({
       success: true,
-      message: "Taklif yuborildi! Deposit walletdan vaqtincha band qilindi.",
+      message: "proposals.success.created",
       data: { proposal },
     });
   } catch (error) {
