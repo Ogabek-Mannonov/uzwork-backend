@@ -437,6 +437,13 @@ const getChats = async (req, res) => {
             LIMIT 1
           ) AS last_message_content,
           (
+            SELECT m.type
+            FROM messages m
+            WHERE m.chat_id = c.id AND m.deleted_at IS NULL
+            ORDER BY m.created_at DESC
+            LIMIT 1
+          ) AS last_message_type,
+          (
             SELECT COUNT(*)
             FROM messages m
             WHERE m.chat_id = c.id
@@ -476,6 +483,13 @@ const getChats = async (req, res) => {
             ORDER BY m.created_at DESC
             LIMIT 1
           ) AS last_message_content,
+          (
+            SELECT m.type
+            FROM messages m
+            WHERE m.chat_id = c.id AND m.deleted_at IS NULL
+            ORDER BY m.created_at DESC
+            LIMIT 1
+          ) AS last_message_type,
           (
             SELECT COUNT(*)
             FROM messages m

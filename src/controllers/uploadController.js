@@ -24,22 +24,35 @@ const imagesDir = path.join(process.cwd(), "uploads", "images");
 
 // Allowed formats
 const ALLOWED_AUDIO_EXT = new Set([".webm", ".ogg", ".mp3", ".wav", ".m4a"]);
-const ALLOWED_DOC_EXT = new Set([".pdf", ".doc", ".docx"]);
-const ALLOWED_IMG_EXT = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp"]);
+const ALLOWED_DOC_EXT = new Set([
+  ".pdf", ".doc", ".docx", ".txt", ".xls", ".xlsx", ".ppt", ".pptx", 
+  ".zip", ".rar", ".7z", ".tar", ".gz", 
+  ".mp4", ".mov", ".avi", ".mkv", ".webm",
+  ".csv", ".json", ".xml"
+]);
+const ALLOWED_IMG_EXT = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".bmp"]);
 
 // Storage
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
-    if (ALLOWED_DOC_EXT.has(ext)) return cb(null, docsDir);
-    if (ALLOWED_IMG_EXT.has(ext)) return cb(null, imagesDir);
-    cb(null, voiceDir);
+    const mimetype = (file.mimetype || "").toLowerCase();
+    
+    if (ALLOWED_IMG_EXT.has(ext) || mimetype.startsWith("image/")) return cb(null, imagesDir);
+    if (ALLOWED_AUDIO_EXT.has(ext) || mimetype.startsWith("audio/")) return cb(null, voiceDir);
+    
+    // Everything else goes to documents
+    cb(null, docsDir);
   },
   filename: (req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
-    let prefix = "voice";
-    if (ALLOWED_DOC_EXT.has(ext)) prefix = "doc";
-    if (ALLOWED_IMG_EXT.has(ext)) prefix = "img";
+    const mimetype = (file.mimetype || "").toLowerCase();
+    
+    let prefix = "file";
+    if (ALLOWED_IMG_EXT.has(ext) || mimetype.startsWith("image/")) prefix = "img";
+    else if (ALLOWED_AUDIO_EXT.has(ext) || mimetype.startsWith("audio/")) prefix = "voice";
+    else if (ALLOWED_DOC_EXT.has(ext)) prefix = "doc";
+    
     const uniqueName = `${prefix}-${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`;
     cb(null, uniqueName);
   },
@@ -47,23 +60,14 @@ const storage = multer.diskStorage({
 
 // File filter
 function fileFilter(req, file, cb) {
-  const ext = path.extname(file.originalname).toLowerCase();
-  const mimetype = (file.mimetype || "").toLowerCase();
-
-  const isAudio = ALLOWED_AUDIO_EXT.has(ext) || mimetype.startsWith("audio/") || mimetype === "video/webm";
-  const isDoc = ALLOWED_DOC_EXT.has(ext) ||
-    ["application/pdf", "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"].includes(mimetype);
-  const isImg = ALLOWED_IMG_EXT.has(ext) || mimetype.startsWith("image/");
-
-  if (isAudio || isDoc || isImg) return cb(null, true);
-
-  return cb(new Error("Faqat audio, hujjat yoki rasm fayllar ruxsat."));
+  // Allow all for now
+  return cb(null, true);
 }
 
 
 const upload = multer({
   storage,
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB (Project submissions might be large)
   fileFilter,
 });
 
