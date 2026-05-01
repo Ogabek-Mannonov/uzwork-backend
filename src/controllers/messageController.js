@@ -925,14 +925,15 @@ const startVideoCall = async (req, res) => {
  */
 const editMessage = async (req, res) => {
   try {
-    const { messageId } = req.params;
+    let { messageId } = req.params;
+    messageId = messageId?.trim();
     if (!isUuid(messageId)) {
-      return res.status(400).json({ success: false, message: "Noto'g'ri message ID" });
+      return res.status(400).json({ success: false, message: "chat.invalidId" });
     }
 
     const { content } = req.body;
     if (!content || !content.trim()) {
-      return res.status(400).json({ success: false, message: "Yangi matn kiriting" });
+      return res.status(400).json({ success: false, message: "chat.typeMsgPlaceholder" });
     }
 
     const msgRes = await pool.query(
@@ -943,7 +944,7 @@ const editMessage = async (req, res) => {
     );
 
     if (msgRes.rows.length === 0) {
-      return res.status(404).json({ success: false, message: "Xabar topilmadi" });
+      return res.status(404).json({ success: false, message: "chat.messageNotFound" });
     }
 
     const msg = msgRes.rows[0];
@@ -986,7 +987,7 @@ const editMessage = async (req, res) => {
 
     return res.json({
       success: true,
-      message: "Xabar o'zgartirildi",
+      message: "chat.editSuccess",
       data: { message: updatedMessage },
     });
   } catch (error) {
@@ -1005,9 +1006,10 @@ const editMessage = async (req, res) => {
  */
 const deleteMessage = async (req, res) => {
   try {
-    const { messageId } = req.params;
+    let { messageId } = req.params;
+    messageId = messageId?.trim();
     if (!isUuid(messageId)) {
-      return res.status(400).json({ success: false, message: "Noto'g'ri message ID" });
+      return res.status(400).json({ success: false, message: "chat.invalidId" });
     }
 
     const msgRes = await pool.query(
@@ -1018,19 +1020,19 @@ const deleteMessage = async (req, res) => {
     );
 
     if (msgRes.rows.length === 0) {
-      return res.status(404).json({ success: false, message: "Xabar topilmadi" });
+      return res.status(404).json({ success: false, message: "chat.messageNotFound" });
     }
 
     const msg = msgRes.rows[0];
     if (msg.deleted_at) {
-      return res.status(200).json({ success: true, message: "Xabar allaqachon o'chirilgan" });
+      return res.status(400).json({ success: false, message: "chat.alreadyDeleted" });
     }
 
     await ensureChatMemberOrAdmin(msg.chat_id, req.user);
 
     const isAdmin = req.user.role === "admin";
-    if (msg.sender_id !== req.user.id && !isAdmin) {
-      return res.status(403).json({ success: false, message: "Bu xabarni o'chirishga ruxsatingiz yo'q" });
+    if (msg.sender_id !== req.user.id) {
+      return res.status(403).json({ success: false, message: "chat.noPermissionToDelete" });
     }
 
     await pool.query(
