@@ -15,6 +15,16 @@ function startCron() {
     }
   });
 
+  // Har 6 soatda valyuta kurslarini yangilash
+  const { syncRates } = require("./services/currencyService");
+  cron.schedule("0 */6 * * *", async () => {
+    console.log("[cron] Syncing currency rates...");
+    await syncRates();
+  });
+
+  // Server ishga tushganda bir marta ishlatish
+  syncRates();
+
   console.log("[cron] started");
 }
 

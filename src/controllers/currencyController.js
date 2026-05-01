@@ -37,9 +37,10 @@ const getRates = async (req, res) => {
 
     // If no rates in DB, return default rates
     if (result.rows.length === 0) {
+      const systemRate = Number(process.env.USD_TO_UZS_RATE || 12600);
       const defaultRates = {
-        UZS: { USD: 0.00008, RUB: 0.007 },
-        USD: { UZS: 12500, RUB: 90 },
+        UZS: { USD: 1 / systemRate, RUB: 0.007 },
+        USD: { UZS: systemRate, RUB: 90 },
         RUB: { UZS: 140, USD: 0.011 }
       };
 

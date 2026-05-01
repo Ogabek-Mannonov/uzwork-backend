@@ -797,13 +797,42 @@ const acceptProposal = async (req, res) => {
       return res.status(409).json({ success: false, message: "Bu job uchun active/disputed contract bor." });
     }
 
-    const totalAmount = Number(row.proposed_price) || 0;
-    if (totalAmount <= 0) {
+    // Real-vaqt kursini xizmatdan olamiz (cache/DB or fallback)
+    const { getLatestRate } = require("../services/currencyService");
+    const USD_TO_UZS = await getLatestRate('USD', 'UZS');
+    
+    const totalAmountUSD = Number(row.proposed_price) || 0;
+    if (totalAmountUSD <= 0) {
       await client.query("ROLLBACK");
-      return res.status(400).json({ success: false, message: "proposed_price noto‘g‘ri." });
+      return res.status(400).json({ success: false, message: "proposed_price noto'g'ri." });
+    }
+    // Escrow uchun UZS ekvivalenti (balance check va ushlab qolish uchun)
+    const totalAmount = Math.round(totalAmountUSD * USD_TO_UZS);
+
+    // ✅ 3) Balance check — contract yaratilishidan OLDIN!
+    await ensureBalanceRow(client, row.client_id);
+    const balR = await client.query(
+      `SELECT available_balance, escrow_balance FROM user_balances WHERE user_id=$1 FOR UPDATE`,
+      [row.client_id]
+    );
+    const available = Number(balR.rows[0]?.available_balance ?? 0);
+    
+    // Kurs farqi va yaxlitlashdagi xatoliklar uchun kichik bag'rikenglik (tolerance)
+    // Masalan, 1% yoki $2 atrofida (25,000 UZS)
+    const tolerance = 25000; 
+    
+    if (available + tolerance < totalAmount) {
+      await client.query("ROLLBACK");
+      return res.status(400).json({
+        success: false,
+        message: `Balansda yetarli mablag' yo'q. Kerak: ${totalAmount.toLocaleString()} UZS (~$${totalAmountUSD}), mavjud: ${available.toLocaleString()} UZS. Avval hisob to'ldiring.`,
+        required_uzs: totalAmount,
+        available_uzs: available,
+        required_usd: totalAmountUSD,
+      });
     }
 
-    // 3) Proposal ACCEPT + boshqalar REJECT (LOCK bo‘lishi uchun FOR UPDATE)
+    // 4) Proposal ACCEPT + boshqalar REJECT (LOCK bo'lishi uchun FOR UPDATE)
     await client.query(`UPDATE proposals SET status='accepted', updated_at=NOW() WHERE id=$1`, [id]);
 
     // rejected list (kimlarga refund bo'ladi)
@@ -895,19 +924,7 @@ const acceptProposal = async (req, res) => {
       io.to(`user_${row.freelancer_id}`).emit('chat_info_updated', chat);
     }
 
-    // 7) auto escrow hold (sizdagi logika qoldi)
-    await ensureBalanceRow(client, row.client_id);
-
-    const balR = await client.query(
-      `SELECT available_balance, escrow_balance FROM user_balances WHERE user_id=$1 FOR UPDATE`,
-      [row.client_id]
-    );
-    const available = Number(balR.rows[0]?.available_balance ?? 0);
-    if (available < totalAmount) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({ success: false, message: "Balansda yetarli mablag' yo'q. Avval deposit qiling." });
-    }
-
+    // 7) auto escrow hold — balance allaqachon yuqorida tekshirildi, endi ushlab qolamiz
     await client.query(
       `
       UPDATE user_balances
@@ -931,6 +948,8 @@ const acceptProposal = async (req, res) => {
           contract_id: String(contract.id),
           job_id: String(row.job_id),
           proposal_id: String(id),
+          amount_usd: totalAmountUSD,
+          usd_to_uzs_rate: USD_TO_UZS,
           reason: "auto_hold_on_accept",
         }),
         row.job_id,
