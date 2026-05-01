@@ -46,16 +46,15 @@ const getRates = async (req, res) => {
     console.error('Get rates error (falling back to default):', error);
     
     const systemRate = Number(process.env.USD_TO_UZS_RATE || 12700);
-    const defaultRates = {
-      UZS: { USD: 1 / systemRate, RUB: 0.0078 },
-      USD: { UZS: systemRate, RUB: 93 },
-      RUB: { UZS: 137, USD: 0.0108 }
-    };
+    const fallbackArray = [
+      { to_currency: 'UZS', rate: systemRate },
+      { to_currency: 'RUB', rate: 93 }
+    ];
     
     res.json({
       success: true,
       data: {
-        rates: defaultRates[req.query.from || 'USD'] || defaultRates['USD'],
+        rates: fallbackArray,
         source: 'default',
         note: 'Standart kurslar ishlatilmoqda'
       }

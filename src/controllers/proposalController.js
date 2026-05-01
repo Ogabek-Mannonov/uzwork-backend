@@ -880,22 +880,22 @@ const acceptProposal = async (req, res) => {
     // 4) Job -> in_progress
     await client.query(`UPDATE jobs SET status='in_progress', updated_at=NOW() WHERE id=$1`, [row.job_id]);
 
-    // 5) Contract create (sizdagi kabi)
+    // 5) Contract create (Original currency amount and Locked exchange rate)
     const contractRes = await client.query(
       `
       INSERT INTO contracts (
         job_id, freelancer_id, client_id,
         total_amount, platform_fee, currency,
-        status, signed_at, created_at, updated_at
+        status, exchange_rate, signed_at, created_at, updated_at
       )
-      VALUES ($1,$2,$3,$4,$5,$6,'active',NOW(),NOW(),NOW())
+      VALUES ($1,$2,$3,$4,$5,$6,'active',$7,NOW(),NOW(),NOW())
       RETURNING *
       `,
-      [row.job_id, row.freelancer_id, row.client_id, totalAmount, 0, currency]
+      [row.job_id, row.freelancer_id, row.client_id, rawPrice, 0, currency, USD_TO_UZS]
     );
     const contract = contractRes.rows[0];
 
-    // 5.1) milestone create
+    // 5.1) milestone create (Original amount)
     const proposalMilestones = row.proposal_milestones;
     
     if (Array.isArray(proposalMilestones) && proposalMilestones.length > 0) {
@@ -912,7 +912,7 @@ const acceptProposal = async (req, res) => {
       await client.query(
         `INSERT INTO milestones (contract_id, title, amount, status, created_at)
          VALUES ($1, $2, $3, 'pending', NOW())`,
-        [contract.id, "Full project", totalAmount]
+        [contract.id, "Full project", rawPrice]
       );
     }
 

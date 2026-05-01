@@ -176,6 +176,9 @@ pool.on("connect", async (client) => {
         source VARCHAR(50),
         created_at TIMESTAMP DEFAULT NOW()
       );
+
+      ALTER TABLE contracts ADD COLUMN IF NOT EXISTS exchange_rate DECIMAL(18, 6) DEFAULT 1;
+      UPDATE contracts SET exchange_rate = 12200 WHERE exchange_rate = 1 OR exchange_rate IS NULL OR exchange_rate = 12700;
     `);
     console.log("🚀 Database migratsiyasi muvaffaqiyatli yakunlandi.");
   } catch (e) {

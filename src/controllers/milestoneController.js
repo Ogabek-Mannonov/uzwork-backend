@@ -131,6 +131,7 @@ const approveMilestone = async (req, res) => {
       SELECT
         m.id, m.contract_id, m.status, m.amount, m.title AS milestone_name,
         c.freelancer_id, c.client_id, c.job_id, c.status AS contract_status,
+        c.currency AS contract_currency, c.exchange_rate,
         j.title AS job_title
       FROM milestones m
       JOIN contracts c ON c.id = m.contract_id
@@ -158,7 +159,13 @@ const approveMilestone = async (req, res) => {
       return res.status(400).json({ success: false, message: "Faqat topshirilgan (submitted) ishni tasdiqlash mumkin." });
     }
 
-    const amt = Number(m.amount || 0);
+    const rawAmt = Number(m.amount || 0);
+    const rate = Number(m.exchange_rate || 1);
+    const isUzs = m.contract_currency === 'UZS' || m.contract_currency === 'uzs';
+    
+    // Convert to UZS for internal balance deduction
+    const amt = isUzs ? rawAmt : Math.round(rawAmt * rate);
+    
     const fee = Math.max(0, Math.round((amt * PLATFORM_FEE_PCT) / 100));
     const net = Math.max(0, amt - fee);
 
@@ -353,7 +360,8 @@ const releaseMilestone = async (req, res) => {
       `
       SELECT
         m.id, m.contract_id, m.status, m.amount,
-        c.freelancer_id, c.client_id, c.job_id, c.status AS contract_status
+        c.freelancer_id, c.client_id, c.job_id, c.status AS contract_status,
+        c.currency AS contract_currency, c.exchange_rate
       FROM milestones m
       JOIN contracts c ON c.id = m.contract_id
       WHERE m.id = $1
@@ -384,7 +392,11 @@ const releaseMilestone = async (req, res) => {
       return res.status(400).json({ success: false, message: "Faqat approved milestone release qilinadi." });
     }
 
-    const amt = Number(m.amount || 0);
+    const rawAmt = Number(m.amount || 0);
+    const rate = Number(m.exchange_rate || 1);
+    const isUzs = m.contract_currency === 'UZS' || m.contract_currency === 'uzs';
+    const amt = isUzs ? rawAmt : Math.round(rawAmt * rate);
+
     if (!amt || amt <= 0) {
       await client.query("ROLLBACK");
       return res.status(400).json({ success: false, message: "Milestone amount noto‘g‘ri." });
