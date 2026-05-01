@@ -71,6 +71,9 @@ const syncRates = async () => {
  */
 const getLatestRate = async (from = 'USD', to = 'UZS') => {
   try {
+    if (from === to) return 1;
+
+    // Try exact match
     const result = await pool.query(
       `SELECT rate FROM currency_rates 
        WHERE from_currency = $1 AND to_currency = $2 
@@ -82,15 +85,30 @@ const getLatestRate = async (from = 'USD', to = 'UZS') => {
       return Number(result.rows[0].rate);
     }
 
-    // Fallback to .env
-    if (from === 'USD' && to === 'UZS') {
-      return Number(process.env.USD_TO_UZS_RATE || 12600);
+    // Try inverse match
+    const inv = await pool.query(
+      `SELECT rate FROM currency_rates 
+       WHERE from_currency = $2 AND to_currency = $1 
+       ORDER BY created_at DESC LIMIT 1`,
+      [from, to]
+    );
+
+    if (inv.rows.length > 0) {
+      return 1 / Number(inv.rows[0].rate);
     }
+
+    // Fallbacks
+    const fallbackRate = Number(process.env.USD_TO_UZS_RATE || 12600);
+    if (from === 'USD' && to === 'UZS') return fallbackRate;
+    if (from === 'UZS' && to === 'USD') return 1 / fallbackRate;
     
     return 1;
   } catch (error) {
     console.error('[currency] Error getting rate:', error.message);
-    return Number(process.env.USD_TO_UZS_RATE || 12600);
+    const fallbackRate = Number(process.env.USD_TO_UZS_RATE || 12600);
+    if (from === 'USD' && to === 'UZS') return fallbackRate;
+    if (from === 'UZS' && to === 'USD') return 1 / fallbackRate;
+    return 1;
   }
 };
 

@@ -123,6 +123,59 @@ pool.on("connect", async (client) => {
       
       ALTER TABLE skills ADD COLUMN IF NOT EXISTS usage_count INT DEFAULT 0;
       ALTER TABLE skills ADD COLUMN IF NOT EXISTS created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
+
+      -- BUG FIX: Correct the inflated 6.3B UZS deposit to 500k UZS
+      DO $$
+      DECLARE
+        bad_tx RECORD;
+        diff DECIMAL;
+      BEGIN
+        FOR bad_tx IN SELECT * FROM transactions WHERE type = 'deposit' AND amount = 6300000000 LOOP
+          diff := 6300000000 - 500000;
+          
+          -- Update transaction amount
+          UPDATE transactions SET amount = 500000 WHERE id = bad_tx.id;
+          
+          -- Deduct difference from user balance
+          UPDATE user_balances 
+          SET available_balance = available_balance - diff
+          WHERE user_id = bad_tx.user_id;
+          
+          RAISE NOTICE 'Fixed inflated deposit for user %', bad_tx.user_id;
+        END LOOP;
+
+        -- BUG FIX 2: Correct the inflated 6.3B UZS escrow_hold to 500k UZS
+        FOR bad_tx IN SELECT * FROM transactions WHERE type = 'escrow_hold' AND amount = 6300000000 LOOP
+          diff := 6300000000 - 500000;
+          
+          -- Update transaction amount
+          UPDATE transactions SET amount = 500000 WHERE id = bad_tx.id;
+          
+          -- Fix balances (Move the excess back from escrow to available)
+          UPDATE user_balances 
+          SET available_balance = available_balance + diff,
+              escrow_balance = escrow_balance - diff
+          WHERE user_id = bad_tx.user_id;
+          
+          -- Update contract amount if linked
+          IF bad_tx.contract_id IS NOT NULL THEN
+            UPDATE contracts SET total_amount = 500000 WHERE id = bad_tx.contract_id;
+            -- Update milestones
+            UPDATE milestones SET amount = 500000 WHERE contract_id = bad_tx.contract_id;
+          END IF;
+          
+          RAISE NOTICE 'Fixed inflated escrow_hold for user %', bad_tx.user_id;
+        END LOOP;
+      END $$;
+
+      CREATE TABLE IF NOT EXISTS currency_rates (
+        id SERIAL PRIMARY KEY,
+        from_currency VARCHAR(10) NOT NULL,
+        to_currency VARCHAR(10) NOT NULL,
+        rate DECIMAL(18, 6) NOT NULL,
+        source VARCHAR(50),
+        created_at TIMESTAMP DEFAULT NOW()
+      );
     `);
     console.log("🚀 Database migratsiyasi muvaffaqiyatli yakunlandi.");
   } catch (e) {

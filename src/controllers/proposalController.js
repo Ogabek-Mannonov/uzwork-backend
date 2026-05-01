@@ -1,8 +1,6 @@
 const pool = require("../db/pool");
 
-// Auto-migration: ensure currency column exists
-pool.query("ALTER TABLE proposals ADD COLUMN IF NOT EXISTS currency VARCHAR(10) DEFAULT 'USD'")
-  .catch(err => console.error("Migration error (proposals.currency):", err));
+// Currency handling helpers are imported from services as needed
 
 /**
  * POST /proposals
@@ -54,7 +52,7 @@ const createProposal = async (req, res) => {
 
     // Job mavjudmi + openmi + deleted emasmi (LOCK emas, lekin ok)
     const jobCheck = await client.query(
-      "SELECT id, client_id, title, status, deleted_at FROM jobs WHERE id = $1",
+      "SELECT id, client_id, title, status, deleted_at, currency FROM jobs WHERE id = $1",
       [job_id]
     );
 
@@ -64,6 +62,8 @@ const createProposal = async (req, res) => {
     }
 
     const job = jobCheck.rows[0];
+    const jobCurrency = job.currency || 'UZS';
+    const finalCurrency = currency || jobCurrency;
 
     if (job.client_id === userId) {
       return res.status(400).json({
@@ -116,7 +116,7 @@ const createProposal = async (req, res) => {
             DEPOSIT_AMOUNT > 0 ? new Date() : null,
             JSON.stringify(milestones),
             JSON.stringify(files),
-            currency || 'USD',
+            finalCurrency,
             existingProposal.id
           ]
         );
@@ -150,7 +150,7 @@ const createProposal = async (req, res) => {
           DEPOSIT_AMOUNT > 0 ? new Date() : null,
           JSON.stringify(milestones),
           JSON.stringify(files),
-          currency || 'USD'
+          finalCurrency
         ]
       );
       proposal = result.rows[0];
@@ -819,16 +819,18 @@ const acceptProposal = async (req, res) => {
 
     let totalAmount;
     let totalAmountUSD;
+    let USD_TO_UZS;
+
+    const { getLatestRate } = require("../services/currencyService");
 
     if (currency === 'UZS') {
       totalAmount = rawPrice;
-      const { getLatestRate } = require("../services/currencyService");
       const UZS_TO_USD = await getLatestRate('UZS', 'USD');
+      USD_TO_UZS = await getLatestRate('USD', 'UZS');
       totalAmountUSD = rawPrice * UZS_TO_USD;
     } else {
       totalAmountUSD = rawPrice;
-      const { getLatestRate } = require("../services/currencyService");
-      const USD_TO_UZS = await getLatestRate('USD', 'UZS');
+      USD_TO_UZS = await getLatestRate('USD', 'UZS');
       totalAmount = Math.round(totalAmountUSD * USD_TO_UZS);
     }
 
@@ -848,7 +850,7 @@ const acceptProposal = async (req, res) => {
       await client.query("ROLLBACK");
       return res.status(400).json({
         success: false,
-        message: `Balansda yetarli mablag' yo'q. Kerak: ${totalAmount.toLocaleString()} UZS (~$${totalAmountUSD}), mavjud: ${available.toLocaleString()} UZS. Avval hisob to'ldiring.`,
+        message: `Balansda yetarli mablag' yo'q. Kerak: ${totalAmount.toLocaleString()} UZS (~$${totalAmountUSD.toFixed(2)}), mavjud: ${available.toLocaleString()} UZS. Avval hisob to'ldiring.`,
         required_uzs: totalAmount,
         available_uzs: available,
         required_usd: totalAmountUSD,
@@ -883,13 +885,13 @@ const acceptProposal = async (req, res) => {
       `
       INSERT INTO contracts (
         job_id, freelancer_id, client_id,
-        total_amount, platform_fee,
+        total_amount, platform_fee, currency,
         status, signed_at, created_at, updated_at
       )
-      VALUES ($1,$2,$3,$4,$5,'active',NOW(),NOW(),NOW())
+      VALUES ($1,$2,$3,$4,$5,$6,'active',NOW(),NOW(),NOW())
       RETURNING *
       `,
-      [row.job_id, row.freelancer_id, row.client_id, totalAmount, 0]
+      [row.job_id, row.freelancer_id, row.client_id, totalAmount, 0, currency]
     );
     const contract = contractRes.rows[0];
 
