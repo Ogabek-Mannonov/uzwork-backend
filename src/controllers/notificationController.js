@@ -92,6 +92,36 @@ const markAsRead = async (req, res) => {
       io.to(`user_${userId}`).emit('notificationRead', { id, type: notification.type });
     }
 
+    // Automatically mark proposal as viewed if it's a proposal notification
+    if (['proposal_received', 'job_invitation', 'proposal_accepted', 'proposal_rejected'].includes(notification.type)) {
+      try {
+        const data = typeof notification.data === 'string' ? JSON.parse(notification.data) : notification.data;
+        let proposalId = data?.related_id || data?.proposal_id;
+        
+        if (notification.type === 'job_invitation') {
+          // For invitations, related_id is job_id. Find the proposal for this freelancer.
+          const pRes = await pool.query(
+            'SELECT id FROM proposals WHERE job_id = $1 AND freelancer_id = $2',
+            [proposalId, userId]
+          );
+          proposalId = pRes.rows[0]?.id;
+        }
+
+        if (proposalId) {
+          await pool.query(
+            'UPDATE proposals SET viewed_at = NOW() WHERE id = $1 AND viewed_at IS NULL',
+            [proposalId]
+          );
+          // Emit unread update to refresh counts everywhere
+          if (io) {
+            io.to(`user_${userId}`).emit('unreadUpdate');
+          }
+        }
+      } catch (err) {
+        console.error('Error auto-marking proposal as viewed:', err);
+      }
+    }
+
     res.json({
       success: true,
       message: 'Bildirishnoma o\'qilgan deb belgilandi.'
@@ -198,8 +228,27 @@ const markAllAsReadByType = async (req, res) => {
     let params = [userId, `${typePrefix}%`];
 
     // Agar proposal bo'lsa, job_invitation ni ham o'qilgan deb belgilaymiz
-    if (typePrefix === 'proposal') {
+    if (typePrefix.startsWith('proposal')) {
       query = "UPDATE notifications SET is_read = TRUE WHERE user_id = $1 AND is_read = FALSE AND (type LIKE $2 OR type = 'job_invitation')";
+      
+      // Also mark all related proposals as viewed
+      try {
+        if (req.user.role === 'client') {
+          await pool.query(
+            `UPDATE proposals p SET viewed_at = NOW() 
+             FROM jobs j 
+             WHERE p.job_id = j.id AND j.client_id = $1 AND p.viewed_at IS NULL`,
+            [userId]
+          );
+        } else {
+          await pool.query(
+            'UPDATE proposals SET viewed_at = NOW() WHERE freelancer_id = $1 AND viewed_at IS NULL',
+            [userId]
+          );
+        }
+      } catch (err) {
+        console.error('Error auto-marking all proposals as viewed:', err);
+      }
     }
 
     await pool.query(query, params);
@@ -207,6 +256,7 @@ const markAllAsReadByType = async (req, res) => {
     const io = req.app.get("io");
     if (io) {
       io.to(`user_${userId}`).emit('notificationsAllReadByType', { typePrefix });
+      io.to(`user_${userId}`).emit('unreadUpdate');
     }
 
     res.json({
