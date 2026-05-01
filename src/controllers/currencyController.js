@@ -35,25 +35,6 @@ const getRates = async (req, res) => {
 
     const result = await pool.query(query, params);
 
-    // If no rates in DB, return default rates
-    if (result.rows.length === 0) {
-      const systemRate = Number(process.env.USD_TO_UZS_RATE || 12600);
-      const defaultRates = {
-        UZS: { USD: 1 / systemRate, RUB: 0.007 },
-        USD: { UZS: systemRate, RUB: 90 },
-        RUB: { UZS: 140, USD: 0.011 }
-      };
-
-      return res.json({
-        success: true,
-        data: {
-          rates: defaultRates[from] || {},
-          source: 'default',
-          note: 'Database da kurslar yo\'q, standart kurslar ko\'rsatilmoqda'
-        }
-      });
-    }
-
     res.json({
       success: true,
       data: {
@@ -62,11 +43,22 @@ const getRates = async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Get rates error:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Kurslarni olishda xato yuz berdi.',
-      error: error.message
+    console.error('Get rates error (falling back to default):', error);
+    
+    const systemRate = Number(process.env.USD_TO_UZS_RATE || 12700);
+    const defaultRates = {
+      UZS: { USD: 1 / systemRate, RUB: 0.0078 },
+      USD: { UZS: systemRate, RUB: 93 },
+      RUB: { UZS: 137, USD: 0.0108 }
+    };
+    
+    res.json({
+      success: true,
+      data: {
+        rates: defaultRates[req.query.from || 'USD'] || defaultRates['USD'],
+        source: 'default',
+        note: 'Standart kurslar ishlatilmoqda'
+      }
     });
   }
 };

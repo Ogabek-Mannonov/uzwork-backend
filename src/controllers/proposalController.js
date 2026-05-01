@@ -1,5 +1,8 @@
-// src/controllers/proposalController.js
 const pool = require("../db/pool");
+
+// Auto-migration: ensure currency column exists
+pool.query("ALTER TABLE proposals ADD COLUMN IF NOT EXISTS currency VARCHAR(10) DEFAULT 'USD'")
+  .catch(err => console.error("Migration error (proposals.currency):", err));
 
 /**
  * POST /proposals
@@ -38,7 +41,7 @@ const createProposal = async (req, res) => {
       });
     }
 
-    const { job_id, cover_letter, proposed_price, proposed_duration, milestones = [], files = [] } = req.body;
+    const { job_id, cover_letter, proposed_price, proposed_duration, currency, milestones = [], files = [] } = req.body;
 
     if (!job_id || !cover_letter || proposed_price == null || proposed_duration == null) {
       return res.status(400).json({
@@ -98,11 +101,11 @@ const createProposal = async (req, res) => {
             deposit_amount = $4,
             deposit_status = $5,
             deposit_locked_at = $6,
-            milestones = $7,
             files = $8,
             is_invitation = FALSE,
+            currency = $9,
             updated_at = NOW()
-          WHERE id = $9
+          WHERE id = $10
           RETURNING *`,
           [
             cover_letter,
@@ -113,6 +116,7 @@ const createProposal = async (req, res) => {
             DEPOSIT_AMOUNT > 0 ? new Date() : null,
             JSON.stringify(milestones),
             JSON.stringify(files),
+            currency || 'USD',
             existingProposal.id
           ]
         );
@@ -132,8 +136,8 @@ const createProposal = async (req, res) => {
           proposed_price, proposed_duration,
           status,
           deposit_amount, deposit_status, deposit_locked_at,
-          milestones, files
-        ) VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10)
+          milestones, files, currency
+        ) VALUES ($1, $2, $3, $4, $5, 'pending', $6, $7, $8, $9, $10, $11)
         RETURNING *`,
         [
           job_id,
@@ -145,7 +149,8 @@ const createProposal = async (req, res) => {
           DEPOSIT_AMOUNT > 0 ? "locked" : "none",
           DEPOSIT_AMOUNT > 0 ? new Date() : null,
           JSON.stringify(milestones),
-          JSON.stringify(files)
+          JSON.stringify(files),
+          currency || 'USD'
         ]
       );
       proposal = result.rows[0];
@@ -253,7 +258,8 @@ const getProposals = async (req, res) => {
         j.id as job_id,
         j.title as job_title,
         j.client_id as job_client_id,
-        j.status as job_status
+        j.status as job_status,
+        j.currency as job_currency
       FROM proposals p
       JOIN users u ON u.id = p.freelancer_id
       JOIN jobs j ON j.id = p.job_id
@@ -394,6 +400,7 @@ const getMyProposals = async (req, res) => {
         j.title as job_title,
         j.status as job_status,
         j.client_id as job_client_id,
+        j.currency as job_currency,
         u_client.first_name as client_first_name,
         u_client.last_name as client_last_name,
         COALESCE(u_client.avatar_url, cp.avatar_url) as client_avatar,
@@ -490,7 +497,8 @@ const getProjectProposals = async (req, res) => {
         u.first_name as freelancer_first_name,
         u.last_name as freelancer_last_name,
         u.email as freelancer_email,
-        COALESCE(u.avatar_url, fp.avatar_url) as freelancer_avatar
+        COALESCE(u.avatar_url, fp.avatar_url) as freelancer_avatar,
+        j.currency as job_currency
       FROM proposals p
       JOIN users u ON u.id = p.freelancer_id
       LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
@@ -556,7 +564,7 @@ const updateProposal = async (req, res) => {
       });
     }
 
-    const { cover_letter, proposed_price, proposed_duration, status } = req.body;
+    const { cover_letter, proposed_price, proposed_duration, status, currency } = req.body;
 
     // Faqat buyurtmachi yoki admin statusni o'zgartira oladi
     if (status !== undefined && !isJobOwner && !isAdmin) {
@@ -594,6 +602,10 @@ const updateProposal = async (req, res) => {
     if (status !== undefined) {
       sets.push(`status = $${i++}`);
       vals.push(status);
+    }
+    if (currency !== undefined) {
+      sets.push(`currency = $${i++}`);
+      vals.push(currency);
     }
 
     if (sets.length === 0) {
@@ -752,6 +764,7 @@ const acceptProposal = async (req, res) => {
         p.deposit_amount,
         p.deposit_status,
         p.milestones as proposal_milestones,
+        p.currency as proposal_currency,
 
         j.title AS job_title,
         j.client_id,
@@ -797,17 +810,27 @@ const acceptProposal = async (req, res) => {
       return res.status(409).json({ success: false, message: "Bu job uchun active/disputed contract bor." });
     }
 
-    // Real-vaqt kursini xizmatdan olamiz (cache/DB or fallback)
-    const { getLatestRate } = require("../services/currencyService");
-    const USD_TO_UZS = await getLatestRate('USD', 'UZS');
-    
-    const totalAmountUSD = Number(row.proposed_price) || 0;
-    if (totalAmountUSD <= 0) {
+    const currency = row.proposal_currency || 'USD';
+    const rawPrice = Number(row.proposed_price) || 0;
+    if (rawPrice <= 0) {
       await client.query("ROLLBACK");
       return res.status(400).json({ success: false, message: "proposed_price noto'g'ri." });
     }
-    // Escrow uchun UZS ekvivalenti (balance check va ushlab qolish uchun)
-    const totalAmount = Math.round(totalAmountUSD * USD_TO_UZS);
+
+    let totalAmount;
+    let totalAmountUSD;
+
+    if (currency === 'UZS') {
+      totalAmount = rawPrice;
+      const { getLatestRate } = require("../services/currencyService");
+      const UZS_TO_USD = await getLatestRate('UZS', 'USD');
+      totalAmountUSD = rawPrice * UZS_TO_USD;
+    } else {
+      totalAmountUSD = rawPrice;
+      const { getLatestRate } = require("../services/currencyService");
+      const USD_TO_UZS = await getLatestRate('USD', 'UZS');
+      totalAmount = Math.round(totalAmountUSD * USD_TO_UZS);
+    }
 
     // ✅ 3) Balance check — contract yaratilishidan OLDIN!
     await ensureBalanceRow(client, row.client_id);

@@ -225,6 +225,16 @@ CREATE TABLE IF NOT EXISTS notifications (
     data JSONB,
     created_at TIMESTAMP DEFAULT NOW()
 );
+ 
+-- 13. Currency Rates
+CREATE TABLE IF NOT EXISTS currency_rates (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    from_currency VARCHAR(10) NOT NULL,
+    to_currency VARCHAR(10) NOT NULL,
+    rate DECIMAL(15,6) NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_currency_rates_from_to ON currency_rates(from_currency, to_currency);
 
 -- Indexlar (tezkor ishlash uchun)
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);

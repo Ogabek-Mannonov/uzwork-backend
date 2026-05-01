@@ -244,6 +244,7 @@ const getContracts = async (req, res) => {
         c.*,
         j.title AS job_title,
         j.status AS job_status,
+        j.currency AS job_currency,
 
         uc.first_name AS client_first_name,
         uc.last_name  AS client_last_name,
@@ -416,6 +417,7 @@ const getMyContracts = async (req, res) => {
         c.*,
         j.title AS job_title,
         j.status AS job_status,
+        j.currency AS job_currency,
         uc.first_name AS client_first_name,
         uc.last_name  AS client_last_name,
         COALESCE(uc.avatar_url, cp.avatar_url) AS client_avatar_url,
