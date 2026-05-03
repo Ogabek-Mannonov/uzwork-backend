@@ -19,7 +19,6 @@ exports.getLandingData = async (req, res) => {
       FROM users u
       LEFT JOIN freelancer_profiles f ON u.id = f.user_id
       WHERE u.role = 'freelancer'
-        AND u.is_active = true
       ORDER BY f.rating DESC NULLS LAST, f.completed_jobs DESC NULLS LAST
       LIMIT 12
     `);
