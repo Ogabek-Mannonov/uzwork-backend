@@ -62,8 +62,18 @@ const getFreelancers = async (req, res) => {
     }
 
     if (search) {
-      where += ` AND (u.first_name ILIKE $${i} OR u.last_name ILIKE $${i} OR fp.title ILIKE $${i} OR fp.bio ILIKE $${i})`;
-      params.push(`%${search}%`);
+      const searchPattern = `%${search}%`;
+      where += ` AND (
+        u.first_name ILIKE $${i} OR 
+        u.last_name ILIKE $${i} OR 
+        fp.title ILIKE $${i} OR 
+        fp.bio ILIKE $${i} OR
+        EXISTS (
+          SELECT 1 FROM jsonb_array_elements_text(COALESCE(fp.skills, '[]'::jsonb)) s 
+          WHERE s ILIKE $${i}
+        )
+      )`;
+      params.push(searchPattern);
       i++;
     }
 
