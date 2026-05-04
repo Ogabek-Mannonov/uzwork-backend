@@ -173,13 +173,127 @@ const saveFreelancer = async (req, res) => {
 
 const uploadMyCv = async (req, res) => res.json({ success: true });
 const deleteMyCv = async (req, res) => res.json({ success: true });
-const getMyPortfolio = async (req, res) => res.json({ success: true, data: { items: [] } });
-const getPublicPortfolioByFreelancerId = async (req, res) => res.json({ success: true, data: { items: [] } });
-const createPortfolioItem = async (req, res) => res.json({ success: true });
-const updatePortfolioItem = async (req, res) => res.json({ success: true });
-const deletePortfolioItem = async (req, res) => res.json({ success: true });
-const addPortfolioMedia = async (req, res) => res.json({ success: true });
-const deletePortfolioMedia = async (req, res) => res.json({ success: true });
+const getMyPortfolio = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const items = await pool.query(`
+      SELECT * FROM portfolio_items 
+      WHERE user_id = $1 
+      ORDER BY created_at DESC
+    `, [userId]);
+
+    // Har bir element uchun mediasini ham olamiz
+    const enrichedItems = await Promise.all(items.rows.map(async (item) => {
+      const media = await pool.query(`SELECT * FROM portfolio_media WHERE item_id = $1`, [item.id]);
+      return { ...item, media: media.rows };
+    }));
+
+    return res.json({ success: true, data: { items: enrichedItems } });
+  } catch (error) {
+    console.error("Get portfolio error:", error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+const getPublicPortfolioByFreelancerId = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const items = await pool.query(`
+      SELECT * FROM portfolio_items 
+      WHERE user_id = $1 
+      ORDER BY is_featured DESC, created_at DESC
+    `, [id]);
+
+    const enrichedItems = await Promise.all(items.rows.map(async (item) => {
+      const media = await pool.query(`SELECT * FROM portfolio_media WHERE item_id = $1`, [item.id]);
+      return { ...item, media: media.rows };
+    }));
+
+    return res.json({ success: true, data: { items: enrichedItems } });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+const createPortfolioItem = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { title, role, description, project_url, skills, is_featured } = req.body;
+
+    const r = await pool.query(`
+      INSERT INTO portfolio_items (user_id, title, role, description, project_url, skills, is_featured)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      RETURNING *
+    `, [userId, title, role, description, project_url, JSON.stringify(skills || []), is_featured || false]);
+
+    return res.json({ success: true, data: { item: r.rows[0] } });
+  } catch (error) {
+    console.error("Create portfolio error:", error);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+const updatePortfolioItem = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { itemId } = req.params;
+    const { title, role, description, project_url, skills, is_featured } = req.body;
+
+    const r = await pool.query(`
+      UPDATE portfolio_items 
+      SET title = $1, role = $2, description = $3, project_url = $4, skills = $5, is_featured = $6, updated_at = NOW()
+      WHERE id = $7 AND user_id = $8
+      RETURNING *
+    `, [title, role, description, project_url, JSON.stringify(skills || []), is_featured || false, itemId, userId]);
+
+    if (r.rows.length === 0) return res.status(404).json({ success: false, message: "Element topilmadi." });
+    return res.json({ success: true, data: { item: r.rows[0] } });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+const deletePortfolioItem = async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { itemId } = req.params;
+    const r = await pool.query(`DELETE FROM portfolio_items WHERE id = $1 AND user_id = $2 RETURNING id`, [itemId, userId]);
+    if (r.rows.length === 0) return res.status(404).json({ success: false, message: "Element topilmadi." });
+    return res.json({ success: true, message: "O'chirildi." });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+const addPortfolioMedia = async (req, res) => {
+  try {
+    const { itemId } = req.params;
+    if (!req.file) return res.status(400).json({ success: false, message: "Fayl yuklanmadi." });
+
+    const fileUrl = `/uploads/portfolio/${req.file.filename}`;
+    const r = await pool.query(`
+      INSERT INTO portfolio_media (item_id, url, filename, mime, size_bytes)
+      VALUES ($1, $2, $3, $4, $5)
+      RETURNING *
+    `, [itemId, fileUrl, req.file.originalname, req.file.mimetype, req.file.size]);
+
+    return res.json({ success: true, data: { media: r.rows[0] } });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+const deletePortfolioMedia = async (req, res) => {
+  try {
+    const { itemId, mediaId } = req.params;
+    // Xavfsizlik uchun item_id ni ham tekshiramiz
+    const r = await pool.query(`DELETE FROM portfolio_media WHERE id = $1 AND item_id = $2 RETURNING id`, [mediaId, itemId]);
+    if (r.rows.length === 0) return res.status(404).json({ success: false, message: "Media topilmadi." });
+    return res.json({ success: true, message: "O'chirildi." });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
 
 module.exports = {
   getFreelancers,

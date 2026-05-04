@@ -179,6 +179,53 @@ pool.on("connect", async (client) => {
 
       ALTER TABLE contracts ADD COLUMN IF NOT EXISTS exchange_rate DECIMAL(18, 6) DEFAULT 1;
       UPDATE contracts SET exchange_rate = 12200 WHERE exchange_rate = 1 OR exchange_rate IS NULL OR exchange_rate = 12700;
+
+      -- Portfolio tables
+      CREATE TABLE IF NOT EXISTS portfolio_items (
+        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        title       VARCHAR(255) NOT NULL,
+        role        VARCHAR(255),
+        description TEXT,
+        project_url TEXT,
+        skills      JSONB DEFAULT '[]',
+        is_featured BOOLEAN DEFAULT false,
+        created_at  TIMESTAMP DEFAULT NOW(),
+        updated_at  TIMESTAMP DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_portfolio_items_user ON portfolio_items(user_id);
+
+      CREATE TABLE IF NOT EXISTS portfolio_media (
+        id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        item_id     UUID NOT NULL REFERENCES portfolio_items(id) ON DELETE CASCADE,
+        media_type  VARCHAR(20) DEFAULT 'image' CHECK (media_type IN ('image', 'video', 'document')),
+        url         TEXT NOT NULL,
+        filename    TEXT,
+        mime        VARCHAR(100),
+        size_bytes  BIGINT,
+        created_at  TIMESTAMP DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_portfolio_media_item ON portfolio_media(item_id);
+
+      -- Certifications table
+      CREATE TABLE IF NOT EXISTS freelancer_certifications (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        title VARCHAR(255) NOT NULL,
+        issuer VARCHAR(255),
+        issue_year INT,
+        issue_month INT,
+        credential_id VARCHAR(255),
+        credential_url TEXT,
+        certificate_file_url TEXT,
+        certificate_filename TEXT,
+        certificate_mime VARCHAR(100),
+        certificate_size_bytes BIGINT,
+        file_updated_at TIMESTAMP,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_freelancer_certifications_user ON freelancer_certifications(user_id);
     `);
     console.log("🚀 Database migratsiyasi muvaffaqiyatli yakunlandi.");
   } catch (e) {
