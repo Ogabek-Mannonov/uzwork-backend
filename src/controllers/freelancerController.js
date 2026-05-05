@@ -101,6 +101,9 @@ const getFreelancers = async (req, res) => {
       params
     );
 
+    // Debug uchun log
+    console.log(`[Freelancer Search] Page: ${p}, Limit: ${l}, Offset: ${offset}, Params: ${JSON.stringify(params)}`);
+
     const listR = await pool.query(
       `
       SELECT
@@ -119,7 +122,7 @@ const getFreelancers = async (req, res) => {
       FROM users u
       LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
       ${where}
-      ORDER BY fp.rating DESC NULLS LAST, u.created_at DESC
+      ORDER BY fp.rating DESC NULLS LAST, u.created_at DESC, u.id ASC
       LIMIT $${paramIdx} OFFSET $${paramIdx + 1}
       `,
       [...params, l, offset]
