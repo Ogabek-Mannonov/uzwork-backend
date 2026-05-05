@@ -717,6 +717,19 @@ const completeContract = async (req, res) => {
 
     await client.query(`UPDATE jobs SET status='completed', updated_at=NOW() WHERE id=$1`, [c.job_id]);
 
+    // ✅ 7) Update profile stats
+    // Freelancer: +1 completed job
+    await client.query(
+      `UPDATE freelancer_profiles SET completed_jobs = COALESCE(completed_jobs, 0) + 1, updated_at = NOW() WHERE user_id = $1`,
+      [c.freelancer_id]
+    );
+
+    // Client: spent_total update (using gross amount)
+    await client.query(
+      `UPDATE client_profiles SET spent_total = COALESCE(spent_total, 0) + $1, updated_at = NOW() WHERE user_id = $2`,
+      [gross, c.client_id]
+    );
+
     await client.query("COMMIT");
 
     // ✅ Notify freelancer

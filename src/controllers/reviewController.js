@@ -122,6 +122,7 @@ const getReviews = async (req, res) => {
   try {
     const {
       reviewee_id,
+      freelancer_id, // Alias for reviewee_id
       reviewer_id,
       contract_id,
       min_rating,
@@ -136,9 +137,11 @@ const getReviews = async (req, res) => {
     let queryParams = [];
     let paramIndex = 1;
 
-    if (reviewee_id) {
+    const targetRevieweeId = reviewee_id || freelancer_id;
+
+    if (targetRevieweeId) {
       whereConditions.push(`r.reviewee_id = $${paramIndex++}`);
-      queryParams.push(reviewee_id);
+      queryParams.push(targetRevieweeId);
     }
 
     if (reviewer_id) {
@@ -165,17 +168,22 @@ const getReviews = async (req, res) => {
     const countResult = await pool.query(countQuery, queryParams);
     const total = parseInt(countResult.rows[0].count);
 
-    // Get reviews with user info
+    // Get reviews with user info and job info
     const reviewsQuery = `
       SELECT 
         r.*,
         u_reviewer.first_name as reviewer_first_name,
         u_reviewer.last_name as reviewer_last_name,
         u_reviewee.first_name as reviewee_first_name,
-        u_reviewee.last_name as reviewee_last_name
+        u_reviewee.last_name as reviewee_last_name,
+        j.title as job_title,
+        c.total_amount as project_amount,
+        c.currency as project_currency
       FROM reviews r
       JOIN users u_reviewer ON r.reviewer_id = u_reviewer.id
       JOIN users u_reviewee ON r.reviewee_id = u_reviewee.id
+      LEFT JOIN contracts c ON r.contract_id = c.id
+      LEFT JOIN jobs j ON c.job_id = j.id
       ${whereClause}
       ORDER BY r.created_at DESC
       LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
@@ -261,14 +269,19 @@ const getUserReviews = async (req, res) => {
     const { page = 1, limit = 20 } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
 
-    // Get reviews
+    // Get reviews with reviewer info and job info
     const reviewsQuery = `
       SELECT 
         r.*,
         u_reviewer.first_name as reviewer_first_name,
-        u_reviewer.last_name as reviewer_last_name
+        u_reviewer.last_name as reviewer_last_name,
+        j.title as job_title,
+        c.total_amount as project_amount,
+        c.currency as project_currency
       FROM reviews r
       JOIN users u_reviewer ON r.reviewer_id = u_reviewer.id
+      LEFT JOIN contracts c ON r.contract_id = c.id
+      LEFT JOIN jobs j ON c.job_id = j.id
       WHERE r.reviewee_id = $1
       ORDER BY r.created_at DESC
       LIMIT $2 OFFSET $3

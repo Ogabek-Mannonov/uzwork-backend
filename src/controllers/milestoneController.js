@@ -276,6 +276,19 @@ const approveMilestone = async (req, res) => {
     if (remaining === 0) {
       await client.query(`UPDATE contracts SET status = 'completed', completed_at = NOW(), updated_at = NOW() WHERE id = $1`, [m.contract_id]);
       await client.query(`UPDATE jobs SET status = 'completed', updated_at = NOW() WHERE id = $1`, [m.job_id]);
+      
+      // Update freelancer stats
+      await client.query(
+        `UPDATE freelancer_profiles SET completed_jobs = COALESCE(completed_jobs, 0) + 1 WHERE user_id = $1`,
+        [m.freelancer_id]
+      );
+      
+      // Update client stats
+      await client.query(
+        `UPDATE client_profiles SET spent_total = COALESCE(spent_total, 0) + $1 WHERE user_id = $2`,
+        [amt, m.client_id]
+      );
+
       contractCompleted = true;
     }
 

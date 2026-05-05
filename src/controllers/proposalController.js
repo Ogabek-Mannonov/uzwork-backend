@@ -101,6 +101,7 @@ const createProposal = async (req, res) => {
             deposit_amount = $4,
             deposit_status = $5,
             deposit_locked_at = $6,
+            milestones = $7,
             files = $8,
             is_invitation = FALSE,
             currency = $9,

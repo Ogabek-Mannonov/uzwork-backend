@@ -117,11 +117,28 @@ const getMyProfile = async (req, res) => {
       roleProfile = cp.rows[0] || null;
     }
 
-    // reviews bo‘lmasa ham yiqilmaydi:
+    // reviews & in_progress_jobs bo‘lmasa ham yiqilmaydi:
     let averageRating = null;
     let totalReviews = 0;
+    let inProgressJobs = 0;
+    let completedJobs = 0;
 
     if (user.role === "freelancer") {
+      // 1. In Progress Jobs
+      const ip = await pool.query(
+        `SELECT COUNT(*)::int AS count FROM contracts WHERE freelancer_id = $1 AND status = 'active'`,
+        [userId]
+      );
+      inProgressJobs = ip.rows[0]?.count ?? 0;
+
+      // 2. Completed Jobs
+      const cj = await pool.query(
+        `SELECT COUNT(*)::int AS count FROM contracts WHERE freelancer_id = $1 AND status = 'completed'`,
+        [userId]
+      );
+      completedJobs = cj.rows[0]?.count ?? 0;
+
+      // 3. Reviews
       if (cache.hasReviews) {
         const r = await pool.query(
           `
@@ -151,6 +168,8 @@ const getMyProfile = async (req, res) => {
         profile: roleProfile,
         average_rating: averageRating,
         total_reviews: totalReviews,
+        in_progress_jobs: inProgressJobs,
+        completed_jobs: completedJobs,
       },
     });
   } catch (error) {
@@ -217,8 +236,25 @@ const getUserProfile = async (req, res) => {
 
     let averageRating = null;
     let totalReviews = 0;
+    let inProgressJobs = 0;
+    let completedJobs = 0;
 
     if (user.role === "freelancer") {
+      // 1. In Progress Jobs
+      const ip = await pool.query(
+        `SELECT COUNT(*)::int AS count FROM contracts WHERE freelancer_id = $1 AND status = 'active'`,
+        [userId]
+      );
+      inProgressJobs = ip.rows[0]?.count ?? 0;
+
+      // 2. Completed Jobs
+      const cj = await pool.query(
+        `SELECT COUNT(*)::int AS count FROM contracts WHERE freelancer_id = $1 AND status = 'completed'`,
+        [userId]
+      );
+      completedJobs = cj.rows[0]?.count ?? 0;
+
+      // 3. Reviews
       if (cache.hasReviews) {
         const r = await pool.query(
           `
@@ -247,6 +283,8 @@ const getUserProfile = async (req, res) => {
         profile: roleProfile,
         average_rating: averageRating,
         total_reviews: totalReviews,
+        in_progress_jobs: inProgressJobs,
+        completed_jobs: completedJobs,
       },
     });
   } catch (error) {
