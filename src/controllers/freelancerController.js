@@ -9,27 +9,91 @@ function normalizeSkills(skills) {
 
 const getFreelancers = async (req, res) => {
   try {
-    const { search, page = 1, limit = 10 } = req.query;
+    const { 
+      search, 
+      page = 1, 
+      limit = 10,
+      location,
+      min_rate,
+      max_rate,
+      min_rating,
+      language,
+      proficiency,
+      level // alias
+    } = req.query;
+
     const p = Math.max(parseInt(page, 10) || 1, 1);
     const l = Math.min(Math.max(parseInt(limit, 10) || 10, 1), 100);
     const offset = (p - 1) * l;
 
-    // Landing page dagi query bilan bir xil asos
     let where = "WHERE u.role = 'freelancer'";
     const params = [];
+    let paramIdx = 1;
 
+    // 1. Text Search
     if (search && search.trim()) {
       where += ` AND (
-        u.first_name ILIKE $1 OR 
-        u.last_name ILIKE $1 OR 
-        fp.title ILIKE $1 OR 
-        fp.bio ILIKE $1 OR
+        u.first_name ILIKE $${paramIdx} OR 
+        u.last_name ILIKE $${paramIdx} OR 
+        fp.title ILIKE $${paramIdx} OR 
+        fp.bio ILIKE $${paramIdx} OR
         EXISTS (
           SELECT 1 FROM jsonb_array_elements_text(COALESCE(fp.skills, '[]'::jsonb)) s 
-          WHERE s ILIKE $1
+          WHERE s ILIKE $${paramIdx}
         )
       )`;
       params.push(`%${search.trim()}%`);
+      paramIdx++;
+    }
+
+    // 2. Location
+    if (location) {
+      where += ` AND fp.location = $${paramIdx}`;
+      params.push(location);
+      paramIdx++;
+    }
+
+    // 3. Hourly Rate
+    if (min_rate) {
+      where += ` AND fp.hourly_rate >= $${paramIdx}`;
+      params.push(parseFloat(min_rate));
+      paramIdx++;
+    }
+    if (max_rate) {
+      where += ` AND fp.hourly_rate <= $${paramIdx}`;
+      params.push(parseFloat(max_rate));
+      paramIdx++;
+    }
+
+    // 4. Rating
+    if (min_rating) {
+      where += ` AND fp.rating >= $${paramIdx}`;
+      params.push(parseFloat(min_rating));
+      paramIdx++;
+    }
+
+    // 5. Language & Proficiency
+    // frontenddan 'proficiency' yoki 'level' kelishi mumkin
+    const targetLevel = proficiency || level;
+    if (language) {
+      if (targetLevel) {
+        // Ikkalasi ham bo'lsa: aynan shu til va shu darajaga ega bo'lgan ob'ektni qidiramiz
+        where += ` AND EXISTS (
+          SELECT 1 FROM jsonb_array_elements(COALESCE(fp.languages, '[]'::jsonb)) lang
+          WHERE lang->>'language' = $${paramIdx} AND lang->>'proficiency' = $${paramIdx + 1}
+        )`;
+        params.push(language);
+        params.push(targetLevel);
+        paramIdx += 2;
+      } else {
+        // Faqat til bo'lsa
+        where += ` AND EXISTS (
+          SELECT 1 FROM jsonb_array_elements(COALESCE(fp.languages, '[]'::jsonb)) lang
+          WHERE lang->>'language' = $${paramIdx}
+        )`;
+        params.push(language);
+        paramIdx++;
+      }
     }
 
     const countR = await pool.query(
@@ -49,13 +113,14 @@ const getFreelancers = async (req, res) => {
         COALESCE(fp.hourly_rate, 0) AS hourly_rate,
         fp.location,
         fp.skills,
+        fp.languages,
         COALESCE(fp.rating, 0) AS rating,
         COALESCE(fp.completed_jobs, 0) AS completed_jobs
       FROM users u
       LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
       ${where}
       ORDER BY fp.rating DESC NULLS LAST, u.created_at DESC
-      LIMIT $${params.length + 1} OFFSET $${params.length + 2}
+      LIMIT $${paramIdx} OFFSET $${paramIdx + 1}
       `,
       [...params, l, offset]
     );
