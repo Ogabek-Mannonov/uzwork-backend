@@ -218,6 +218,20 @@ const createReview = async (req, res) => {
       }
     }
 
+    // --- COMMENT VALIDATION FOR LOW RATINGS ---
+    const isLowRating = revieweeRole === 'freelancer' 
+      ? (sq <= 3 || st <= 3 || sc <= 3)
+      : (sp <= 3 || s_clarity <= 3);
+
+    if (isLowRating) {
+      if (!comment || comment.trim().length < 20) {
+        return res.status(400).json({
+          success: false,
+          message: 'Past baho (1-3 yulduz) berilganda, kamida 20 ta harfdan iborat batafsil izoh/sharh qoldirishingiz shart.'
+        });
+      }
+    }
+
     // Create rating
     const result = await pool.query(
       `INSERT INTO ratings (
@@ -326,8 +340,11 @@ const getReviews = async (req, res) => {
         r.from_user_id as reviewer_id,
         r.to_user_id as reviewee_id,
         COALESCE(
-          (r.score_quality + r.score_timeliness + r.score_communication) / 3.0,
-          (r.score_payment + r.score_clarity) / 2.0
+          (COALESCE(r.score_quality, 0) + COALESCE(r.score_timeliness, 0) + COALESCE(r.score_communication, 0)) / 
+          NULLIF((CASE WHEN r.score_quality IS NOT NULL THEN 1.0 ELSE 0.0 END + CASE WHEN r.score_timeliness IS NOT NULL THEN 1.0 ELSE 0.0 END + CASE WHEN r.score_communication IS NOT NULL THEN 1.0 ELSE 0.0 END), 0.0),
+          (COALESCE(r.score_payment, 0) + COALESCE(r.score_clarity, 0)) / 
+          NULLIF((CASE WHEN r.score_payment IS NOT NULL THEN 1.0 ELSE 0.0 END + CASE WHEN r.score_clarity IS NOT NULL THEN 1.0 ELSE 0.0 END), 0.0),
+          0.0
         ) as rating,
         u_reviewer.first_name as reviewer_first_name,
         u_reviewer.last_name as reviewer_last_name,
@@ -385,8 +402,11 @@ const getReviewById = async (req, res) => {
         r.from_user_id as reviewer_id,
         r.to_user_id as reviewee_id,
         COALESCE(
-          (r.score_quality + r.score_timeliness + r.score_communication) / 3.0,
-          (r.score_payment + r.score_clarity) / 2.0
+          (COALESCE(r.score_quality, 0) + COALESCE(r.score_timeliness, 0) + COALESCE(r.score_communication, 0)) / 
+          NULLIF((CASE WHEN r.score_quality IS NOT NULL THEN 1.0 ELSE 0.0 END + CASE WHEN r.score_timeliness IS NOT NULL THEN 1.0 ELSE 0.0 END + CASE WHEN r.score_communication IS NOT NULL THEN 1.0 ELSE 0.0 END), 0.0),
+          (COALESCE(r.score_payment, 0) + COALESCE(r.score_clarity, 0)) / 
+          NULLIF((CASE WHEN r.score_payment IS NOT NULL THEN 1.0 ELSE 0.0 END + CASE WHEN r.score_clarity IS NOT NULL THEN 1.0 ELSE 0.0 END), 0.0),
+          0.0
         ) as rating,
         u_reviewer.first_name as reviewer_first_name,
         u_reviewer.last_name as reviewer_last_name,
@@ -449,8 +469,11 @@ const getUserReviews = async (req, res) => {
         r.from_user_id as reviewer_id,
         r.to_user_id as reviewee_id,
         COALESCE(
-          (r.score_quality + r.score_timeliness + r.score_communication) / 3.0,
-          (r.score_payment + r.score_clarity) / 2.0
+          (COALESCE(r.score_quality, 0) + COALESCE(r.score_timeliness, 0) + COALESCE(r.score_communication, 0)) / 
+          NULLIF((CASE WHEN r.score_quality IS NOT NULL THEN 1.0 ELSE 0.0 END + CASE WHEN r.score_timeliness IS NOT NULL THEN 1.0 ELSE 0.0 END + CASE WHEN r.score_communication IS NOT NULL THEN 1.0 ELSE 0.0 END), 0.0),
+          (COALESCE(r.score_payment, 0) + COALESCE(r.score_clarity, 0)) / 
+          NULLIF((CASE WHEN r.score_payment IS NOT NULL THEN 1.0 ELSE 0.0 END + CASE WHEN r.score_clarity IS NOT NULL THEN 1.0 ELSE 0.0 END), 0.0),
+          0.0
         ) as rating,
         u_reviewer.first_name as reviewer_first_name,
         u_reviewer.last_name as reviewer_last_name,
@@ -474,8 +497,11 @@ const getUserReviews = async (req, res) => {
         score_quality, score_timeliness, score_communication,
         score_payment, score_clarity, created_at,
         COALESCE(
-          (score_quality + score_timeliness + score_communication) / 3.0,
-          (score_payment + score_clarity) / 2.0
+          (COALESCE(score_quality, 0) + COALESCE(score_timeliness, 0) + COALESCE(score_communication, 0)) / 
+          NULLIF((CASE WHEN score_quality IS NOT NULL THEN 1.0 ELSE 0.0 END + CASE WHEN score_timeliness IS NOT NULL THEN 1.0 ELSE 0.0 END + CASE WHEN score_communication IS NOT NULL THEN 1.0 ELSE 0.0 END), 0.0),
+          (COALESCE(score_payment, 0) + COALESCE(score_clarity, 0)) / 
+          NULLIF((CASE WHEN score_payment IS NOT NULL THEN 1.0 ELSE 0.0 END + CASE WHEN score_clarity IS NOT NULL THEN 1.0 ELSE 0.0 END), 0.0),
+          0.0
         ) as calculated_rating
        FROM ratings
        WHERE to_user_id = $1`,
@@ -523,6 +549,20 @@ const getUserReviews = async (req, res) => {
       clarity: countClarity > 0 ? parseFloat((sumClarity / countClarity).toFixed(2)) : 0
     };
 
+    // Calculate contract completion rate based on role
+    const activeField = role === 'freelancer' ? 'freelancer_id' : 'client_id';
+    const contractStatsRes = await pool.query(
+      `SELECT 
+         COUNT(*)::int as total,
+         COUNT(CASE WHEN status = 'completed' THEN 1 END)::int as completed
+       FROM contracts 
+       WHERE ${activeField} = $1`,
+      [userId]
+    );
+    const totalContracts = contractStatsRes.rows[0]?.total ?? 0;
+    const completedContracts = contractStatsRes.rows[0]?.completed ?? 0;
+    const completionRate = totalContracts > 0 ? Math.round((completedContracts / totalContracts) * 100) : 100;
+
     res.json({
       success: true,
       data: {
@@ -531,6 +571,9 @@ const getUserReviews = async (req, res) => {
           total_reviews: allRatingsRes.rows.length,
           average_rating: averageRating.toFixed(2),
           sub_metrics: subMetrics,
+          completion_rate: completionRate,
+          total_contracts: totalContracts,
+          completed_contracts: completedContracts,
           rating_distribution: {
             five_star: starDistribution.five_star,
             four_star: starDistribution.four_star,

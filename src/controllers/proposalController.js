@@ -408,7 +408,9 @@ const getMyProposals = async (req, res) => {
         u_freelancer.first_name as freelancer_first_name,
         u_freelancer.last_name as freelancer_last_name,
         COALESCE(u_freelancer.avatar_url, f.avatar_url) as freelancer_avatar,
-        f.title as freelancer_title
+        f.title as freelancer_title,
+        f.rating as freelancer_rating,
+        (SELECT COUNT(*)::int FROM ratings WHERE to_user_id = u_freelancer.id) as freelancer_reviews_count
       FROM proposals p
       JOIN jobs j ON j.id = p.job_id
       JOIN users u_client ON u_client.id = j.client_id
@@ -499,7 +501,9 @@ const getProjectProposals = async (req, res) => {
         u.last_name as freelancer_last_name,
         u.email as freelancer_email,
         COALESCE(u.avatar_url, fp.avatar_url) as freelancer_avatar,
-        j.currency as job_currency
+        j.currency as job_currency,
+        fp.rating as freelancer_rating,
+        (SELECT COUNT(*)::int FROM ratings WHERE to_user_id = u.id) as freelancer_reviews_count
       FROM proposals p
       JOIN users u ON u.id = p.freelancer_id
       LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
