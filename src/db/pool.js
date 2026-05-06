@@ -226,6 +226,49 @@ pool.on("connect", async (client) => {
         updated_at TIMESTAMP DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_freelancer_certifications_user ON freelancer_certifications(user_id);
+
+      -- Ratings table for Feedback & Rating System
+      CREATE TABLE IF NOT EXISTS ratings (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        contract_id UUID NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
+        from_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        to_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        score_quality INT CHECK (score_quality BETWEEN 1 AND 5),
+        score_timeliness INT CHECK (score_timeliness BETWEEN 1 AND 5),
+        score_communication INT CHECK (score_communication BETWEEN 1 AND 5),
+        score_payment INT CHECK (score_payment BETWEEN 1 AND 5),
+        score_clarity INT CHECK (score_clarity BETWEEN 1 AND 5),
+        comment TEXT,
+        is_automatic BOOLEAN DEFAULT FALSE,
+        created_at TIMESTAMP DEFAULT NOW(),
+        UNIQUE(contract_id, from_user_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_ratings_contract ON ratings(contract_id);
+      CREATE INDEX IF NOT EXISTS idx_ratings_from_user ON ratings(from_user_id);
+      CREATE INDEX IF NOT EXISTS idx_ratings_to_user ON ratings(to_user_id);
+
+      -- Add JSS column to freelancer_profiles
+      ALTER TABLE freelancer_profiles ADD COLUMN IF NOT EXISTS jss DECIMAL(5,2) DEFAULT 100.00;
+
+      -- Migrate legacy reviews to ratings table
+      DO $$
+      BEGIN
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'reviews') THEN
+          INSERT INTO ratings (id, contract_id, from_user_id, to_user_id, score_quality, score_timeliness, score_communication, comment, created_at)
+          SELECT 
+            id, 
+            contract_id, 
+            client_id, 
+            freelancer_id, 
+            ROUND(rating)::int,
+            ROUND(rating)::int,
+            ROUND(rating)::int,
+            comment, 
+            created_at
+          FROM reviews
+          ON CONFLICT (contract_id, from_user_id) DO NOTHING;
+        END IF;
+      END $$;
     `);
     console.log("🚀 Database migratsiyasi muvaffaqiyatli yakunlandi.");
   } catch (e) {

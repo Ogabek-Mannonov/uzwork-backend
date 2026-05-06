@@ -384,6 +384,7 @@ app.use("/currencies", currencyRoutes);
 app.use("/files", fileRoutes);
 app.use("/upload", uploadRoutes);
 app.use("/disputes", disputeRoutes);
+app.use("/landing", landingRoutes);
 app.use("/api/landing", landingRoutes);
 app.use("/skills", skillRoutes);
 app.use("/api/skills", skillRoutes);

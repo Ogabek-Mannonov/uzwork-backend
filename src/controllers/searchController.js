@@ -62,7 +62,16 @@ const globalSearch = async (req, res) => {
           up.location,
           up.skills,
           up.hourly_rate,
-          (SELECT AVG(rating)::numeric(10,2) FROM reviews WHERE reviewee_id = u.id) as average_rating
+          (
+            SELECT AVG(
+              COALESCE(
+                (score_quality + score_timeliness + score_communication) / 3.0,
+                (score_payment + score_clarity) / 2.0
+              )
+            )::numeric(10,2)
+            FROM ratings
+            WHERE to_user_id = u.id
+          ) as average_rating
         FROM users u
         LEFT JOIN user_profiles up ON u.id = up.user_id
         WHERE u.role = 'freelancer'
