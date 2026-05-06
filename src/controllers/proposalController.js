@@ -507,9 +507,11 @@ const getProjectProposals = async (req, res) => {
       FROM proposals p
       JOIN users u ON u.id = p.freelancer_id
       LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
+      JOIN jobs j ON j.id = p.job_id
       ${whereClause}
       ORDER BY p.created_at DESC
       LIMIT $${i} OFFSET $${i + 1}
+
     `;
     const listParams = [...params, parseInt(limit, 10), offset];
     const proposalsResult = await pool.query(listQuery, listParams);

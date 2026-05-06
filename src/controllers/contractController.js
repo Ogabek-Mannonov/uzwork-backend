@@ -221,7 +221,7 @@ const getContracts = async (req, res) => {
     const { job_id, client_id, freelancer_id, status, page = 1, limit = 20 } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
 
-    const where = [];
+    const where = ['j.deleted_at IS NULL'];
     const params = [];
     let i = 1;
 
@@ -233,7 +233,7 @@ const getContracts = async (req, res) => {
     const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
     const countRes = await pool.query(
-      `SELECT COUNT(*) FROM contracts c ${whereClause}`,
+      `SELECT COUNT(*)::int AS count FROM contracts c JOIN jobs j ON j.id = c.job_id ${whereClause}`,
       params
     );
     const total = parseInt(countRes.rows[0].count, 10);
@@ -320,8 +320,9 @@ const getContractById = async (req, res) => {
       LEFT JOIN client_profiles cp ON cp.user_id = uc.id
       JOIN users uf ON uf.id = c.freelancer_id
       LEFT JOIN freelancer_profiles fp ON fp.user_id = uf.id
-      WHERE c.id = $1
+      WHERE c.id = $1 AND j.deleted_at IS NULL
       LIMIT 1
+
       `,
       [id]
     );
@@ -381,7 +382,7 @@ const getMyContracts = async (req, res) => {
     const { status, page = 1, limit = 20 } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
 
-    const where = [];
+    const where = ['j.deleted_at IS NULL'];
     const params = [];
     let i = 1;
 
@@ -406,7 +407,7 @@ const getMyContracts = async (req, res) => {
     const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
     const countRes = await pool.query(
-      `SELECT COUNT(*) FROM contracts c ${whereClause}`,
+      `SELECT COUNT(*)::int AS count FROM contracts c JOIN jobs j ON j.id = c.job_id ${whereClause}`,
       params
     );
     const total = parseInt(countRes.rows[0].count, 10);

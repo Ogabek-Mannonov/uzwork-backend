@@ -369,15 +369,18 @@ const getUnreadCount = async (req, res) => {
           AND (
             (c.contract_id IS NOT NULL AND EXISTS (
               SELECT 1 FROM contracts ct
+              JOIN jobs j ON j.id = ct.job_id
               WHERE ct.id = c.contract_id
                 AND (ct.client_id = $1 OR ct.freelancer_id = $1)
+                AND j.deleted_at IS NULL
             ))
             OR
             (c.job_id IS NOT NULL AND (
-              EXISTS (SELECT 1 FROM jobs j WHERE j.id = c.job_id AND j.client_id = $1)
-              OR EXISTS (SELECT 1 FROM proposals p WHERE p.job_id = c.job_id AND p.freelancer_id = $1 AND p.status = 'accepted')
+              EXISTS (SELECT 1 FROM jobs j WHERE j.id = c.job_id AND j.client_id = $1 AND j.deleted_at IS NULL)
+              OR EXISTS (SELECT 1 FROM proposals p JOIN jobs j ON j.id = p.job_id WHERE p.job_id = c.job_id AND p.freelancer_id = $1 AND p.status = 'accepted' AND j.deleted_at IS NULL)
             ))
           )
+
       `;
 
     const result = await pool.query(query, [userId]);
@@ -503,17 +506,20 @@ const getChats = async (req, res) => {
           (
             c.contract_id IS NOT NULL AND EXISTS (
               SELECT 1 FROM contracts ct
+              JOIN jobs j ON j.id = ct.job_id
               WHERE ct.id = c.contract_id
                 AND (ct.client_id = $1 OR ct.freelancer_id = $1)
+                AND j.deleted_at IS NULL
             )
           )
           OR
           (
             c.job_id IS NOT NULL AND (
-              EXISTS (SELECT 1 FROM jobs j WHERE j.id = c.job_id AND j.client_id = $1)
-              OR EXISTS (SELECT 1 FROM proposals p WHERE p.job_id = c.job_id AND p.freelancer_id = $1 AND p.status = 'accepted')
+              EXISTS (SELECT 1 FROM jobs j WHERE j.id = c.job_id AND j.client_id = $1 AND j.deleted_at IS NULL)
+              OR EXISTS (SELECT 1 FROM proposals p JOIN jobs j ON j.id = p.job_id WHERE p.job_id = c.job_id AND p.freelancer_id = $1 AND p.status = 'accepted' AND j.deleted_at IS NULL)
             )
           )
+
         ORDER BY last_message_at DESC
       `;
 
