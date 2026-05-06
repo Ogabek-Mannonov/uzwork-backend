@@ -269,6 +269,26 @@ pool.on("connect", async (client) => {
           ON CONFLICT (contract_id, from_user_id) DO NOTHING;
         END IF;
       END $$;
+
+      -- Create system_settings table
+      CREATE TABLE IF NOT EXISTS system_settings (
+        key VARCHAR(100) PRIMARY KEY,
+        value JSONB NOT NULL,
+        updated_at TIMESTAMP DEFAULT NOW()
+      );
+
+      -- Seed system_settings table
+      INSERT INTO system_settings (key, value) VALUES
+        ('platform_fee_percent', '10'::jsonb),
+        ('premium_monthly_price_uzs', '500000'::jsonb),
+        ('premium_yearly_price_uzs', '5000000'::jsonb),
+        ('escrow_days', '30'::jsonb),
+        ('min_withdrawal_uzs', '100000'::jsonb),
+        ('allowed_gateways', '["Payme", "Click", "Uzcard"]'::jsonb),
+        ('support_email', '"support@uzwork.uz"'::jsonb),
+        ('support_phone', '"+998901234567"'::jsonb),
+        ('is_maintenance', 'false'::jsonb)
+      ON CONFLICT (key) DO NOTHING;
     `);
     console.log("🚀 Database migratsiyasi muvaffaqiyatli yakunlandi.");
   } catch (e) {

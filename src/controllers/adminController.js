@@ -1155,6 +1155,60 @@ const updateUserStatusByAdmin = async (req, res) => {
   }
 };
 
+/**
+ * GET /admin/settings
+ * Barcha tizim sozlamalarini olish
+ */
+const getSystemSettings = async (req, res) => {
+  try {
+    const result = await pool.query("SELECT key, value FROM system_settings");
+    const settings = {};
+    result.rows.forEach(row => {
+      settings[row.key] = row.value;
+    });
+    return res.json({ success: true, data: settings });
+  } catch (error) {
+    console.error("getSystemSettings error:", error);
+    return res.status(500).json({ success: false, message: "Sozlamalarni olishda xato yuz berdi.", error: error.message });
+  }
+};
+
+/**
+ * PUT /admin/settings
+ * Tizim sozlamalarini yangilash
+ */
+const updateSystemSettings = async (req, res) => {
+  try {
+    const settings = req.body;
+    if (!settings || typeof settings !== 'object') {
+      return res.status(400).json({ success: false, message: "Noto'g'ri ma'lumot formati." });
+    }
+
+    for (const [key, value] of Object.entries(settings)) {
+      await pool.query(
+        `
+        INSERT INTO system_settings (key, value, updated_at)
+        VALUES ($1, $2, NOW())
+        ON CONFLICT (key) DO UPDATE
+        SET value = EXCLUDED.value, updated_at = NOW()
+        `,
+        [key, JSON.stringify(value)]
+      );
+    }
+
+    const result = await pool.query("SELECT key, value FROM system_settings");
+    const updated = {};
+    result.rows.forEach(row => {
+      updated[row.key] = row.value;
+    });
+
+    return res.json({ success: true, data: updated, message: "Sozlamalar muvaffaqiyatli saqlandi." });
+  } catch (error) {
+    console.error("updateSystemSettings error:", error);
+    return res.status(500).json({ success: false, message: "Sozlamalarni saqlashda xato yuz berdi.", error: error.message });
+  }
+};
+
 module.exports = {
   isAdmin,
   getDashboardStats,
@@ -1166,4 +1220,7 @@ module.exports = {
   getChats,
   updateUserByAdmin,
   updateUserStatusByAdmin,
+  getSystemSettings,
+  updateSystemSettings,
 };
+

@@ -14,6 +14,8 @@ const {
   getUserById,
   updateUserByAdmin,
   updateUserStatusByAdmin,
+  getSystemSettings,
+  updateSystemSettings,
 } = require('../controllers/adminController');
 
 // Barcha admin route lar authenticate va isAdmin dan o‘tadi
@@ -39,4 +41,9 @@ router.get('/payments', getPayments);
 // Chats
 router.get('/chats', getChats);
 
+// Settings
+router.get('/settings', getSystemSettings);
+router.put('/settings', updateSystemSettings);
+
 module.exports = router;
+
