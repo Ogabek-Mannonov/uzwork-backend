@@ -144,8 +144,10 @@ const getMyProfile = async (req, res) => {
       SELECT
         COALESCE(AVG(
           COALESCE(
-            (score_quality + score_timeliness + score_communication) / 3.0,
-            (score_payment + score_clarity) / 2.0
+            (COALESCE(score_quality, 0) + COALESCE(score_timeliness, 0) + COALESCE(score_communication, 0)) / 
+            NULLIF((CASE WHEN score_quality IS NOT NULL THEN 1.0 ELSE 0.0 END + CASE WHEN score_timeliness IS NOT NULL THEN 1.0 ELSE 0.0 END + CASE WHEN score_communication IS NOT NULL THEN 1.0 ELSE 0.0 END), 0.0),
+            (COALESCE(score_payment, 0) + COALESCE(score_clarity, 0)) / 
+            NULLIF((CASE WHEN score_payment IS NOT NULL THEN 1.0 ELSE 0.0 END + CASE WHEN score_clarity IS NOT NULL THEN 1.0 ELSE 0.0 END), 0.0)
           )
         ), 0) AS avg_rating,
         COUNT(*)::int AS total_reviews
@@ -261,8 +263,10 @@ const getUserProfile = async (req, res) => {
       SELECT
         COALESCE(AVG(
           COALESCE(
-            (score_quality + score_timeliness + score_communication) / 3.0,
-            (score_payment + score_clarity) / 2.0
+            (COALESCE(score_quality, 0) + COALESCE(score_timeliness, 0) + COALESCE(score_communication, 0)) / 
+            NULLIF((CASE WHEN score_quality IS NOT NULL THEN 1.0 ELSE 0.0 END + CASE WHEN score_timeliness IS NOT NULL THEN 1.0 ELSE 0.0 END + CASE WHEN score_communication IS NOT NULL THEN 1.0 ELSE 0.0 END), 0.0),
+            (COALESCE(score_payment, 0) + COALESCE(score_clarity, 0)) / 
+            NULLIF((CASE WHEN score_payment IS NOT NULL THEN 1.0 ELSE 0.0 END + CASE WHEN score_clarity IS NOT NULL THEN 1.0 ELSE 0.0 END), 0.0)
           )
         ), 0) AS avg_rating,
         COUNT(*)::int AS total_reviews

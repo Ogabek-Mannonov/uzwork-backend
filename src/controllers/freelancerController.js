@@ -211,7 +211,16 @@ const getSavedFreelancers = async (req, res) => {
   try {
     const userId = req.user.id;
     const r = await pool.query(`
-      SELECT u.id, u.first_name, u.last_name, fp.title, fp.avatar_url, fp.rating
+      SELECT 
+        u.id, 
+        u.first_name, 
+        u.last_name, 
+        fp.title, 
+        COALESCE(fp.avatar_url, u.avatar_url) as avatar_url, 
+        fp.rating,
+        fp.hourly_rate,
+        fp.completed_jobs,
+        fp.location
       FROM saved_items s
       JOIN users u ON u.id = s.item_id
       LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
