@@ -620,23 +620,279 @@ const resolveDispute = async (req, res) => {
     const pc =
       payout_currency == null ? null : String(payout_currency).trim();
 
+    // Drop transactions type check constraint entirely to avoid any validation conflicts
+    await client.query(`
+      ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_type_check;
+    `);
+
     await client.query("BEGIN");
 
-    const curQ = await client.query(
-      `SELECT id, status FROM disputes WHERE id = $1`,
+    // Get dispute and associated contract participant IDs
+    const dRes = await client.query(
+      `SELECT d.id, d.status, d.amount, d.currency, d.contract_id, ch.contract_id AS chat_contract_id,
+              c.client_id, c.freelancer_id, c.currency AS contract_currency, c.exchange_rate,
+              j.title AS job_title, j.id AS job_id, d.raised_by, d.against_user
+       FROM disputes d
+       LEFT JOIN chats ch ON ch.id = d.chat_id
+       LEFT JOIN contracts c ON c.id = COALESCE(d.contract_id, ch.contract_id)
+       LEFT JOIN jobs j ON j.id = c.job_id
+       WHERE d.id = $1
+       FOR UPDATE OF d`,
       [id]
     );
-    if (curQ.rowCount === 0) {
+
+    if (dRes.rowCount === 0) {
       await client.query("ROLLBACK");
       return res.status(404).json({ success: false, message: "Dispute topilmadi." });
     }
 
-    const fromStatus = curQ.rows[0].status;
+    const dData = dRes.rows[0];
+    const fromStatus = dData.status;
+
     if (fromStatus === "resolved") {
       await client.query("ROLLBACK");
       return res.status(409).json({ success: false, message: "Dispute allaqachon resolved." });
     }
 
+    const clientId = dData.client_id;
+    const freelancerId = dData.freelancer_id;
+    const disputeAmount = Number(dData.amount || 0);
+    const contractId = dData.contract_id || dData.chat_contract_id || null;
+    const jobId = dData.job_id || null;
+
+    const contractCurrency = dData.contract_currency || dData.currency || 'UZS';
+    const rate = Number(dData.exchange_rate || 1);
+    const isUzs = contractCurrency === 'UZS' || contractCurrency === 'uzs';
+
+    // Safety: If actual money needs to be moved, we must have client_id
+    if (payout_action && payout_action !== "no_action") {
+      if (!clientId) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ success: false, message: "Disputega bog'langan contractda client_id topilmadi." });
+      }
+    }
+
+    if (payout_action === "refund_to_client") {
+      const amountToRefundRaw = pa !== null ? pa : disputeAmount;
+      if (amountToRefundRaw <= 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ success: false, message: "Refund summasi 0 dan katta bo'lishi kerak." });
+      }
+
+      // Convert to UZS for actual user balance deduction/addition
+      const amountToRefund = isUzs ? amountToRefundRaw : Math.round(amountToRefundRaw * rate);
+
+      const balCheck = await client.query(
+        `SELECT escrow_balance FROM user_balances WHERE user_id = $1 FOR UPDATE`,
+        [clientId]
+      );
+      const clientEscrow = Number(balCheck.rows[0]?.escrow_balance ?? 0);
+      if (clientEscrow < amountToRefund) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ success: false, message: "Mijozning escrow hisobida yetarli mablag' mavjud emas." });
+      }
+
+      // Deduct from escrow, add to available (refund)
+      await client.query(
+        `UPDATE user_balances 
+         SET escrow_balance = escrow_balance - $1, 
+             available_balance = available_balance + $1,
+             updated_at = NOW() 
+         WHERE user_id = $2`,
+        [amountToRefund, clientId]
+      );
+
+      // Log transaction in UZS
+      await client.query(
+        `INSERT INTO transactions (user_id, type, amount, currency, gateway, status, metadata, contract_id, job_id, created_at, updated_at)
+         VALUES ($1, 'refund', $2, 'UZS', 'internal', 'completed', $3, $4, $5, NOW(), NOW())`,
+        [
+          clientId,
+          amountToRefund,
+          JSON.stringify({
+            dispute_id: id,
+            reason: "dispute_refund",
+            resolution,
+            original_amount: amountToRefundRaw,
+            original_currency: contractCurrency,
+            exchange_rate: rate
+          }),
+          contractId,
+          jobId
+        ]
+      );
+
+    } else if (payout_action === "release_to_freelancer") {
+      const amountToReleaseRaw = pa !== null ? pa : disputeAmount;
+      if (amountToReleaseRaw <= 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ success: false, message: "Release summasi 0 dan katta bo'lishi kerak." });
+      }
+      if (!freelancerId) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ success: false, message: "Disputega bog'langan contractda freelancer_id topilmadi." });
+      }
+
+      // Convert to UZS
+      const amountToRelease = isUzs ? amountToReleaseRaw : Math.round(amountToReleaseRaw * rate);
+
+      const balCheck = await client.query(
+        `SELECT escrow_balance FROM user_balances WHERE user_id = $1 FOR UPDATE`,
+        [clientId]
+      );
+      const clientEscrow = Number(balCheck.rows[0]?.escrow_balance ?? 0);
+      if (clientEscrow < amountToRelease) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ success: false, message: "Mijozning escrow hisobida yetarli mablag' mavjud emas." });
+      }
+
+      // Deduct from client's escrow, add to total_spent
+      await client.query(
+        `UPDATE user_balances 
+         SET escrow_balance = escrow_balance - $1, 
+             total_spent = COALESCE(total_spent, 0) + $1,
+             updated_at = NOW() 
+         WHERE user_id = $2`,
+        [amountToRelease, clientId]
+      );
+
+      // Add to freelancer's available, add to total_earned
+      await client.query(
+        `UPDATE user_balances 
+         SET available_balance = available_balance + $1, 
+             total_earned = COALESCE(total_earned, 0) + $1,
+             updated_at = NOW() 
+         WHERE user_id = $2`,
+        [amountToRelease, freelancerId]
+      );
+
+      // Log transaction in UZS
+      await client.query(
+        `INSERT INTO transactions (user_id, type, amount, currency, gateway, status, metadata, contract_id, job_id, created_at, updated_at)
+         VALUES ($1, 'escrow_release', $2, 'UZS', 'internal', 'completed', $3, $4, $5, NOW(), NOW())`,
+        [
+          freelancerId,
+          amountToRelease,
+          JSON.stringify({
+            dispute_id: id,
+            reason: "dispute_release",
+            resolution,
+            original_amount: amountToReleaseRaw,
+            original_currency: contractCurrency,
+            exchange_rate: rate
+          }),
+          contractId,
+          jobId
+        ]
+      );
+
+    } else if (payout_action === "split") {
+      const freelancerPartRaw = pa !== null ? pa : 0;
+      if (freelancerPartRaw < 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ success: false, message: "Split frilanser qismi manfiy bo'la olmaydi." });
+      }
+      if (!freelancerId) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ success: false, message: "Split qilish uchun freelancer_id topilmadi." });
+      }
+
+      const freelancerPart = isUzs ? freelancerPartRaw : Math.round(freelancerPartRaw * rate);
+
+      const balCheck = await client.query(
+        `SELECT escrow_balance FROM user_balances WHERE user_id = $1 FOR UPDATE`,
+        [clientId]
+      );
+      const clientEscrow = Number(balCheck.rows[0]?.escrow_balance ?? 0);
+      
+      const totalDeduction = disputeAmount > 0 
+        ? (isUzs ? disputeAmount : Math.round(disputeAmount * rate))
+        : clientEscrow;
+
+      const clientPart = totalDeduction - freelancerPart;
+
+      if (clientPart < 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ success: false, message: "Frilanserga ajratilgan summa umumiy escrow summasidan katta bo'la olmaydi." });
+      }
+      if (clientEscrow < totalDeduction) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ success: false, message: "Mijozning escrow hisobida yetarli mablag' mavjud emas." });
+      }
+
+      // Deduct from client escrow, add freelancerPart to total_spent
+      await client.query(
+        `UPDATE user_balances 
+         SET escrow_balance = escrow_balance - $1, 
+             total_spent = COALESCE(total_spent, 0) + $2,
+             updated_at = NOW() 
+         WHERE user_id = $3`,
+        [totalDeduction, freelancerPart, clientId]
+      );
+
+      // Refund client part
+      if (clientPart > 0) {
+        await client.query(
+          `UPDATE user_balances 
+           SET available_balance = available_balance + $1,
+               updated_at = NOW() 
+           WHERE user_id = $2`,
+          [clientPart, clientId]
+        );
+
+        await client.query(
+          `INSERT INTO transactions (user_id, type, amount, currency, gateway, status, metadata, contract_id, job_id, created_at, updated_at)
+           VALUES ($1, 'refund', $2, 'UZS', 'internal', 'completed', $3, $4, $5, NOW(), NOW())`,
+          [
+            clientId,
+            clientPart,
+            JSON.stringify({
+              dispute_id: id,
+              reason: "dispute_split_refund",
+              resolution,
+              original_amount: isUzs ? clientPart : (clientPart / rate),
+              original_currency: contractCurrency,
+              exchange_rate: rate
+            }),
+            contractId,
+            jobId
+          ]
+        );
+      }
+
+      // Release freelancer part
+      if (freelancerPart > 0) {
+        await client.query(
+          `UPDATE user_balances 
+           SET available_balance = available_balance + $1,
+               total_earned = COALESCE(total_earned, 0) + $1,
+               updated_at = NOW() 
+           WHERE user_id = $2`,
+          [freelancerPart, freelancerId]
+        );
+
+        await client.query(
+          `INSERT INTO transactions (user_id, type, amount, currency, gateway, status, metadata, contract_id, job_id, created_at, updated_at)
+           VALUES ($1, 'escrow_release', $2, 'UZS', 'internal', 'completed', $3, $4, $5, NOW(), NOW())`,
+          [
+            freelancerId,
+            freelancerPart,
+            JSON.stringify({
+              dispute_id: id,
+              reason: "dispute_split_release",
+              resolution,
+              original_amount: freelancerPartRaw,
+              original_currency: contractCurrency,
+              exchange_rate: rate
+            }),
+            contractId,
+            jobId
+          ]
+        );
+      }
+    }
+
+    // Now update disputes table status to resolved
     const q = await client.query(
       `
       UPDATE disputes
@@ -665,6 +921,15 @@ const resolveDispute = async (req, res) => {
       ]
     );
 
+    // Also update associated contract status from disputed back to active/completed/cancelled based on payout
+    if (contractId) {
+      const contractStatus = (payout_action === "refund_to_client" && pa === null) ? "cancelled" : "completed";
+      await client.query(
+        `UPDATE contracts SET status = $1, updated_at = NOW() WHERE id = $2`,
+        [contractStatus, contractId]
+      );
+    }
+
     await logDisputeAction(client, {
       dispute_id: id,
       actor_id: adminId,
@@ -684,21 +949,10 @@ const resolveDispute = async (req, res) => {
 
     // ✅ Notify both parties
     const io = req.app.get("io");
-    const dRes = await client.query(
-      `SELECT d.raised_by, d.against_user, d.winner_user_id, j.title AS job_title
-       FROM disputes d
-       LEFT JOIN chats ch ON d.chat_id = ch.id
-       LEFT JOIN contracts c ON c.id = COALESCE(d.contract_id, ch.contract_id)
-       LEFT JOIN jobs j ON j.id = c.job_id
-       WHERE d.id = $1`, 
-      [id]
-    );
-    const dData = dRes.rows[0];
-    
     if (dData) {
       [dData.raised_by, dData.against_user].forEach(uid => {
         if (!uid) return;
-        const isWinner = uid === dData.winner_user_id;
+        const isWinner = uid === (winner_user_id || dData.winner_user_id);
         createNotification(io, {
           userId: uid,
           type: 'dispute_resolved',

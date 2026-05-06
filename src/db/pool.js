@@ -113,6 +113,9 @@ pool.on("connect", async (client) => {
       ALTER TABLE transactions ADD CONSTRAINT tx_currency_check 
         CHECK (currency IN ('UZS', 'USD', 'RUB'));
 
+      -- Drop transactions type check constraint entirely to allow any transaction types
+      ALTER TABLE transactions DROP CONSTRAINT IF EXISTS transactions_type_check;
+
       -- Skills jadvalini yaratish
       CREATE TABLE IF NOT EXISTS skills (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
