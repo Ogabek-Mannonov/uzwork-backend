@@ -59,8 +59,17 @@ const getClients = async (req, res) => {
         cp.updated_at,
 
         -- agar client haqida reviews bo'lsa
-        (SELECT AVG(r.rating)::numeric(10,2) FROM reviews r WHERE r.reviewee_id = u.id) AS average_rating,
-        (SELECT COUNT(*)::int FROM reviews r WHERE r.reviewee_id = u.id) AS total_reviews
+        (
+          SELECT AVG(
+            COALESCE(
+              (r.score_quality + r.score_timeliness + r.score_communication) / 3.0,
+              (r.score_payment + r.score_clarity) / 2.0
+            )
+          )::numeric(10,2) 
+          FROM ratings r 
+          WHERE r.to_user_id = u.id
+        ) AS average_rating,
+        (SELECT COUNT(*)::int FROM ratings r WHERE r.to_user_id = u.id) AS total_reviews
       FROM users u
       LEFT JOIN client_profiles cp ON cp.user_id = u.id
       ${where}
@@ -120,8 +129,17 @@ const getClientById = async (req, res) => {
         cp.created_at,
         cp.updated_at,
 
-        (SELECT AVG(r.rating)::numeric(10,2) FROM reviews r WHERE r.reviewee_id = u.id) AS average_rating,
-        (SELECT COUNT(*)::int FROM reviews r WHERE r.reviewee_id = u.id) AS total_reviews
+        (
+          SELECT AVG(
+            COALESCE(
+              (r.score_quality + r.score_timeliness + r.score_communication) / 3.0,
+              (r.score_payment + r.score_clarity) / 2.0
+            )
+          )::numeric(10,2) 
+          FROM ratings r 
+          WHERE r.to_user_id = u.id
+        ) AS average_rating,
+        (SELECT COUNT(*)::int FROM ratings r WHERE r.to_user_id = u.id) AS total_reviews
       FROM users u
       LEFT JOIN client_profiles cp ON cp.user_id = u.id
       WHERE u.id = $1

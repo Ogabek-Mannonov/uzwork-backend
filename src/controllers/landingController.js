@@ -28,12 +28,17 @@ exports.getLandingData = async (req, res) => {
     // ==========================
     const reviews = await pool.query(`
       SELECT
-        COALESCE(r.rating, 5) AS rating,
+        COALESCE(
+          (r.score_quality + r.score_timeliness + r.score_communication) / 3.0,
+          (r.score_payment + r.score_clarity) / 2.0,
+          5.0
+        ) AS rating,
         COALESCE(r.comment, 'Great work!') AS comment,
         CONCAT(u.first_name,' ',u.last_name) AS full_name,
         COALESCE(u.avatar_url, '') AS avatar_url
-      FROM reviews r
-      JOIN users u ON r.reviewer_id = u.id
+      FROM ratings r
+      JOIN users u ON r.from_user_id = u.id
+      WHERE r.comment IS NOT NULL AND r.comment != ''
       ORDER BY r.created_at DESC
       LIMIT 6
     `);
@@ -52,11 +57,11 @@ exports.getLandingData = async (req, res) => {
     // Platform stats (real counts)
     // ==========================
     const [usersCount, jobsCount, contractsCount, freelancerCount, clientCount] = await Promise.all([
-      pool.query(`SELECT COUNT(*) FROM users WHERE is_active = true`),
+      pool.query(`SELECT COUNT(*) FROM users WHERE deleted_at IS NULL`),
       pool.query(`SELECT COUNT(*) FROM jobs`),
       pool.query(`SELECT COUNT(*) FROM contracts WHERE status = 'completed'`),
-      pool.query(`SELECT COUNT(*) FROM users WHERE role = 'freelancer' AND is_active = true`),
-      pool.query(`SELECT COUNT(*) FROM users WHERE role = 'client' AND is_active = true`),
+      pool.query(`SELECT COUNT(*) FROM users WHERE role = 'freelancer' AND deleted_at IS NULL`),
+      pool.query(`SELECT COUNT(*) FROM users WHERE role = 'client' AND deleted_at IS NULL`),
     ]);
 
     // ==========================
@@ -67,13 +72,13 @@ exports.getLandingData = async (req, res) => {
         j.id,
         j.title,
         j.description,
-        COALESCE(j.budget_min, j.budget_amount, 0) AS budget_min,
-        COALESCE(j.budget_max, j.budget_amount, 0) AS budget_max,
-        COALESCE(j.budget_amount, 0) AS budget_amount,
-        j.budget_type,
+        COALESCE(j.budget_min, 0) AS budget_min,
+        COALESCE(j.budget_max, 0) AS budget_max,
+        COALESCE(j.budget_max, j.budget_min, 0) AS budget_amount,
+        j.job_type AS budget_type,
         j.currency,
         j.experience_level,
-        j.project_duration,
+        j.duration AS project_duration,
         j.created_at,
         CONCAT(u.first_name, ' ', u.last_name) AS client_name,
         COALESCE(u.avatar_url, '') AS client_avatar,

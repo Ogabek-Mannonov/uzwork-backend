@@ -123,43 +123,44 @@ const getMyProfile = async (req, res) => {
     let inProgressJobs = 0;
     let completedJobs = 0;
 
-    if (user.role === "freelancer") {
-      // 1. In Progress Jobs
-      const ip = await pool.query(
-        `SELECT COUNT(*)::int AS count FROM contracts WHERE freelancer_id = $1 AND status = 'active'`,
-        [userId]
-      );
-      inProgressJobs = ip.rows[0]?.count ?? 0;
+    // 1. In Progress Jobs
+    const activeField = user.role === "freelancer" ? "freelancer_id" : "client_id";
+    const ip = await pool.query(
+      `SELECT COUNT(*)::int AS count FROM contracts WHERE ${activeField} = $1 AND status = 'active'`,
+      [userId]
+    );
+    inProgressJobs = ip.rows[0]?.count ?? 0;
 
-      // 2. Completed Jobs
-      const cj = await pool.query(
-        `SELECT COUNT(*)::int AS count FROM contracts WHERE freelancer_id = $1 AND status = 'completed'`,
-        [userId]
-      );
-      completedJobs = cj.rows[0]?.count ?? 0;
+    // 2. Completed Jobs
+    const cj = await pool.query(
+      `SELECT COUNT(*)::int AS count FROM contracts WHERE ${activeField} = $1 AND status = 'completed'`,
+      [userId]
+    );
+    completedJobs = cj.rows[0]?.count ?? 0;
 
-      // 3. Reviews
-      if (cache.hasReviews) {
-        const r = await pool.query(
-          `
-          SELECT
-            COALESCE(AVG(rating), 0) AS avg_rating,
-            COUNT(*)::int AS total_reviews
-          FROM reviews
-          WHERE reviewee_id = $1
-          `,
-          [userId]
-        );
-        totalReviews = r.rows[0]?.total_reviews ?? 0;
-        if (totalReviews > 0) averageRating = Number(r.rows[0].avg_rating).toFixed(2);
-      } else {
-        // fallback: freelancer_profiles.rating bo‘lsa shuni qaytaramiz
-        if (roleProfile?.rating != null) {
-          averageRating = Number(roleProfile.rating).toFixed(2);
-        }
-        totalReviews = 0;
-      }
+    // 3. Reviews from ratings table
+    const r = await pool.query(
+      `
+      SELECT
+        COALESCE(AVG(
+          COALESCE(
+            (score_quality + score_timeliness + score_communication) / 3.0,
+            (score_payment + score_clarity) / 2.0
+          )
+        ), 0) AS avg_rating,
+        COUNT(*)::int AS total_reviews
+      FROM ratings
+      WHERE to_user_id = $1
+      `,
+      [userId]
+    );
+    totalReviews = r.rows[0]?.total_reviews ?? 0;
+    if (totalReviews > 0) {
+      averageRating = Number(r.rows[0].avg_rating).toFixed(2);
+    } else if (roleProfile?.rating != null) {
+      averageRating = Number(roleProfile.rating).toFixed(2);
     }
+
 
     return res.json({
       success: true,
@@ -239,42 +240,44 @@ const getUserProfile = async (req, res) => {
     let inProgressJobs = 0;
     let completedJobs = 0;
 
-    if (user.role === "freelancer") {
-      // 1. In Progress Jobs
-      const ip = await pool.query(
-        `SELECT COUNT(*)::int AS count FROM contracts WHERE freelancer_id = $1 AND status = 'active'`,
-        [userId]
-      );
-      inProgressJobs = ip.rows[0]?.count ?? 0;
+    // 1. In Progress Jobs
+    const activeField = user.role === "freelancer" ? "freelancer_id" : "client_id";
+    const ip = await pool.query(
+      `SELECT COUNT(*)::int AS count FROM contracts WHERE ${activeField} = $1 AND status = 'active'`,
+      [userId]
+    );
+    inProgressJobs = ip.rows[0]?.count ?? 0;
 
-      // 2. Completed Jobs
-      const cj = await pool.query(
-        `SELECT COUNT(*)::int AS count FROM contracts WHERE freelancer_id = $1 AND status = 'completed'`,
-        [userId]
-      );
-      completedJobs = cj.rows[0]?.count ?? 0;
+    // 2. Completed Jobs
+    const cj = await pool.query(
+      `SELECT COUNT(*)::int AS count FROM contracts WHERE ${activeField} = $1 AND status = 'completed'`,
+      [userId]
+    );
+    completedJobs = cj.rows[0]?.count ?? 0;
 
-      // 3. Reviews
-      if (cache.hasReviews) {
-        const r = await pool.query(
-          `
-          SELECT
-            COALESCE(AVG(rating), 0) AS avg_rating,
-            COUNT(*)::int AS total_reviews
-          FROM reviews
-          WHERE reviewee_id = $1
-          `,
-          [userId]
-        );
-        totalReviews = r.rows[0]?.total_reviews ?? 0;
-        if (totalReviews > 0) averageRating = Number(r.rows[0].avg_rating).toFixed(2);
-      } else {
-        if (roleProfile?.rating != null) {
-          averageRating = Number(roleProfile.rating).toFixed(2);
-        }
-        totalReviews = 0;
-      }
+    // 3. Reviews from ratings table
+    const r = await pool.query(
+      `
+      SELECT
+        COALESCE(AVG(
+          COALESCE(
+            (score_quality + score_timeliness + score_communication) / 3.0,
+            (score_payment + score_clarity) / 2.0
+          )
+        ), 0) AS avg_rating,
+        COUNT(*)::int AS total_reviews
+      FROM ratings
+      WHERE to_user_id = $1
+      `,
+      [userId]
+    );
+    totalReviews = r.rows[0]?.total_reviews ?? 0;
+    if (totalReviews > 0) {
+      averageRating = Number(r.rows[0].avg_rating).toFixed(2);
+    } else if (roleProfile?.rating != null) {
+      averageRating = Number(roleProfile.rating).toFixed(2);
     }
+
 
     return res.json({
       success: true,

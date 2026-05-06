@@ -3,25 +3,105 @@ const pool = require('../db/pool');
 const { createNotification } = require('./notificationController');
 
 /**
+ * Calculates the Exponential Decay Rating
+ * Last 3 months reviews get 70% weight, older ones 30% weight.
+ */
+const calculateWeightedRating = (ratingsRows, role) => {
+  if (ratingsRows.length === 0) return 0;
+
+  const threeMonthsAgo = new Date();
+  threeMonthsAgo.setMonth(threeMonthsAgo.getMonth() - 3);
+
+  const recentScores = [];
+  const oldScores = [];
+
+  for (const row of ratingsRows) {
+    let score = 0;
+    const createdAtDate = new Date(row.created_at);
+
+    if (role === 'freelancer') {
+      const q = row.score_quality || 0;
+      const t = row.score_timeliness || 0;
+      const c = row.score_communication || 0;
+      const count = (row.score_quality ? 1 : 0) + (row.score_timeliness ? 1 : 0) + (row.score_communication ? 1 : 0);
+      score = count > 0 ? (q + t + c) / count : 0;
+    } else {
+      // Client
+      const p = row.score_payment || 0;
+      const cl = row.score_clarity || 0;
+      const count = (row.score_payment ? 1 : 0) + (row.score_clarity ? 1 : 0);
+      score = count > 0 ? (p + cl) / count : 0;
+    }
+
+    if (createdAtDate >= threeMonthsAgo) {
+      recentScores.push(score);
+    } else {
+      oldScores.push(score);
+    }
+  }
+
+  let finalRating = 0;
+  if (recentScores.length > 0 && oldScores.length > 0) {
+    const avgRecent = recentScores.reduce((a, b) => a + b, 0) / recentScores.length;
+    const avgOld = oldScores.reduce((a, b) => a + b, 0) / oldScores.length;
+    finalRating = (avgRecent * 0.7) + (avgOld * 0.3);
+  } else if (recentScores.length > 0) {
+    finalRating = recentScores.reduce((a, b) => a + b, 0) / recentScores.length;
+  } else if (oldScores.length > 0) {
+    finalRating = oldScores.reduce((a, b) => a + b, 0) / oldScores.length;
+  }
+
+  return parseFloat(finalRating.toFixed(2));
+};
+
+/**
+ * Updates a user's rating profile in the DB
+ */
+const updateUserRating = async (userId) => {
+  try {
+    const userResult = await pool.query('SELECT role FROM users WHERE id = $1', [userId]);
+    if (userResult.rows.length === 0) return;
+    const role = userResult.rows[0].role;
+
+    const ratingsResult = await pool.query(
+      'SELECT score_quality, score_timeliness, score_communication, score_payment, score_clarity, created_at FROM ratings WHERE to_user_id = $1',
+      [userId]
+    );
+
+    const finalRating = calculateWeightedRating(ratingsResult.rows, role);
+
+    if (role === 'freelancer') {
+      await pool.query('UPDATE freelancer_profiles SET rating = $1 WHERE user_id = $2', [finalRating, userId]);
+    } else if (role === 'client') {
+      await pool.query('UPDATE client_profiles SET rating = $1 WHERE user_id = $2', [finalRating, userId]);
+    }
+  } catch (error) {
+    console.error(`Error updating rating for user ${userId}:`, error.message);
+  }
+};
+
+/**
  * POST /reviews
- * Create a review for completed contract
+ * Create a review/rating for completed contract
  */
 const createReview = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { contract_id, rating, comment } = req.body;
+    const { 
+      contract_id, 
+      score_quality, 
+      score_timeliness, 
+      score_communication, 
+      score_payment, 
+      score_clarity, 
+      rating, 
+      comment 
+    } = req.body;
 
-    if (!contract_id || !rating) {
+    if (!contract_id) {
       return res.status(400).json({
         success: false,
-        message: 'Contract_id va rating majburiy maydonlar.'
-      });
-    }
-
-    if (rating < 1 || rating > 5) {
-      return res.status(400).json({
-        success: false,
-        message: 'Rating 1 dan 5 gacha bo\'lishi kerak.'
+        message: 'Contract_id majburiy maydon.'
       });
     }
 
@@ -52,7 +132,7 @@ const createReview = async (req, res) => {
     if (contract.status !== 'completed') {
       return res.status(400).json({
         success: false,
-        message: 'Faqat "completed" statusdagi shartnomalar uchun sharh yozish mumkin.'
+        message: 'Faqat "completed" statusdagi shartnomalar uchun baho berish mumkin.'
       });
     }
 
@@ -61,26 +141,98 @@ const createReview = async (req, res) => {
       ? contract.freelancer_id 
       : contract.client_id;
 
-    // Check if review already exists
+    // Check reviewee role
+    const revieweeUserRes = await pool.query('SELECT role FROM users WHERE id = $1', [revieweeId]);
+    if (revieweeUserRes.rows.length === 0) {
+      return res.status(404).json({ success: false, message: 'Foydalanuvchi topilmadi.' });
+    }
+    const revieweeRole = revieweeUserRes.rows[0].role;
+
+    // --- SECURITY & ANTI-ABUSE ---
+    // A user can only rate the same user 2 times within 1 month
+    const oneMonthAgo = new Date();
+    oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
+    const antiAbuseCount = await pool.query(
+      'SELECT COUNT(*) FROM ratings WHERE from_user_id = $1 AND to_user_id = $2 AND created_at >= $3',
+      [userId, revieweeId, oneMonthAgo]
+    );
+    if (parseInt(antiAbuseCount.rows[0].count) >= 2) {
+      return res.status(400).json({
+        success: false,
+        message: 'Siz ushbu foydalanuvchiga 1 oy ichida ko\'pi bilan 2 marta reyting bera olasiz.'
+      });
+    }
+
+    // Check if review already exists from this reviewer for this contract
     const existingReview = await pool.query(
-      'SELECT id FROM reviews WHERE contract_id = $1 AND reviewer_id = $2',
+      'SELECT id FROM ratings WHERE contract_id = $1 AND from_user_id = $2',
       [contract_id, userId]
     );
 
     if (existingReview.rows.length > 0) {
       return res.status(409).json({
         success: false,
-        message: 'Siz bu shartnoma uchun allaqachon sharh yozgansiz.'
+        message: 'Siz bu shartnoma uchun allaqachon baho bergansiz.'
       });
     }
 
-    // Create review
+    // --- PARAMETERS MAPPING & VALIDATION ---
+    let sq = null, st = null, sc = null, sp = null, s_clarity = null;
+
+    if (revieweeRole === 'freelancer') {
+      // Client is rating Freelancer
+      sq = score_quality !== undefined ? score_quality : rating;
+      st = score_timeliness !== undefined ? score_timeliness : rating;
+      sc = score_communication !== undefined ? score_communication : rating;
+
+      if (!sq || !st || !sc) {
+        return res.status(400).json({
+          success: false,
+          message: 'Frilanser uchun barcha baholash metrikalari majburiy (Sifat, Muddat, Muloqot).'
+        });
+      }
+
+      if (sq < 1 || sq > 5 || st < 1 || st > 5 || sc < 1 || sc > 5) {
+        return res.status(400).json({
+          success: false,
+          message: 'Barcha baholar 1 dan 5 gacha bo\'lishi kerak.'
+        });
+      }
+    } else {
+      // Freelancer is rating Client
+      sp = score_payment !== undefined ? score_payment : rating;
+      s_clarity = score_clarity !== undefined ? score_clarity : rating;
+
+      if (!sp || !s_clarity) {
+        return res.status(400).json({
+          success: false,
+          message: 'Buyurtmachi uchun barcha baholash metrikalari majburiy (To\'lov, Texnik topshiriq aniqligi).'
+        });
+      }
+
+      if (sp < 1 || sp > 5 || s_clarity < 1 || s_clarity > 5) {
+        return res.status(400).json({
+          success: false,
+          message: 'Barcha baholar 1 dan 5 gacha bo\'lishi kerak.'
+        });
+      }
+    }
+
+    // Create rating
     const result = await pool.query(
-      `INSERT INTO reviews (contract_id, reviewer_id, reviewee_id, rating, comment)
-       VALUES ($1, $2, $3, $4, $5)
+      `INSERT INTO ratings (
+        contract_id, from_user_id, to_user_id, 
+        score_quality, score_timeliness, score_communication,
+        score_payment, score_clarity,
+        comment, is_automatic
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, FALSE)
        RETURNING *`,
-      [contract_id, userId, revieweeId, rating, comment || null]
+      [contract_id, userId, revieweeId, sq, st, sc, sp, s_clarity, comment || null]
     );
+
+    // Recalculate reviewee's overall rating in their profile
+    await updateUserRating(revieweeId);
 
     const reviewerRes = await pool.query(`SELECT first_name, last_name FROM users WHERE id = $1`, [userId]);
     const reviewerName = reviewerRes.rows[0] ? `${reviewerRes.rows[0].first_name || ''} ${reviewerRes.rows[0].last_name || ''}`.trim() : 'Foydalanuvchi';
@@ -99,16 +251,21 @@ const createReview = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: 'Sharh muvaffaqiyatli yozildi!',
+      message: 'Baho muvaffaqiyatli qabul qilindi!',
       data: {
-        review: result.rows[0]
+        review: {
+          ...result.rows[0],
+          reviewer_id: result.rows[0].from_user_id,
+          reviewee_id: result.rows[0].to_user_id,
+          rating: rating || (revieweeRole === 'freelancer' ? (sq + st + sc) / 3 : (sp + s_clarity) / 2)
+        }
       }
     });
   } catch (error) {
-    console.error('Create review error:', error);
+    console.error('Create rating error:', error);
     res.status(500).json({
       success: false,
-      message: 'Sharh yozishda xato yuz berdi.',
+      message: 'Baho yozishda xato yuz berdi.',
       error: error.message
     });
   }
@@ -125,7 +282,6 @@ const getReviews = async (req, res) => {
       freelancer_id, // Alias for reviewee_id
       reviewer_id,
       contract_id,
-      min_rating,
       page = 1,
       limit = 20
     } = req.query;
@@ -140,12 +296,12 @@ const getReviews = async (req, res) => {
     const targetRevieweeId = reviewee_id || freelancer_id;
 
     if (targetRevieweeId) {
-      whereConditions.push(`r.reviewee_id = $${paramIndex++}`);
+      whereConditions.push(`r.to_user_id = $${paramIndex++}`);
       queryParams.push(targetRevieweeId);
     }
 
     if (reviewer_id) {
-      whereConditions.push(`r.reviewer_id = $${paramIndex++}`);
+      whereConditions.push(`r.from_user_id = $${paramIndex++}`);
       queryParams.push(reviewer_id);
     }
 
@@ -154,24 +310,25 @@ const getReviews = async (req, res) => {
       queryParams.push(contract_id);
     }
 
-    if (min_rating) {
-      whereConditions.push(`r.rating >= $${paramIndex++}`);
-      queryParams.push(parseInt(min_rating));
-    }
-
     const whereClause = whereConditions.length > 0
       ? 'WHERE ' + whereConditions.join(' AND ')
       : '';
 
     // Get total count
-    const countQuery = `SELECT COUNT(*) FROM reviews r ${whereClause}`;
+    const countQuery = `SELECT COUNT(*) FROM ratings r ${whereClause}`;
     const countResult = await pool.query(countQuery, queryParams);
     const total = parseInt(countResult.rows[0].count);
 
-    // Get reviews with user info and job info
+    // Get ratings with aliased legacy fields for frontend compatibility
     const reviewsQuery = `
       SELECT 
         r.*,
+        r.from_user_id as reviewer_id,
+        r.to_user_id as reviewee_id,
+        COALESCE(
+          (r.score_quality + r.score_timeliness + r.score_communication) / 3.0,
+          (r.score_payment + r.score_clarity) / 2.0
+        ) as rating,
         u_reviewer.first_name as reviewer_first_name,
         u_reviewer.last_name as reviewer_last_name,
         u_reviewee.first_name as reviewee_first_name,
@@ -179,9 +336,9 @@ const getReviews = async (req, res) => {
         j.title as job_title,
         c.total_amount as project_amount,
         c.currency as project_currency
-      FROM reviews r
-      JOIN users u_reviewer ON r.reviewer_id = u_reviewer.id
-      JOIN users u_reviewee ON r.reviewee_id = u_reviewee.id
+      FROM ratings r
+      JOIN users u_reviewer ON r.from_user_id = u_reviewer.id
+      JOIN users u_reviewee ON r.to_user_id = u_reviewee.id
       LEFT JOIN contracts c ON r.contract_id = c.id
       LEFT JOIN jobs j ON c.job_id = j.id
       ${whereClause}
@@ -225,13 +382,19 @@ const getReviewById = async (req, res) => {
     const result = await pool.query(
       `SELECT 
         r.*,
+        r.from_user_id as reviewer_id,
+        r.to_user_id as reviewee_id,
+        COALESCE(
+          (r.score_quality + r.score_timeliness + r.score_communication) / 3.0,
+          (r.score_payment + r.score_clarity) / 2.0
+        ) as rating,
         u_reviewer.first_name as reviewer_first_name,
         u_reviewer.last_name as reviewer_last_name,
         u_reviewee.first_name as reviewee_first_name,
         u_reviewee.last_name as reviewee_last_name
-      FROM reviews r
-      JOIN users u_reviewer ON r.reviewer_id = u_reviewer.id
-      JOIN users u_reviewee ON r.reviewee_id = u_reviewee.id
+      FROM ratings r
+      JOIN users u_reviewer ON r.from_user_id = u_reviewer.id
+      JOIN users u_reviewee ON r.to_user_id = u_reviewee.id
       WHERE r.id = $1`,
       [id]
     );
@@ -261,7 +424,7 @@ const getReviewById = async (req, res) => {
 
 /**
  * GET /reviews/user/:userId
- * Get reviews for a specific user (with average rating)
+ * Get reviews for a specific user (with sub-metrics and star distribution)
  */
 const getUserReviews = async (req, res) => {
   try {
@@ -269,63 +432,118 @@ const getUserReviews = async (req, res) => {
     const { page = 1, limit = 20 } = req.query;
     const offset = (parseInt(page) - 1) * parseInt(limit);
 
+    // Check user and get their role
+    const userResult = await pool.query('SELECT role FROM users WHERE id = $1', [userId]);
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Foydalanuvchi topilmadi.'
+      });
+    }
+    const role = userResult.rows[0].role;
+
     // Get reviews with reviewer info and job info
     const reviewsQuery = `
       SELECT 
         r.*,
+        r.from_user_id as reviewer_id,
+        r.to_user_id as reviewee_id,
+        COALESCE(
+          (r.score_quality + r.score_timeliness + r.score_communication) / 3.0,
+          (r.score_payment + r.score_clarity) / 2.0
+        ) as rating,
         u_reviewer.first_name as reviewer_first_name,
         u_reviewer.last_name as reviewer_last_name,
         j.title as job_title,
         c.total_amount as project_amount,
         c.currency as project_currency
-      FROM reviews r
-      JOIN users u_reviewer ON r.reviewer_id = u_reviewer.id
+      FROM ratings r
+      JOIN users u_reviewer ON r.from_user_id = u_reviewer.id
       LEFT JOIN contracts c ON r.contract_id = c.id
       LEFT JOIN jobs j ON c.job_id = j.id
-      WHERE r.reviewee_id = $1
+      WHERE r.to_user_id = $1
       ORDER BY r.created_at DESC
       LIMIT $2 OFFSET $3
     `;
 
     const reviewsResult = await pool.query(reviewsQuery, [userId, parseInt(limit), offset]);
 
-    // Get average rating and total count
-    const statsResult = await pool.query(
+    // Fetch all ratings to calculate exact premium metrics & decay rating
+    const allRatingsRes = await pool.query(
       `SELECT 
-        COUNT(*) as total_reviews,
-        AVG(rating) as average_rating,
-        COUNT(CASE WHEN rating = 5 THEN 1 END) as five_star,
-        COUNT(CASE WHEN rating = 4 THEN 1 END) as four_star,
-        COUNT(CASE WHEN rating = 3 THEN 1 END) as three_star,
-        COUNT(CASE WHEN rating = 2 THEN 1 END) as two_star,
-        COUNT(CASE WHEN rating = 1 THEN 1 END) as one_star
-      FROM reviews
-      WHERE reviewee_id = $1`,
+        score_quality, score_timeliness, score_communication,
+        score_payment, score_clarity, created_at,
+        COALESCE(
+          (score_quality + score_timeliness + score_communication) / 3.0,
+          (score_payment + score_clarity) / 2.0
+        ) as calculated_rating
+       FROM ratings
+       WHERE to_user_id = $1`,
       [userId]
     );
 
-    const stats = statsResult.rows[0];
+    const starDistribution = {
+      five_star: 0,
+      four_star: 0,
+      three_star: 0,
+      two_star: 0,
+      one_star: 0
+    };
+
+    let sumQuality = 0, countQuality = 0;
+    let sumTimeliness = 0, countTimeliness = 0;
+    let sumCommunication = 0, countCommunication = 0;
+    let sumPayment = 0, countPayment = 0;
+    let sumClarity = 0, countClarity = 0;
+
+    for (const r of allRatingsRes.rows) {
+      const val = Math.round(parseFloat(r.calculated_rating || 0));
+      if (val === 5) starDistribution.five_star++;
+      else if (val === 4) starDistribution.four_star++;
+      else if (val === 3) starDistribution.three_star++;
+      else if (val === 2) starDistribution.two_star++;
+      else if (val === 1) starDistribution.one_star++;
+
+      if (r.score_quality) { sumQuality += r.score_quality; countQuality++; }
+      if (r.score_timeliness) { sumTimeliness += r.score_timeliness; countTimeliness++; }
+      if (r.score_communication) { sumCommunication += r.score_communication; countCommunication++; }
+      if (r.score_payment) { sumPayment += r.score_payment; countPayment++; }
+      if (r.score_clarity) { sumClarity += r.score_clarity; countClarity++; }
+    }
+
+    // Calculated Weighted average rating using Exponential Decay
+    const averageRating = calculateWeightedRating(allRatingsRes.rows, role);
+
+    const subMetrics = role === 'freelancer' ? {
+      quality: countQuality > 0 ? parseFloat((sumQuality / countQuality).toFixed(2)) : 0,
+      timeliness: countTimeliness > 0 ? parseFloat((sumTimeliness / countTimeliness).toFixed(2)) : 0,
+      communication: countCommunication > 0 ? parseFloat((sumCommunication / countCommunication).toFixed(2)) : 0
+    } : {
+      payment: countPayment > 0 ? parseFloat((sumPayment / countPayment).toFixed(2)) : 0,
+      clarity: countClarity > 0 ? parseFloat((sumClarity / countClarity).toFixed(2)) : 0
+    };
 
     res.json({
       success: true,
       data: {
         reviews: reviewsResult.rows,
         stats: {
-          total_reviews: parseInt(stats.total_reviews),
-          average_rating: parseFloat(stats.average_rating || 0).toFixed(2),
+          total_reviews: allRatingsRes.rows.length,
+          average_rating: averageRating.toFixed(2),
+          sub_metrics: subMetrics,
           rating_distribution: {
-            five_star: parseInt(stats.five_star),
-            four_star: parseInt(stats.four_star),
-            three_star: parseInt(stats.three_star),
-            two_star: parseInt(stats.two_star),
-            one_star: parseInt(stats.one_star)
+            five_star: starDistribution.five_star,
+            four_star: starDistribution.four_star,
+            three_star: starDistribution.three_star,
+            two_star: starDistribution.two_star,
+            one_star: starDistribution.one_star
           }
         },
         pagination: {
           page: parseInt(page),
           limit: parseInt(limit),
-          total: parseInt(stats.total_reviews),
-          totalPages: Math.ceil(parseInt(stats.total_reviews) / parseInt(limit))
+          total: allRatingsRes.rows.length,
+          totalPages: Math.ceil(allRatingsRes.rows.length / parseInt(limit))
         }
       }
     });
@@ -341,16 +559,25 @@ const getUserReviews = async (req, res) => {
 
 /**
  * PUT /reviews/:id
- * Update review (only author can update)
+ * Update review (only author can update and only within 48 hours)
  */
 const updateReview = async (req, res) => {
   try {
     const { id } = req.params;
     const userId = req.user.id;
+    const { 
+      score_quality, 
+      score_timeliness, 
+      score_communication, 
+      score_payment, 
+      score_clarity, 
+      rating, 
+      comment 
+    } = req.body;
 
     // Check if review exists and user is author
     const reviewCheck = await pool.query(
-      'SELECT reviewer_id FROM reviews WHERE id = $1',
+      'SELECT from_user_id, to_user_id, created_at FROM ratings WHERE id = $1',
       [id]
     );
 
@@ -361,31 +588,67 @@ const updateReview = async (req, res) => {
       });
     }
 
-    if (reviewCheck.rows[0].reviewer_id !== userId) {
+    const ratingRow = reviewCheck.rows[0];
+    if (ratingRow.from_user_id !== userId) {
       return res.status(403).json({
         success: false,
         message: 'Siz bu sharhning muallifi emassiz.'
       });
     }
 
-    const { rating, comment } = req.body;
-
-    if (rating !== undefined && (rating < 1 || rating > 5)) {
+    // --- TIMING RESTRICTION ---
+    // Editing only allowed within 48 hours of creation
+    const createdAt = new Date(ratingRow.created_at);
+    const hoursPassed = (new Date() - createdAt) / (1000 * 60 * 60);
+    if (hoursPassed > 48) {
       return res.status(400).json({
         success: false,
-        message: 'Rating 1 dan 5 gacha bo\'lishi kerak.'
+        message: 'Baho berilgandan keyin faqat 48 soat ichida uni tahrirlashingiz mumkin.'
       });
     }
+
+    // Check reviewee role
+    const revieweeId = ratingRow.to_user_id;
+    const revieweeUserRes = await pool.query('SELECT role FROM users WHERE id = $1', [revieweeId]);
+    const revieweeRole = revieweeUserRes.rows[0]?.role;
 
     // Build update query
     const updateFields = [];
     const updateValues = [];
     let paramIndex = 1;
 
-    if (rating !== undefined) {
-      updateFields.push(`rating = $${paramIndex++}`);
-      updateValues.push(rating);
+    if (revieweeRole === 'freelancer') {
+      const sq = score_quality !== undefined ? score_quality : rating;
+      const st = score_timeliness !== undefined ? score_timeliness : rating;
+      const sc = score_communication !== undefined ? score_communication : rating;
+
+      if (sq !== undefined) {
+        updateFields.push(`score_quality = $${paramIndex++}`);
+        updateValues.push(sq);
+      }
+      if (st !== undefined) {
+        updateFields.push(`score_timeliness = $${paramIndex++}`);
+        updateValues.push(st);
+      }
+      if (sc !== undefined) {
+        updateFields.push(`score_communication = $${paramIndex++}`);
+        updateValues.push(sc);
+      }
+    } else {
+      // Client
+      const sp = score_payment !== undefined ? score_payment : rating;
+      const s_clarity = score_clarity !== undefined ? score_clarity : rating;
+
+      if (sp !== undefined) {
+        updateFields.push(`score_payment = $${paramIndex++}`);
+        updateValues.push(sp);
+      }
+      if (s_clarity !== undefined) {
+        updateFields.push(`score_clarity = $${paramIndex++}`);
+        updateValues.push(s_clarity);
+      }
     }
+
     if (comment !== undefined) {
       updateFields.push(`comment = $${paramIndex++}`);
       updateValues.push(comment);
@@ -398,11 +661,9 @@ const updateReview = async (req, res) => {
       });
     }
 
-    updateFields.push(`updated_at = CURRENT_TIMESTAMP`);
     updateValues.push(id);
-
     const updateQuery = `
-      UPDATE reviews 
+      UPDATE ratings 
       SET ${updateFields.join(', ')}
       WHERE id = $${paramIndex}
       RETURNING *
@@ -410,11 +671,18 @@ const updateReview = async (req, res) => {
 
     const result = await pool.query(updateQuery, updateValues);
 
+    // Recalculate reviewee overall rating in profile
+    await updateUserRating(revieweeId);
+
     res.json({
       success: true,
-      message: 'Sharh muvaffaqiyatli yangilandi!',
+      message: 'Baho muvaffaqiyatli yangilandi!',
       data: {
-        review: result.rows[0]
+        review: {
+          ...result.rows[0],
+          reviewer_id: result.rows[0].from_user_id,
+          reviewee_id: result.rows[0].to_user_id
+        }
       }
     });
   } catch (error) {
@@ -432,8 +700,6 @@ module.exports = {
   getReviews,
   getReviewById,
   getUserReviews,
-  updateReview
+  updateReview,
+  updateUserRating
 };
-
-
-
