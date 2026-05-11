@@ -1205,6 +1205,88 @@ const findOrCreateChat = async (req, res) => {
   }
 };
 
+/**
+ * POST /messages/find-or-create-by-contract/:contractId
+ * Find existing chat for contract or create one
+ */
+const findOrCreateContractChat = async (req, res) => {
+  try {
+    const { contractId } = req.params;
+    if (!isUuid(contractId)) {
+      return res.status(400).json({ success: false, message: "Contract ID noto'g'ri" });
+    }
+
+    const cRes = await pool.query(
+      `SELECT id, job_id, client_id, freelancer_id
+       FROM contracts
+       WHERE id = $1`,
+      [contractId]
+    );
+
+    if (cRes.rows.length === 0) {
+      return res.status(404).json({ success: false, message: "Kontrakt topilmadi" });
+    }
+
+    const { job_id, client_id, freelancer_id } = cRes.rows[0];
+
+    const isOwner = String(req.user.id) === String(client_id);
+    const isFreelancer = String(req.user.id) === String(freelancer_id);
+    const isAdmin = req.user.role === 'admin';
+
+    if (!isOwner && !isFreelancer && !isAdmin) {
+      return res.status(403).json({ success: false, message: "Sizda ruxsat yo'q" });
+    }
+
+    // 1) Contract ID bo'yicha chatni qidirish
+    const existingChat = await pool.query(
+      `SELECT id FROM chats 
+       WHERE contract_id = $1 LIMIT 1`,
+      [contractId]
+    );
+
+    if (existingChat.rows.length > 0) {
+      return res.json({ success: true, data: { chatId: existingChat.rows[0].id } });
+    }
+
+    // 2) Shu job_id va freelancer_id uchun chatni qidirish
+    const jobChat = await pool.query(
+      `SELECT id FROM chats 
+       WHERE job_id = $1 AND freelancer_id = $2 LIMIT 1`,
+      [job_id, freelancer_id]
+    );
+
+    if (jobChat.rows.length > 0) {
+      // Chat topildi, unga contract_id ni ulab qo'yamiz
+      await pool.query(
+        `UPDATE chats SET contract_id = $1 WHERE id = $2`,
+        [contractId, jobChat.rows[0].id]
+      );
+      return res.json({ success: true, data: { chatId: jobChat.rows[0].id } });
+    }
+
+    // 3) Yangi chat yaratish
+    const createRes = await pool.query(
+      `INSERT INTO chats (job_id, contract_id, freelancer_id, status, created_at)
+       VALUES ($1, $2, $3, 'active', NOW())
+       RETURNING id`,
+      [job_id, contractId, freelancer_id]
+    );
+
+    return res.status(201).json({
+      success: true,
+      data: { chatId: createRes.rows[0].id }
+    });
+
+  } catch (error) {
+    console.error("findOrCreateContractChat error:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Chat yaratishda xato yuz berdi",
+      error: error.message
+    });
+  }
+};
+
 const cleanupEmptyChats = async (req, res) => {
   try {
     // 1. Get all chats with info
@@ -1280,6 +1362,7 @@ module.exports = {
   deleteMessage,
   updateChatStatus,
   findOrCreateChat,
+  findOrCreateContractChat,
   cleanupEmptyChats,
   listChatsDebug,
 };
