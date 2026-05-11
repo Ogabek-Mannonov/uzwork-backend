@@ -966,6 +966,31 @@ const acceptProposal = async (req, res) => {
       io.to(`user_${row.freelancer_id}`).emit('chat_info_updated', chat);
     }
 
+    // Fetch freelancer's name for system message
+    const freelancerUserRes = await client.query(
+      `SELECT first_name, last_name FROM users WHERE id = $1`,
+      [row.freelancer_id]
+    );
+    const flName = freelancerUserRes.rows[0]
+      ? `${freelancerUserRes.rows[0].first_name} ${freelancerUserRes.rows[0].last_name}`.trim()
+      : "Freelancer";
+
+    const systemMsgContent = `"${row.job_title}" loyihasi bo'yicha ${flName} bilan shartnoma tuzildi.`;
+
+    const systemMsgRes = await client.query(
+      `INSERT INTO messages (chat_id, sender_id, type, content, is_read, created_at)
+       VALUES ($1, $2, 'system', $3, FALSE, NOW())
+       RETURNING *`,
+      [chat.id, row.client_id, systemMsgContent]
+    );
+    const systemMsg = systemMsgRes.rows[0];
+
+    if (io) {
+      io.to(String(chat.id)).emit("newMessage", systemMsg);
+      io.to(`user_${row.client_id}`).emit("newMessage", systemMsg);
+      io.to(`user_${row.freelancer_id}`).emit("newMessage", systemMsg);
+    }
+
     // 7) auto escrow hold — balance allaqachon yuqorida tekshirildi, endi ushlab qolamiz
     await client.query(
       `

@@ -14,6 +14,7 @@ const {
   deleteMessage,
   updateChatStatus,
   findOrCreateChat,
+  findOrCreateContractChat,
   cleanupEmptyChats,
   listChatsDebug,
 } = require("../controllers/messageController");
@@ -37,6 +38,9 @@ router.get("/:chatId", getChatHistory);
 
 // Find or create chat by proposal
 router.post("/find-or-create/:proposalId", findOrCreateChat);
+
+// Find or create chat by contract
+router.post("/find-or-create-by-contract/:contractId", findOrCreateContractChat);
 
 // Send message
 router.post("/", sendMessage);
