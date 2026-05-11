@@ -23,6 +23,11 @@ const pool = new Pool({
 });
 
 pool.on("connect", async (client) => {
+  // Klient darajasidagi kutilmagan xatoliklarni tutib qolish (server crash bo'lmasligi uchun)
+  client.on("error", (err) => {
+    console.error("❌ DB Client kutilmagan xatosi:", err.message);
+  });
+  
   client.query("SET timezone = 'UTC'");
   console.log(`✅ Postgres ulandi (${isLocal ? "LOCAL" : "REMOTE SSL"})`);
 });
@@ -30,6 +35,10 @@ pool.on("connect", async (client) => {
 // Auto-migration: shortlisted status ruxsat berish va freelancer_id qo'shish
 // Darhol ishga tushiramiz
 (async () => {
+  // Barcha migratsiyalar allaqachon muvaffaqiyatli bajarilgan. 
+  // AWS RDS da ortiqcha jadval qulflanishi (Table Lock) va ulanish uzilishlarini (ECONNRESET) 
+  // oldini olish uchun ushbu avtomatik migratsiyani o'chirib qo'yamiz.
+  return;
   try {
     // Muammoli qatorlarni topib ko'ramiz
     const badRows = await pool.query(`

@@ -860,28 +860,38 @@ const resetPassword = async (req, res) => {
 const googleLogin = async (req, res) => {
   try {
     const { credential, role } = req.body; 
+    console.log("🔑 [Google Login] Boshlandi. Credential uzunligi:", credential ? credential.length : 0);
     
     if (!credential) {
+      console.log("⚠️ [Google Login] Credential yo'q!");
       return res.status(400).json({ success: false, message: "Google token kiritilmadi." });
     }
 
+    console.log("🌐 [Google Login] Google API-ga so'rov yuborilmoqda (userinfo)...");
     const response = await fetch('https://www.googleapis.com/oauth2/v3/userinfo', {
       headers: { Authorization: `Bearer ${credential}` }
     });
 
+    console.log("🌐 [Google Login] Google API-dan javob keldi. Status:", response.status);
     if (!response.ok) {
+      console.log("⚠️ [Google Login] Google Token yaroqsiz yoki eskirgan!");
       return res.status(401).json({ success: false, message: "Google token yaroqsiz." });
     }
 
     const payload = await response.json();
     const { email, given_name, family_name, picture, sub } = payload;
+    console.log("📧 [Google Login] Google-dan ma'lumotlar olindi. Email:", email);
 
+    console.log("🔌 [Google Login] Baza ulanishini pool-dan olyapmiz...");
     const client = await pool.connect();
+    console.log("🔌 [Google Login] Baza ulanishi muvaffaqiyatli olindi!");
     
     try {
+      console.log("📝 [Google Login] Tranzaksiya boshlanmoqda (BEGIN)...");
       await client.query("BEGIN");
 
       // Check if user exists by email
+      console.log("🔍 [Google Login] Foydalanuvchini email orqali qidiryapmiz (SELECT)...");
       let userQ = await client.query(
         `SELECT u.id, u.username, u.email, u.phone, u.role, u.status, u.first_name, u.last_name, u.display_name, u.is_verified, 
                 COALESCE(u.avatar_url, fp.avatar_url, cp.avatar_url) as avatar_url,
@@ -892,6 +902,7 @@ const googleLogin = async (req, res) => {
          WHERE u.email = $1 AND u.deleted_at IS NULL LIMIT 1`,
         [email]
       );
+      console.log("🔍 [Google Login] Baza qidiruv yakunlandi. Topilgan qatorlar:", userQ.rowCount);
 
       let user;
 

@@ -7,6 +7,7 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "check-db": "node scripts/check-db.js",
+    "unlock-db": "node scripts/unlock-db.js",
     "setup-db": "node scripts/setup-database.js",
     "setup-extended-db": "node scripts/setup-extended-db.js",
     "setup-new-schema": "node scripts/setup-new-schema.js",
