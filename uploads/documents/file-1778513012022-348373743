@@ -1,0 +1,5 @@
+VITE_API_URL=http://localhost:3000
+VITE_SOCKET_URL=http://localhost:3000
+VITE_GOOGLE_CLIENT_ID=780092669924-7bdcu8hjg708kfa0ijjh7kg5q3u859lr.apps.googleusercontent.com
+DATABASE_URL=postgresql://postgres:990338613ooga@my-postgres-db.cz2qeew0w1dm.eu-north-1.rds.amazonaws.com:5432/aws
+

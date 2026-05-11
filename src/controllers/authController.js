@@ -396,14 +396,22 @@ const refresh = async (req, res) => {
     const newRefreshToken = generateRefreshToken(user);
     const expiresAt = getTokenExpiryDate(newRefreshToken);
 
-    await pool.query("BEGIN");
-    await pool.query(`DELETE FROM refresh_tokens WHERE token = $1`, [refreshToken]);
-    await pool.query(
-      `INSERT INTO refresh_tokens (user_id, token, expires_at, ip_address, user_agent, last_active)
-       VALUES ($1, $2, $3, $4, $5, NOW())`,
-      [user.id, newRefreshToken, expiresAt || new Date(Date.now() + 7 * 24 * 3600 * 1000), ip_address, user_agent]
-    );
-    await pool.query("COMMIT");
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      await client.query(`DELETE FROM refresh_tokens WHERE token = $1`, [refreshToken]);
+      await client.query(
+        `INSERT INTO refresh_tokens (user_id, token, expires_at, ip_address, user_agent, last_active)
+         VALUES ($1, $2, $3, $4, $5, NOW())`,
+        [user.id, newRefreshToken, expiresAt || new Date(Date.now() + 7 * 24 * 3600 * 1000), ip_address, user_agent]
+      );
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
 
     return res.json({
       success: true,
@@ -411,7 +419,7 @@ const refresh = async (req, res) => {
       data: { accessToken: newAccessToken, refreshToken: newRefreshToken },
     });
   } catch (error) {
-    await pool.query("ROLLBACK").catch(() => {});
+    console.error("Refresh token error:", error);
     return res.status(500).json({
       success: false,
       message: "Refresh xato.",
@@ -717,8 +725,6 @@ const forgotPassword = async (req, res) => {
  * identifier = email yoki phone
  */
 const resetPassword = async (req, res) => {
-  const client = await pool.connect();
-
   try {
     const { identifier, code, new_password } = req.body || {};
 
@@ -736,123 +742,134 @@ const resetPassword = async (req, res) => {
       });
     }
 
-    await client.query("BEGIN");
+    const client = await pool.connect();
 
-    const userQ = await client.query(
-      `SELECT id, reset_code_hash, reset_expires_at, reset_attempts
-       FROM users
-       WHERE (email = $1 OR phone = $1) AND deleted_at IS NULL
-       LIMIT 1
-       FOR UPDATE`,
-      [identifier]
-    );
+    try {
+      await client.query("BEGIN");
 
-    if (userQ.rowCount === 0) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({
-        success: false,
-        message: "Kod yoki identifier noto‘g‘ri.",
-      });
-    }
+      const userQ = await client.query(
+        `SELECT id, reset_code_hash, reset_expires_at, reset_attempts
+         FROM users
+         WHERE (email = $1 OR phone = $1) AND deleted_at IS NULL
+         LIMIT 1
+         FOR UPDATE`,
+        [identifier]
+      );
 
-    const user = userQ.rows[0];
+      if (userQ.rowCount === 0) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          success: false,
+          message: "Kod yoki identifier noto‘g‘ri.",
+        });
+      }
 
-    if (!user.reset_code_hash || !user.reset_expires_at) {
-      await client.query("ROLLBACK");
-      return res.status(400).json({
-        success: false,
-        message: "Reset kodi topilmadi. Avval kod yuboring.",
-      });
-    }
+      const user = userQ.rows[0];
 
-    if (new Date(user.reset_expires_at) < new Date()) {
-      // expired -> clear
+      if (!user.reset_code_hash || !user.reset_expires_at) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({
+          success: false,
+          message: "Reset kodi topilmadi. Avval kod yuboring.",
+        });
+      }
+
+      if (new Date(user.reset_expires_at) < new Date()) {
+        // expired -> clear
+        await client.query(
+          `UPDATE users
+           SET reset_code_hash = NULL,
+               reset_expires_at = NULL,
+               reset_attempts = 0,
+               updated_at = NOW()
+           WHERE id = $1`,
+          [user.id]
+        );
+        await client.query("COMMIT");
+        return res.status(400).json({
+          success: false,
+          message: "Kod muddati tugagan. Qayta kod yuboring.",
+        });
+      }
+
+      const attempts = Number(user.reset_attempts || 0);
+      if (attempts >= 5) {
+        await client.query("ROLLBACK");
+        return res.status(429).json({
+          success: false,
+          message: "Urinishlar limiti tugadi. Keyinroq qayta urinib ko‘ring.",
+        });
+      }
+
+      const codeHash = sha256(code);
+      if (codeHash !== user.reset_code_hash) {
+        await client.query(
+          `UPDATE users
+           SET reset_attempts = reset_attempts + 1,
+               updated_at = NOW()
+           WHERE id = $1`,
+          [user.id]
+        );
+        await client.query("COMMIT");
+        return res.status(400).json({
+          success: false,
+          message: "Kod noto‘g‘ri.",
+        });
+      }
+
+      const passwordHash = await hashPassword(new_password);
+
       await client.query(
         `UPDATE users
-         SET reset_code_hash = NULL,
+         SET password_hash = $1,
+             reset_code_hash = NULL,
              reset_expires_at = NULL,
              reset_attempts = 0,
+             reset_sent_at = NULL,
              updated_at = NOW()
-         WHERE id = $1`,
-        [user.id]
+         WHERE id = $2`,
+        [passwordHash, user.id]
       );
+
+      // security: logout everywhere
+      await client.query(`DELETE FROM refresh_tokens WHERE user_id = $1`, [user.id]);
+
       await client.query("COMMIT");
-      return res.status(400).json({
+
+      // ✅ Notify user
+      const io = req.app.get("io");
+      if (io) {
+        createNotification(io, {
+          userId: user.id,
+          type: 'password_updated',
+          relatedId: user.id,
+          relatedType: 'user'
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: "Parol muvaffaqiyatli o‘zgartirildi.",
+      });
+    } catch (error) {
+      try {
+        await client.query("ROLLBACK");
+      } catch {}
+      return res.status(500).json({
         success: false,
-        message: "Kod muddati tugagan. Qayta kod yuboring.",
+        message: "reset-password xato.",
+        error: process.env.NODE_ENV === "development" ? error.message : undefined,
       });
+    } finally {
+      client.release();
     }
-
-    const attempts = Number(user.reset_attempts || 0);
-    if (attempts >= 5) {
-      await client.query("ROLLBACK");
-      return res.status(429).json({
-        success: false,
-        message: "Urinishlar limiti tugadi. Keyinroq qayta urinib ko‘ring.",
-      });
-    }
-
-    const codeHash = sha256(code);
-    if (codeHash !== user.reset_code_hash) {
-      await client.query(
-        `UPDATE users
-         SET reset_attempts = reset_attempts + 1,
-             updated_at = NOW()
-         WHERE id = $1`,
-        [user.id]
-      );
-      await client.query("COMMIT");
-      return res.status(400).json({
-        success: false,
-        message: "Kod noto‘g‘ri.",
-      });
-    }
-
-    const passwordHash = await hashPassword(new_password);
-
-    await client.query(
-      `UPDATE users
-       SET password_hash = $1,
-           reset_code_hash = NULL,
-           reset_expires_at = NULL,
-           reset_attempts = 0,
-           reset_sent_at = NULL,
-           updated_at = NOW()
-       WHERE id = $2`,
-      [passwordHash, user.id]
-    );
-
-    // security: logout everywhere
-    await client.query(`DELETE FROM refresh_tokens WHERE user_id = $1`, [user.id]);
-
-    await client.query("COMMIT");
-
-    // ✅ Notify user
-    const io = req.app.get("io");
-    if (io) {
-      createNotification(io, {
-        userId: user.id,
-        type: 'password_updated',
-        relatedId: user.id,
-        relatedType: 'user'
-      });
-    }
-
-    return res.json({
-      success: true,
-      message: "Parol muvaffaqiyatli o‘zgartirildi.",
-    });
   } catch (error) {
-    try {
-      await client.query("ROLLBACK");
-    } catch {}
+    console.error("Reset password validation/setup error:", error);
     return res.status(500).json({
       success: false,
       message: "reset-password xato.",
       error: process.env.NODE_ENV === "development" ? error.message : undefined,
     });
-  } finally {
-    client.release();
   }
 };
 

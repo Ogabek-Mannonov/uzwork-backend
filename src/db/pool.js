@@ -29,6 +29,7 @@ pool.on("connect", async (client) => {
   });
   
   client.query("SET timezone = 'UTC'");
+  client.query("SET lock_timeout = 10000"); // 10s lock timeout to prevent infinite server hanging on database locks
   console.log(`✅ Postgres ulandi (${isLocal ? "LOCAL" : "REMOTE SSL"})`);
 });
 

@@ -276,61 +276,68 @@ const withdraw = async (req, res) => {
 
     await ensureBalanceRow(userId);
 
-    await pool.query("BEGIN");
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
 
-    const bal = await pool.query(
-      `SELECT available_balance FROM user_balances WHERE user_id = $1 FOR UPDATE`,
-      [userId]
-    );
+      const bal = await client.query(
+        `SELECT available_balance FROM user_balances WHERE user_id = $1 FOR UPDATE`,
+        [userId]
+      );
 
-    if (Number(bal.rows[0].available_balance) < a) {
-      await pool.query("ROLLBACK");
-      return res.status(400).json({ 
-        success: false, 
-        message: `Balansda mablag' yetarli emas. Mavjud: ${bal.rows[0].available_balance}, So'ralgan: ${a}` 
+      if (Number(bal.rows[0].available_balance) < a) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ 
+          success: false, 
+          message: `Balansda mablag' yetarli emas. Mavjud: ${bal.rows[0].available_balance}, So'ralgan: ${a}` 
+        });
+      }
+
+      const tx = await client.query(
+        `
+        INSERT INTO transactions (user_id,type,amount,currency,gateway,status,metadata)
+        VALUES ($1,'withdrawal',$2,$3,$4,'pending',$5)
+        RETURNING *
+        `,
+        [userId, a, currency, gateway, JSON.stringify({ requested: true, originalAmount })]
+      );
+
+      await client.query(
+        `
+        UPDATE user_balances
+        SET available_balance = available_balance - $1,
+            reserved_balance  = reserved_balance + $1,
+            updated_at = NOW()
+        WHERE user_id = $2
+        `,
+        [a, userId]
+      );
+
+      await client.query("COMMIT");
+
+      // Notify user (background)
+      const io = req.app.get("io");
+      const displayAmt = originalAmount || a;
+      createNotification(io, {
+        userId,
+        type: 'withdrawal_request',
+        title: 'Yechib olish so\'rovi',
+        message: `${displayAmt.toLocaleString()} ${currency} miqdoridagi mablag'ni yechib olish uchun so'rovingiz qabul qilindi.`,
+        relatedId: tx.rows[0].id,
+        relatedType: 'transaction',
+        translationData: { amount: `${displayAmt.toLocaleString()} ${currency}` }
       });
+
+      return res.status(201).json({ success: true, data: { transaction: tx.rows[0] } });
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw e;
+    } finally {
+      client.release();
     }
-
-    const tx = await pool.query(
-      `
-      INSERT INTO transactions (user_id,type,amount,currency,gateway,status,metadata)
-      VALUES ($1,'withdrawal',$2,$3,$4,'pending',$5)
-      RETURNING *
-      `,
-      [userId, a, currency, gateway, JSON.stringify({ requested: true, originalAmount })]
-    );
-
-    await pool.query(
-      `
-      UPDATE user_balances
-      SET available_balance = available_balance - $1,
-          reserved_balance  = reserved_balance + $1,
-          updated_at = NOW()
-      WHERE user_id = $2
-      `,
-      [a, userId]
-    );
-
-    await pool.query("COMMIT");
-
-    // Notify user (background)
-    const io = req.app.get("io");
-    const displayAmt = originalAmount || a;
-    createNotification(io, {
-      userId,
-      type: 'withdrawal_request',
-      title: 'Yechib olish so\'rovi',
-      message: `${displayAmt.toLocaleString()} ${currency} miqdoridagi mablag'ni yechib olish uchun so'rovingiz qabul qilindi.`,
-      relatedId: tx.rows[0].id,
-      relatedType: 'transaction',
-      translationData: { amount: `${displayAmt.toLocaleString()} ${currency}` }
-    });
-
-    res.status(201).json({ success: true, data: { transaction: tx.rows[0] } });
   } catch (e) {
-    await pool.query("ROLLBACK").catch(() => {});
     console.error("Withdraw error details:", e);
-    res.status(500).json({ 
+    return res.status(500).json({ 
       success: false, 
       message: `Withdraw error: ${e.message}`, 
       stack: e.stack,
@@ -348,48 +355,59 @@ const paymentWebhook = async (req, res) => {
       return res.status(400).json({ success: false, message: "Invalid payload" });
     }
 
-    const txR = await pool.query(
-      `SELECT * FROM transactions WHERE id = $1 FOR UPDATE`,
-      [transaction_id]
-    );
-    if (!txR.rows.length) {
-      return res.status(404).json({ success: false, message: "Transaction not found" });
-    }
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
 
-    const tx = txR.rows[0];
-    if (tx.status === status) {
-      return res.json({ success: true, message: "No-op" });
-    }
-
-    await ensureBalanceRow(tx.user_id);
-    await pool.query("BEGIN");
-
-    await pool.query(
-      `UPDATE transactions SET status=$1, updated_at=NOW() WHERE id=$2`,
-      [status, tx.id]
-    );
-
-    const amt = Number(tx.amount);
-
-    if (tx.type === "deposit" && status === "completed") {
-      await pool.query(
-        `UPDATE user_balances SET available_balance = available_balance + $1 WHERE user_id = $2`,
-        [amt, tx.user_id]
+      const txR = await client.query(
+        `SELECT * FROM transactions WHERE id = $1 FOR UPDATE`,
+        [transaction_id]
       );
-    }
+      if (!txR.rows.length) {
+        await client.query("ROLLBACK");
+        return res.status(404).json({ success: false, message: "Transaction not found" });
+      }
 
-    if (tx.type === "withdrawal" && status === "completed") {
-      await pool.query(
-        `UPDATE user_balances SET reserved_balance = reserved_balance - $1 WHERE user_id = $2`,
-        [amt, tx.user_id]
+      const tx = txR.rows[0];
+      if (tx.status === status) {
+        await client.query("ROLLBACK");
+        return res.json({ success: true, message: "No-op" });
+      }
+
+      await ensureBalanceRow(tx.user_id);
+
+      await client.query(
+        `UPDATE transactions SET status=$1, updated_at=NOW() WHERE id=$2`,
+        [status, tx.id]
       );
-    }
 
-    await pool.query("COMMIT");
-    res.json({ success: true });
+      const amt = Number(tx.amount);
+
+      if (tx.type === "deposit" && status === "completed") {
+        await client.query(
+          `UPDATE user_balances SET available_balance = available_balance + $1 WHERE user_id = $2`,
+          [amt, tx.user_id]
+        );
+      }
+
+      if (tx.type === "withdrawal" && status === "completed") {
+        await client.query(
+          `UPDATE user_balances SET reserved_balance = reserved_balance - $1 WHERE user_id = $2`,
+          [amt, tx.user_id]
+        );
+      }
+
+      await client.query("COMMIT");
+      return res.json({ success: true });
+    } catch (e) {
+      await client.query("ROLLBACK").catch(() => {});
+      throw e;
+    } finally {
+      client.release();
+    }
   } catch (e) {
-    await pool.query("ROLLBACK").catch(() => {});
-    res.status(500).json({ success: false, message: "Webhook error", error: e.message });
+    console.error("Webhook error:", e);
+    return res.status(500).json({ success: false, message: "Webhook error", error: e.message });
   }
 };
 
@@ -417,18 +435,21 @@ const escrowHold = async (req, res) => {
 
     await ensureBalanceRow(clientId);
 
-    const bR = await pool.query(
-      "SELECT available_balance FROM user_balances WHERE user_id = $1",
-      [clientId]
-    );
-    const available = Number(bR.rows[0]?.available_balance ?? 0);
-    if (available < a) {
-      return res.status(400).json({ success: false, message: "Balansda yetarli mablag' yo'q." });
-    }
-
-    await pool.query("BEGIN");
+    const client = await pool.connect();
     try {
-      await pool.query(
+      await client.query("BEGIN");
+
+      const bR = await client.query(
+        "SELECT available_balance FROM user_balances WHERE user_id = $1 FOR UPDATE",
+        [clientId]
+      );
+      const available = Number(bR.rows[0]?.available_balance ?? 0);
+      if (available < a) {
+        await client.query("ROLLBACK");
+        return res.status(400).json({ success: false, message: "Balansda yetarli mablag' yo'q." });
+      }
+
+      await client.query(
         `UPDATE user_balances
          SET available_balance = available_balance - $1,
              escrow_balance = escrow_balance + $1,
@@ -437,28 +458,14 @@ const escrowHold = async (req, res) => {
         [a, clientId]
       );
 
-      const txR = await pool.query(
+      const txR = await client.query(
         `INSERT INTO transactions (user_id, type, amount, currency, gateway, status, metadata)
          VALUES ($1, 'escrow_hold', $2, $3, 'internal', 'completed', $4)
          RETURNING *`,
         [clientId, a, currency, JSON.stringify({ contract_id, milestone_id: milestone_id || null })]
       );
 
-      await pool.query("COMMIT");
-
-      // Notify client (background) - Redundant
-      /*
-      const io = req.app.get("io");
-      createNotification(io, {
-        userId: clientId,
-        type: 'escrow_hold',
-        title: 'Mablag\' band qilindi',
-        message: `${a.toLocaleString()} UZS miqdoridagi mablag' shartnoma uchun escrow hamyoningizda band qilindi.`,
-        relatedId: txR.rows[0].id,
-        relatedType: 'transaction',
-        translationData: { amount: a.toLocaleString() }
-      });
-      */
+      await client.query("COMMIT");
 
       return res.status(201).json({
         success: true,
@@ -466,8 +473,10 @@ const escrowHold = async (req, res) => {
         data: { transaction: txR.rows[0] },
       });
     } catch (e) {
-      await pool.query("ROLLBACK");
+      await client.query("ROLLBACK").catch(() => {});
       throw e;
+    } finally {
+      client.release();
     }
   } catch (error) {
     console.error("Escrow hold error:", error);
@@ -533,10 +542,12 @@ const releaseMilestone = async (req, res) => {
     const feeAmount = Math.max(0, Math.round((a * PLATFORM_FEE_PCT) / 100));
     const netToFreelancer = Math.max(0, a - feeAmount);
 
-    await pool.query("BEGIN");
+    const client = await pool.connect();
     try {
+      await client.query("BEGIN");
+
       // 1) Idempotent: bu milestone uchun release oldin bo'lganmi?
-      const existingReleaseR = await pool.query(
+      const existingReleaseR = await client.query(
         `
         SELECT *
         FROM transactions
@@ -553,7 +564,7 @@ const releaseMilestone = async (req, res) => {
         const releaseTx = existingReleaseR.rows[0];
 
         // fee ham topib beramiz (bo'lsa)
-        const feeTxR = await pool.query(
+        const feeTxR = await client.query(
           `
           SELECT *
           FROM transactions
@@ -565,7 +576,7 @@ const releaseMilestone = async (req, res) => {
           [String(releaseTx.id)]
         );
 
-        await pool.query("COMMIT");
+        await client.query("COMMIT");
         return res.json({
           success: true,
           message: "Avval release qilingan (idempotent).",
@@ -574,24 +585,24 @@ const releaseMilestone = async (req, res) => {
       }
 
       // 2) Balance row ensure (client, freelancer, platform)
-      await pool.query(
+      await client.query(
         `INSERT INTO user_balances (user_id) VALUES ($1)
          ON CONFLICT (user_id) DO NOTHING`,
         [clientId]
       );
-      await pool.query(
+      await client.query(
         `INSERT INTO user_balances (user_id) VALUES ($1)
          ON CONFLICT (user_id) DO NOTHING`,
         [contract.freelancer_id]
       );
-      await pool.query(
+      await client.query(
         `INSERT INTO user_balances (user_id) VALUES ($1)
          ON CONFLICT (user_id) DO NOTHING`,
         [PLATFORM_USER_ID]
       );
 
       // 3) Client escrow yetarlimi? (FOR UPDATE bilan lock)
-      const escrowR = await pool.query(
+      const escrowR = await client.query(
         `SELECT escrow_balance
          FROM user_balances
          WHERE user_id = $1
@@ -600,7 +611,7 @@ const releaseMilestone = async (req, res) => {
       );
       const escrowBal = Number(escrowR.rows[0]?.escrow_balance ?? 0);
       if (escrowBal < a) {
-        await pool.query("ROLLBACK");
+        await client.query("ROLLBACK");
         return res.status(400).json({
           success: false,
           message: "Escrow balansda yetarli mablag' yo'q (avval hold qiling).",
@@ -608,7 +619,7 @@ const releaseMilestone = async (req, res) => {
       }
 
       // 4) Client escrowdan TO'LIQ amount ketadi
-      await pool.query(
+      await client.query(
         `UPDATE user_balances
          SET escrow_balance = escrow_balance - $1,
              total_spent = COALESCE(total_spent,0) + $1,
@@ -619,7 +630,7 @@ const releaseMilestone = async (req, res) => {
 
       // 5) Freelancerga NET tushadi (amount - fee)
       if (netToFreelancer > 0) {
-        await pool.query(
+        await client.query(
           `UPDATE user_balances
            SET available_balance = available_balance + $1,
                total_earned = COALESCE(total_earned,0) + $1,
@@ -631,7 +642,7 @@ const releaseMilestone = async (req, res) => {
 
       // 6) Platform userga fee tushadi
       if (feeAmount > 0) {
-        await pool.query(
+        await client.query(
           `UPDATE user_balances
            SET available_balance = available_balance + $1,
                updated_at = NOW()
@@ -641,7 +652,7 @@ const releaseMilestone = async (req, res) => {
       }
 
       // 7) Escrow release ledger (freelancer user_id bilan)
-      const releaseTxR = await pool.query(
+      const releaseTxR = await client.query(
         `INSERT INTO transactions (user_id, type, amount, currency, gateway, status, metadata)
          VALUES ($1, 'escrow_release', $2, $3, 'internal', 'completed', $4)
          RETURNING *`,
@@ -666,7 +677,7 @@ const releaseMilestone = async (req, res) => {
       let feeTx = null;
       if (feeAmount > 0) {
         // idempotent: releaseTx uchun fee bor-yo'qligini tekshir
-        const existingFeeR = await pool.query(
+        const existingFeeR = await client.query(
           `
           SELECT *
           FROM transactions
@@ -681,7 +692,7 @@ const releaseMilestone = async (req, res) => {
         if (existingFeeR.rows.length > 0) {
           feeTx = existingFeeR.rows[0];
         } else {
-          const feeTxR = await pool.query(
+          const feeTxR = await client.query(
             `INSERT INTO transactions (user_id, type, amount, currency, gateway, status, metadata)
              VALUES ($1, 'fee', $2, $3, 'internal', 'completed', $4)
              RETURNING *`,
@@ -704,25 +715,10 @@ const releaseMilestone = async (req, res) => {
         }
       }
 
-      await pool.query("COMMIT");
-
-      // Notify both parties (background)
-      const io = req.app.get("io");
-      
-      // Notify Client (Debit) - Redundant
-      /*
-      createNotification(io, {
-        userId: clientId,
-        type: 'payment_sent',
-        title: 'To\'lov o\'tkazildi',
-        message: `Freelancerga ${a.toLocaleString()} UZS miqdoridagi to'lov muvaffaqiyatli o'tkazildi.`,
-        relatedId: releaseTx.id,
-        relatedType: 'transaction',
-        translationData: { amount: a.toLocaleString() }
-      });
-      */
+      await client.query("COMMIT");
 
       // Notify Freelancer (Credit)
+      const io = req.app.get("io");
       createNotification(io, {
         userId: contract.freelancer_id,
         type: 'payment_received',
@@ -746,8 +742,10 @@ const releaseMilestone = async (req, res) => {
         },
       });
     } catch (e) {
-      await pool.query("ROLLBACK");
+      await client.query("ROLLBACK").catch(() => {});
       throw e;
+    } finally {
+      client.release();
     }
   } catch (error) {
     console.error("Release milestone error:", error);

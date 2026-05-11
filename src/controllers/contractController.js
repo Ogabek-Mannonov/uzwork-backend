@@ -834,10 +834,9 @@ const cancelContract = async (req, res) => {
       relatedType: 'contract',
       translationData: { jobTitle: c.job_title || 'Loyiha', actorRole }
     });
-
     return res.json({ success: true, message: 'Shartnoma bekor qilindi!' });
   } catch (error) {
-    try { await pool.query('ROLLBACK'); } catch {}
+    try { await client.query('ROLLBACK'); } catch {}
     console.error('Cancel contract error:', error);
     return res.status(500).json({
       success: false,
@@ -1035,7 +1034,6 @@ const createDispute = async (req, res) => {
         contractId
       ]
     );
-
     // contract -> disputed
     await client.query(
       `UPDATE contracts SET status='disputed' WHERE id=$1`,
@@ -1050,7 +1048,7 @@ const createDispute = async (req, res) => {
       data: { dispute: dIns.rows[0] }
     });
   } catch (error) {
-    try { await pool.query('ROLLBACK'); } catch {}
+    try { await client.query('ROLLBACK'); } catch {}
     console.error('Create dispute error:', error);
     return res.status(500).json({
       success: false,

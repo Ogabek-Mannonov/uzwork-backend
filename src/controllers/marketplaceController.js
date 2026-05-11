@@ -268,29 +268,30 @@ const buyProduct = async (req, res) => {
       });
     }
 
-    // Check balance
-    const balanceResult = await pool.query(
-      'SELECT available_balance FROM user_balances WHERE user_id = $1',
-      [userId]
-    );
-
-    const availableBalance = balanceResult.rows.length > 0 
-      ? balanceResult.rows[0].available_balance 
-      : 0;
-
-    if (availableBalance < product.price) {
-      return res.status(400).json({
-        success: false,
-        message: 'Balansda yetarli mablag\' yo\'q.'
-      });
-    }
-
-    // Start transaction
-    await pool.query('BEGIN');
-
+    const client = await pool.connect();
     try {
+      await client.query('BEGIN');
+
+      // Check/Lock balance
+      const balanceResult = await client.query(
+        'SELECT available_balance FROM user_balances WHERE user_id = $1 FOR UPDATE',
+        [userId]
+      );
+
+      const availableBalance = balanceResult.rows.length > 0 
+        ? balanceResult.rows[0].available_balance 
+        : 0;
+
+      if (availableBalance < product.price) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({
+          success: false,
+          message: 'Balansda yetarli mablag\' yo\'q.'
+        });
+      }
+
       // Create payment
-      const paymentResult = await pool.query(
+      const paymentResult = await client.query(
         `INSERT INTO payments (
           user_id, payment_type, amount, currency, status
         ) VALUES ($1, $2, $3, $4, $5)
@@ -299,7 +300,7 @@ const buyProduct = async (req, res) => {
       );
 
       // Deduct from buyer
-      await pool.query(
+      await client.query(
         `UPDATE user_balances 
          SET available_balance = available_balance - $1,
              total_spent = total_spent + $1
@@ -308,7 +309,7 @@ const buyProduct = async (req, res) => {
       );
 
       // Add to seller
-      await pool.query(
+      await client.query(
         `INSERT INTO user_balances (user_id, available_balance, total_earned)
          VALUES ($1, $2, $2)
          ON CONFLICT (user_id) 
@@ -319,7 +320,7 @@ const buyProduct = async (req, res) => {
       );
 
       // Create purchase record
-      const purchaseResult = await pool.query(
+      const purchaseResult = await client.query(
         `INSERT INTO marketplace_purchases (
           buyer_id, product_id, payment_id, purchase_price
         ) VALUES ($1, $2, $3, $4)
@@ -328,14 +329,14 @@ const buyProduct = async (req, res) => {
       );
 
       // Update product sales count
-      await pool.query(
+      await client.query(
         'UPDATE marketplace SET sales_count = sales_count + 1 WHERE id = $1',
         [id]
       );
 
-      await pool.query('COMMIT');
+      await client.query('COMMIT');
 
-      res.json({
+      return res.json({
         success: true,
         message: 'Mahsulot sotib olindi!',
         data: {
@@ -344,18 +345,21 @@ const buyProduct = async (req, res) => {
         }
       });
     } catch (error) {
-      await pool.query('ROLLBACK');
+      await client.query('ROLLBACK').catch(() => {});
       throw error;
+    } finally {
+      client.release();
     }
   } catch (error) {
     console.error('Buy product error:', error);
-    res.status(500).json({
+    return res.status(500).json({
       success: false,
       message: 'Mahsulotni sotib olishda xato yuz berdi.',
       error: error.message
     });
   }
 };
+
 
 module.exports = {
   getMarketplace,

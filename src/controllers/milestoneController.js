@@ -32,7 +32,7 @@ const submitMilestone = async (req, res) => {
 
     await client.query("BEGIN");
 
-    // milestone + contract lock
+    // milestone + contract info without blocking locks
     const mQ = await client.query(
       `
       SELECT
@@ -43,7 +43,6 @@ const submitMilestone = async (req, res) => {
       JOIN contracts c ON c.id = m.contract_id
       JOIN jobs j ON j.id = c.job_id
       WHERE m.id = $1
-      FOR UPDATE
       `,
       [id]
     );
@@ -76,7 +75,7 @@ const submitMilestone = async (req, res) => {
       UPDATE milestones
       SET status = 'submitted',
           submitted_at = NOW()
-      WHERE id = $1
+      WHERE id = $1 AND status = 'pending'
       RETURNING *
       `,
       [id]
@@ -125,7 +124,7 @@ const approveMilestone = async (req, res) => {
 
     await client.query("BEGIN");
 
-    // 1) Milestone + Contract + Job lock
+    // 1) Milestone + Contract + Job info without blocking locks
     const mQ = await client.query(
       `
       SELECT
@@ -137,7 +136,6 @@ const approveMilestone = async (req, res) => {
       JOIN contracts c ON c.id = m.contract_id
       JOIN jobs j ON j.id = c.job_id
       WHERE m.id = $1
-      FOR UPDATE
       `,
       [id]
     );
@@ -261,7 +259,7 @@ const approveMilestone = async (req, res) => {
 
     // 3) Update Milestone status
     const up = await client.query(
-      `UPDATE milestones SET status = 'released', approved_at = NOW() WHERE id = $1 RETURNING *`,
+      `UPDATE milestones SET status = 'released', approved_at = NOW() WHERE id = $1 AND status = 'submitted' RETURNING *`,
       [id]
     );
 
@@ -368,7 +366,7 @@ const releaseMilestone = async (req, res) => {
 
     await client.query("BEGIN");
 
-    // milestone + contract lock
+    // milestone + contract info without blocking locks
     const mQ = await client.query(
       `
       SELECT
@@ -378,7 +376,6 @@ const releaseMilestone = async (req, res) => {
       FROM milestones m
       JOIN contracts c ON c.id = m.contract_id
       WHERE m.id = $1
-      FOR UPDATE
       `,
       [id]
     );
@@ -539,7 +536,7 @@ const releaseMilestone = async (req, res) => {
       `
       UPDATE milestones
       SET status = 'released'
-      WHERE id = $1
+      WHERE id = $1 AND status = 'approved'
       RETURNING *
       `,
       [m.id]
@@ -585,7 +582,6 @@ const rejectMilestone = async (req, res) => {
       JOIN contracts c ON c.id = m.contract_id
       JOIN jobs j ON j.id = c.job_id
       WHERE m.id = $1
-      FOR UPDATE
       `,
       [id]
     );
@@ -612,7 +608,7 @@ const rejectMilestone = async (req, res) => {
       UPDATE milestones
       SET status = 'pending',
           submitted_at = NULL
-      WHERE id = $1
+      WHERE id = $1 AND status = 'submitted'
       RETURNING *
       `,
       [id]

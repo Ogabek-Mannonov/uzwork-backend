@@ -9,12 +9,9 @@ const { updateUserRating } = require("../controllers/reviewController");
  * adding +0.5 to JSS for the freelancer.
  */
 async function runAutoRatingJob() {
-  const client = await pool.connect();
   try {
-    await client.query("BEGIN");
-
     // Get contracts completed more than 14 days ago
-    const contractsRes = await client.query(
+    const contractsRes = await pool.query(
       `SELECT id, freelancer_id, client_id, completed_at
        FROM contracts
        WHERE status = 'completed'
@@ -27,25 +24,25 @@ async function runAutoRatingJob() {
       const { id: contractId, freelancer_id: freelancerId, client_id: clientId } = contract;
 
       // 1. Check client -> freelancer rating
-      const clientRatingCheck = await client.query(
+      const clientRatingCheck = await pool.query(
         'SELECT id FROM ratings WHERE contract_id = $1 AND from_user_id = $2 AND to_user_id = $3',
         [contractId, clientId, freelancerId]
       );
 
       if (clientRatingCheck.rows.length === 0) {
         // Create automatic 4-star rating for freelancer
-        await client.query(
+        await pool.query(
           `INSERT INTO ratings (
-            contract_id, from_user_id, to_user_id, 
-            score_quality, score_timeliness, score_communication,
-            comment, is_automatic
-          ) VALUES ($1, $2, $3, 4, 4, 4, 'Avtomatik baholash (14 kun ichida munosabat bildirilmagan)', TRUE)
-          ON CONFLICT (contract_id, from_user_id) DO NOTHING`,
+             contract_id, from_user_id, to_user_id, 
+             score_quality, score_timeliness, score_communication,
+             comment, is_automatic
+           ) VALUES ($1, $2, $3, 4, 4, 4, 'Avtomatik baholash (14 kun ichida munosabat bildirilmagan)', TRUE)
+           ON CONFLICT (contract_id, from_user_id) DO NOTHING`,
           [contractId, clientId, freelancerId]
         );
 
         // Add +0.5 to freelancer's JSS (Job Success Score)
-        await client.query(
+        await pool.query(
           `UPDATE freelancer_profiles 
            SET jss = LEAST(100.00, COALESCE(jss, 100.00) + 0.5) 
            WHERE user_id = $1`,
@@ -58,20 +55,20 @@ async function runAutoRatingJob() {
       }
 
       // 2. Check freelancer -> client rating
-      const freelancerRatingCheck = await client.query(
+      const freelancerRatingCheck = await pool.query(
         'SELECT id FROM ratings WHERE contract_id = $1 AND from_user_id = $2 AND to_user_id = $3',
         [contractId, freelancerId, clientId]
       );
 
       if (freelancerRatingCheck.rows.length === 0) {
         // Create automatic 4-star rating for client
-        await client.query(
+        await pool.query(
           `INSERT INTO ratings (
-            contract_id, from_user_id, to_user_id, 
-            score_payment, score_clarity,
-            comment, is_automatic
-          ) VALUES ($1, $2, $3, 4, 4, 'Avtomatik baholash (14 kun ichida munosabat bildirilmagan)', TRUE)
-          ON CONFLICT (contract_id, from_user_id) DO NOTHING`,
+             contract_id, from_user_id, to_user_id, 
+             score_payment, score_clarity,
+             comment, is_automatic
+           ) VALUES ($1, $2, $3, 4, 4, 'Avtomatik baholash (14 kun ichida munosabat bildirilmagan)', TRUE)
+           ON CONFLICT (contract_id, from_user_id) DO NOTHING`,
           [contractId, freelancerId, clientId]
         );
 
@@ -81,14 +78,10 @@ async function runAutoRatingJob() {
       }
     }
 
-    await client.query("COMMIT");
     return { processed: processedCount };
   } catch (error) {
-    try { await client.query("ROLLBACK"); } catch {}
     console.error("autoRatingJob error:", error.message);
     throw error;
-  } finally {
-    client.release();
   }
 }
 
