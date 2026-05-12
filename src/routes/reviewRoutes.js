@@ -11,13 +11,14 @@ const {
 } = require('../controllers/reviewController');
 const { authenticate } = require('../middlewares/authMiddleware');
 
+// Protected routes & specific routes
+router.get('/pending', authenticate, getPendingReview);
+
 // Public routes
 router.get('/', getReviews);
 router.get('/:id', getReviewById);
 router.get('/user/:userId', getUserReviews);
 
-// Protected routes
-router.get('/pending', authenticate, getPendingReview);
 router.post('/', authenticate, createReview);
 router.put('/:id', authenticate, updateReview);
 
