@@ -569,7 +569,7 @@ const deleteProject = async (req, res) => {
 const getMyProjects = async (req, res) => {
   try {
     const userId = req.user.id;
-    const role = req.user.role;
+    const role = req.query.role || req.user.role;
     const { status, page = 1, limit = 20 } = req.query;
     const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
 

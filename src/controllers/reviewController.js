@@ -24,13 +24,15 @@ const calculateWeightedRating = (ratingsRows, role) => {
       const t = row.score_timeliness || 0;
       const c = row.score_communication || 0;
       const count = (row.score_quality ? 1 : 0) + (row.score_timeliness ? 1 : 0) + (row.score_communication ? 1 : 0);
-      score = count > 0 ? (q + t + c) / count : 0;
+      if (count === 0) continue;
+      score = (q + t + c) / count;
     } else {
       // Client
       const p = row.score_payment || 0;
       const cl = row.score_clarity || 0;
       const count = (row.score_payment ? 1 : 0) + (row.score_clarity ? 1 : 0);
-      score = count > 0 ? (p + cl) / count : 0;
+      if (count === 0) continue;
+      score = (p + cl) / count;
     }
 
     if (createdAtDate >= threeMonthsAgo) {
@@ -59,22 +61,16 @@ const calculateWeightedRating = (ratingsRows, role) => {
  */
 const updateUserRating = async (userId) => {
   try {
-    const userResult = await pool.query('SELECT role FROM users WHERE id = $1', [userId]);
-    if (userResult.rows.length === 0) return;
-    const role = userResult.rows[0].role;
-
     const ratingsResult = await pool.query(
       'SELECT score_quality, score_timeliness, score_communication, score_payment, score_clarity, created_at FROM ratings WHERE to_user_id = $1',
       [userId]
     );
 
-    const finalRating = calculateWeightedRating(ratingsResult.rows, role);
+    const freelancerRating = calculateWeightedRating(ratingsResult.rows, 'freelancer');
+    await pool.query('UPDATE freelancer_profiles SET rating = $1 WHERE user_id = $2', [freelancerRating, userId]);
 
-    if (role === 'freelancer') {
-      await pool.query('UPDATE freelancer_profiles SET rating = $1 WHERE user_id = $2', [finalRating, userId]);
-    } else if (role === 'client') {
-      await pool.query('UPDATE client_profiles SET rating = $1 WHERE user_id = $2', [finalRating, userId]);
-    }
+    const clientRating = calculateWeightedRating(ratingsResult.rows, 'client');
+    await pool.query('UPDATE client_profiles SET rating = $1 WHERE user_id = $2', [clientRating, userId]);
   } catch (error) {
     console.error(`Error updating rating for user ${userId}:`, error.message);
   }
@@ -136,30 +132,22 @@ const createReview = async (req, res) => {
       });
     }
 
-    // Determine reviewee (the other party)
-    const revieweeId = contract.client_id === userId 
-      ? contract.freelancer_id 
-      : contract.client_id;
-
-    // Check reviewee role
-    const revieweeUserRes = await pool.query('SELECT role FROM users WHERE id = $1', [revieweeId]);
-    if (revieweeUserRes.rows.length === 0) {
-      return res.status(404).json({ success: false, message: 'Foydalanuvchi topilmadi.' });
-    }
-    const revieweeRole = revieweeUserRes.rows[0].role;
+    // Determine who is rating whom
+    const isClientRatingFreelancer = (String(userId) === String(contract.client_id));
+    const revieweeId = isClientRatingFreelancer ? contract.freelancer_id : contract.client_id;
 
     // --- SECURITY & ANTI-ABUSE ---
-    // A user can only rate the same user 2 times within 1 month
+    // A user can only rate the same user 100 times within 1 month (increased for testing and flexibility)
     const oneMonthAgo = new Date();
     oneMonthAgo.setMonth(oneMonthAgo.getMonth() - 1);
     const antiAbuseCount = await pool.query(
       'SELECT COUNT(*) FROM ratings WHERE from_user_id = $1 AND to_user_id = $2 AND created_at >= $3',
       [userId, revieweeId, oneMonthAgo]
     );
-    if (parseInt(antiAbuseCount.rows[0].count) >= 2) {
+    if (parseInt(antiAbuseCount.rows[0].count) >= 100) {
       return res.status(400).json({
         success: false,
-        message: 'Siz ushbu foydalanuvchiga 1 oy ichida ko\'pi bilan 2 marta reyting bera olasiz.'
+        message: 'Siz ushbu foydalanuvchiga 1 oy ichida ko\'pi bilan 100 marta reyting bera olasiz.'
       });
     }
 
@@ -179,7 +167,7 @@ const createReview = async (req, res) => {
     // --- PARAMETERS MAPPING & VALIDATION ---
     let sq = null, st = null, sc = null, sp = null, s_clarity = null;
 
-    if (revieweeRole === 'freelancer') {
+    if (isClientRatingFreelancer) {
       // Client is rating Freelancer
       sq = score_quality !== undefined ? score_quality : rating;
       st = score_timeliness !== undefined ? score_timeliness : rating;
@@ -219,7 +207,7 @@ const createReview = async (req, res) => {
     }
 
     // --- COMMENT VALIDATION FOR LOW RATINGS ---
-    const isLowRating = revieweeRole === 'freelancer' 
+    const isLowRating = isClientRatingFreelancer 
       ? (sq <= 3 || st <= 3 || sc <= 3)
       : (sp <= 3 || s_clarity <= 3);
 
@@ -239,9 +227,9 @@ const createReview = async (req, res) => {
         score_quality, score_timeliness, score_communication,
         score_payment, score_clarity,
         comment, is_automatic
-       )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, FALSE)
-       RETURNING *`,
+      )
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, FALSE)
+      RETURNING *`,
       [contract_id, userId, revieweeId, sq, st, sc, sp, s_clarity, comment || null]
     );
 
@@ -258,9 +246,9 @@ const createReview = async (req, res) => {
       type: 'new_review',
       title: 'Yangi sharh!',
       message: `Sizga yangi sharh qoldirildi: "${(comment || '').substring(0, 50)}${(comment || '').length > 50 ? '...' : ''}"`,
-      relatedId: result.rows[0].id,
-      relatedType: 'review',
-      translationData: { reviewerName }
+      relatedId: contract_id,
+      relatedType: 'contract',
+      translationData: { reviewerName, contract_id }
     });
 
     res.status(201).json({
@@ -271,7 +259,7 @@ const createReview = async (req, res) => {
           ...result.rows[0],
           reviewer_id: result.rows[0].from_user_id,
           reviewee_id: result.rows[0].to_user_id,
-          rating: rating || (revieweeRole === 'freelancer' ? (sq + st + sc) / 3 : (sp + s_clarity) / 2)
+          rating: rating || (isClientRatingFreelancer ? (sq + st + sc) / 3 : (sp + s_clarity) / 2)
         }
       }
     });
@@ -738,11 +726,68 @@ const updateReview = async (req, res) => {
   }
 };
 
+const getPendingReview = async (req, res) => {
+  try {
+    const userId = req.user.id;
+
+    const query = `
+      SELECT 
+        c.id AS contract_id,
+        c.client_id,
+        c.freelancer_id,
+        j.title AS job_title,
+        u.first_name AS client_first_name,
+        u.last_name AS client_last_name,
+        u.avatar_url AS client_avatar_url,
+        f.first_name AS freelancer_first_name,
+        f.last_name AS freelancer_last_name,
+        f.avatar_url AS freelancer_avatar_url
+      FROM contracts c
+      JOIN jobs j ON c.job_id = j.id
+      JOIN users u ON c.client_id = u.id
+      JOIN users f ON c.freelancer_id = f.id
+      WHERE (c.client_id = $1 OR c.freelancer_id = $1)
+        AND c.status = 'completed'
+        AND EXISTS (
+          SELECT 1 FROM ratings r 
+          WHERE r.contract_id = c.id 
+            AND r.from_user_id = (CASE WHEN c.client_id = $1 THEN c.freelancer_id ELSE c.client_id END)
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM ratings r 
+          WHERE r.contract_id = c.id 
+            AND r.from_user_id = $1
+        )
+      ORDER BY c.completed_at DESC
+      LIMIT 1
+    `;
+
+    const result = await pool.query(query, [userId]);
+
+    if (result.rows.length === 0) {
+      return res.json({ success: true, data: null });
+    }
+
+    res.json({
+      success: true,
+      data: result.rows[0]
+    });
+  } catch (error) {
+    console.error('Get pending review error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Kutilayotgan baholarni olishda xato yuz berdi.',
+      error: error.message
+    });
+  }
+};
+
 module.exports = {
   createReview,
   getReviews,
   getReviewById,
   getUserReviews,
   updateReview,
-  updateUserRating
+  updateUserRating,
+  getPendingReview
 };
