@@ -347,6 +347,15 @@ const getProposalById = async (req, res) => {
       proposal.viewed_at = new Date();
     }
 
+    // ✅ Freelancer taklif qilingan bo'lsa va hali viewed_at yo'q bo'lsa -> set
+    if (role === "freelancer" && String(proposal.freelancer_id) === String(userId) && !proposal.viewed_at && proposal.status === 'invited') {
+      await client.query(
+        `UPDATE proposals SET viewed_at = NOW(), updated_at = NOW() WHERE id = $1`,
+        [id]
+      );
+      proposal.viewed_at = new Date();
+    }
+
     await client.query("COMMIT");
     return res.json({ success: true, data: { proposal } });
   } catch (error) {

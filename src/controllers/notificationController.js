@@ -174,16 +174,20 @@ const markAllAsRead = async (req, res) => {
 const getUnreadProposalsCount = async (req, res) => {
   try {
     const userId = req.user.id;
-    const role = req.user.role;
+    const role = req.query.role || req.user.role;
 
     let query = "";
     if (role?.toLowerCase() === "client") {
-      // Count unread proposals for jobs owned by this client
+      // Count unread proposals for jobs owned by this client (excluding sent invitations)
       query = `
         SELECT COUNT(*)::int as count 
         FROM proposals p
         JOIN jobs j ON j.id = p.job_id
-        WHERE j.client_id = $1 AND p.viewed_at IS NULL AND j.deleted_at IS NULL
+        WHERE j.client_id = $1 
+          AND p.status != 'invited' 
+          AND (p.is_invitation IS NULL OR p.is_invitation = FALSE) 
+          AND p.viewed_at IS NULL 
+          AND j.deleted_at IS NULL
       `;
     } else {
       // Count unread invitations for this freelancer
@@ -218,7 +222,8 @@ const getUnreadProposalsCount = async (req, res) => {
 const markAllAsReadByType = async (req, res) => {
   try {
     const userId = req.user.id;
-    const { typePrefix } = req.body;
+    const { typePrefix, role: bodyRole } = req.body;
+    const role = bodyRole || req.query.role || req.user.role;
 
     if (!typePrefix) {
       return res.status(400).json({ success: false, message: 'typePrefix majburiy.' });
@@ -233,7 +238,7 @@ const markAllAsReadByType = async (req, res) => {
       
       // Also mark all related proposals as viewed
       try {
-        if (req.user.role === 'client') {
+        if (role === 'client') {
           await pool.query(
             `UPDATE proposals p SET viewed_at = NOW() 
              FROM jobs j 

@@ -36,6 +36,22 @@ pool.on("connect", async (client) => {
 // Auto-migration: shortlisted status ruxsat berish va freelancer_id qo'shish
 // Darhol ishga tushiramiz
 (async () => {
+  try {
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS user_notification_settings (
+        user_id             UUID        PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        proposal_received   BOOLEAN     DEFAULT TRUE,
+        proposal_withdrawn  BOOLEAN     DEFAULT TRUE,
+        payment_success     BOOLEAN     DEFAULT TRUE,
+        invoice_ready       BOOLEAN     DEFAULT TRUE,
+        email_notifications BOOLEAN     DEFAULT TRUE,
+        push_notifications  BOOLEAN     DEFAULT TRUE
+      );
+    `);
+  } catch (err) {
+    console.error("⚠️ Error checking/creating user_notification_settings:", err.message);
+  }
+
   // Barcha migratsiyalar allaqachon muvaffaqiyatli bajarilgan. 
   // AWS RDS da ortiqcha jadval qulflanishi (Table Lock) va ulanish uzilishlarini (ECONNRESET) 
   // oldini olish uchun ushbu avtomatik migratsiyani o'chirib qo'yamiz.
