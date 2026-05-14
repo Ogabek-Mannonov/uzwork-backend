@@ -44,6 +44,7 @@ const disputeRoutes = require("./routes/disputeRoutes");
 const milestoneRoutes = require("./routes/milestoneRoutes");
 const landingRoutes = require("./routes/landingRoutes");
 const skillRoutes = require("./routes/skillRoutes");
+const kycRoutes = require("./routes/kycRoutes");
 
 const localeMiddleware = require("./middlewares/localeMiddleware");
 
@@ -388,6 +389,8 @@ app.use("/landing", landingRoutes);
 app.use("/api/landing", landingRoutes);
 app.use("/skills", skillRoutes);
 app.use("/api/skills", skillRoutes);
+app.use("/kyc", kycRoutes);
+app.use("/api/kyc", kycRoutes);
 
 app.use((req, res) => {
   res.status(404).json({
