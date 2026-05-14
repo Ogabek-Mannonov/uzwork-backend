@@ -25,10 +25,23 @@ const createFaceSession = async (req, res) => {
     const token = crypto.randomUUID();
     const expiresAt = Date.now() + 12 * 60 * 1000; // 12 daqiqa
 
-    // Mobile URL — backend tunnel orqali HTML sahifaga (React shart emas)
-    const backendUrl = process.env.BACKEND_TUNNEL_URL ||
-      `http://localhost:${process.env.PORT || 3000}`;
+    // Mobile URL — avtomatik ravishda Wi-Fi tarmog'idagi IP (192.168.X.X) ni aniqlaymiz
+    let localIp = 'localhost';
+    const nets = require('os').networkInterfaces();
+    for (const name of Object.keys(nets)) {
+      for (const net of nets[name]) {
+        if (net.family === 'IPv4' && !net.internal && net.address.startsWith('192.168.')) {
+          localIp = net.address;
+          break;
+        }
+      }
+    }
+    const backendUrl = process.env.BACKEND_TUNNEL_URL && !process.env.BACKEND_TUNNEL_URL.includes('loca.lt')
+      ? process.env.BACKEND_TUNNEL_URL
+      : `http://${localIp}:${process.env.PORT || 3000}`;
+
     const mobileUrl = `${backendUrl}/kyc/face/${token}`;
+
 
     faceSessions.set(token, { userId, status: 'pending', expiresAt, selfie_url: null });
 
@@ -89,8 +102,20 @@ const serveMobilePage = async (req, res) => {
   const { token } = req.params;
   const session = faceSessions.get(token);
 
-  const backendUrl = process.env.BACKEND_TUNNEL_URL ||
-    `http://localhost:${process.env.PORT || 3000}`;
+  let localIp = 'localhost';
+  const nets = require('os').networkInterfaces();
+  for (const name of Object.keys(nets)) {
+    for (const net of nets[name]) {
+      if (net.family === 'IPv4' && !net.internal && net.address.startsWith('192.168.')) {
+        localIp = net.address;
+        break;
+      }
+    }
+  }
+  const backendUrl = process.env.BACKEND_TUNNEL_URL && !process.env.BACKEND_TUNNEL_URL.includes('loca.lt')
+    ? process.env.BACKEND_TUNNEL_URL
+    : `http://${localIp}:${process.env.PORT || 3000}`;
+
 
   if (!session || Date.now() > session.expiresAt) {
     return res.send(`<!DOCTYPE html><html><head><meta charset="utf-8">
@@ -158,7 +183,7 @@ const serveMobilePage = async (req, res) => {
   <p>Old kamera yonadi va siz selfie tushirasiz.</p>
   <div class="tip">💡 Yaxshi yorug'lik joyda o'tiring</div>
   <div class="tip">📸 Yuzingiz to'liq ko'rinsin</div>
-  <button class="btn btn-primary" onclick="startCamera()">📷 Kamerani yoqish</button>
+  <button class="btn btn-primary" onclick="startCamera()" ontouchstart="startCamera()">📷 Kamerani yoqish</button>
 </div>
 
 <!-- CAMERA -->
@@ -228,19 +253,21 @@ const serveMobilePage = async (req, res) => {
   }
 
   async function startCamera() {
-    show('camera');
     try {
+      show('camera');
       stream = await navigator.mediaDevices.getUserMedia({
         video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
         audio: false
       });
-      document.getElementById('video').srcObject = stream;
+      const video = document.getElementById('video');
+      video.srcObject = stream;
+      video.play().catch(() => {});
     } catch(e) {
-      showError(e.name === 'NotAllowedError'
-        ? 'Kamera ruxsati rad etildi. Brauzer sozlamalaridan ruxsat bering.'
-        : 'Kamera ochilmadi: ' + e.message);
+      alert('Kamera ochilmadi: ' + e.message + '. Iltimos Safari brauzeri sozlamalaridan kameraga ruxsat bering.');
+      showError('Kamera ruxsati rad etildi yoki ochilmadi.');
     }
   }
+
 
   function stopCamera() {
     if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
