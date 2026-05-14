@@ -3,6 +3,7 @@ const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middlewares/authMiddleware');
 const { isAdmin } = require('../controllers/adminController');
+const { upload, uploadImage } = require('../controllers/uploadController');
 const {
   submitKyc,
   getKycStatus,
@@ -29,7 +30,9 @@ router.get('/face/:token/status', authenticate, getFaceSessionStatus);
 router.get('/face/:token', serveMobilePage);
 // GET /kyc/face/:token/check → JSON polling (frontend React uchun)
 router.get('/face/:token/check', checkFaceToken);
-// POST /kyc/face/:token/submit → Selfie yuborish
+// POST /kyc/face/:token/upload → Selfie rasmni yuklash (Public)
+router.post('/face/:token/upload', upload.single('image'), uploadImage);
+// POST /kyc/face/:token/submit → Selfie yuborish va yakunlash
 router.post('/face/:token/submit', submitFaceSelfie);
 
 // ── Admin endpoints ────────────────────────────────────────────

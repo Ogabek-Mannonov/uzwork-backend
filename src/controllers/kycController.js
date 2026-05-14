@@ -183,8 +183,16 @@ const serveMobilePage = async (req, res) => {
   <p>Old kamera yonadi va siz selfie tushirasiz.</p>
   <div class="tip">💡 Yaxshi yorug'lik joyda o'tiring</div>
   <div class="tip">📸 Yuzingiz to'liq ko'rinsin</div>
-  <button class="btn btn-primary" onclick="startCamera()" ontouchstart="startCamera()">📷 Kamerani yoqish</button>
+  
+  <button class="btn btn-primary" onclick="startCamera()" ontouchstart="startCamera()">📷 Brauzer kamerasida ochish</button>
+  
+  <div class="btn btn-outline" style="position:relative;overflow:hidden;border-color:#3b82f6;color:#3b82f6;width:100%;max-width:320px">
+    <span>⚡ Tizim kamerasida rasmga tushish</span>
+    <input id="native-cam" type="file" accept="image/*" capture="user" onchange="handleNativeCapture(event)" style="position:absolute;top:0;left:0;width:100%;height:100%;opacity:0;cursor:pointer;z-index:10" />
+  </div>
 </div>
+
+
 
 <!-- CAMERA -->
 <div id="screen-camera">
@@ -243,9 +251,10 @@ const serveMobilePage = async (req, res) => {
 
 <script>
   const TOKEN = '${token}';
-  const BACKEND = '${backendUrl}';
+  const BACKEND = window.location.origin;
   let stream = null;
   let capturedBlob = null;
+
 
   function show(name) {
     document.querySelectorAll('[id^="screen-"]').forEach(el => el.classList.remove('active'));
@@ -300,16 +309,17 @@ const serveMobilePage = async (req, res) => {
     if (!capturedBlob) return;
     show('uploading');
     try {
-      // 1. Upload image
+      // 1. Upload image (Public endpoint)
       const fd = new FormData();
       fd.append('image', capturedBlob, 'selfie.jpg');
-      const upRes = await fetch(BACKEND + '/upload/image', { method: 'POST', body: fd });
+      const upRes = await fetch(BACKEND + '/kyc/face/' + TOKEN + '/upload', { method: 'POST', body: fd });
       const upData = await upRes.json();
       const imageUrl = upData?.data?.url || upData?.url;
       if (!imageUrl) throw new Error('Rasm yuklanmadi.');
 
       // 2. Submit to KYC session
       const subRes = await fetch(BACKEND + '/kyc/face/' + TOKEN + '/submit', {
+
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ selfie_url: imageUrl })
@@ -321,14 +331,26 @@ const serveMobilePage = async (req, res) => {
         throw new Error(subData.message || 'Xato yuz berdi.');
       }
     } catch(e) {
+      alert('Yuborishda xato: ' + e.message);
       showError(e.message);
     }
   }
 
   function showError(msg) {
+
     document.getElementById('error-msg').textContent = msg;
     show('error');
   }
+
+  function handleNativeCapture(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    capturedBlob = file;
+    document.getElementById('preview-img').src = URL.createObjectURL(file);
+    if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
+    show('preview');
+  }
+
 </script>
 </body>
 </html>`);
