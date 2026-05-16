@@ -118,7 +118,7 @@ const getFreelancers = async (req, res) => {
         fp.skills,
         fp.languages,
         COALESCE(fp.rating, 0) AS rating,
-        COALESCE(fp.completed_jobs, 0) AS completed_jobs
+        (SELECT COUNT(*)::int FROM contracts c WHERE c.freelancer_id = u.id AND c.status = 'completed') AS completed_jobs
       FROM users u
       LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
       ${where}
@@ -164,7 +164,8 @@ const getRecommendedFreelancers = async (req, res) => {
     }
 
     const r = await pool.query(`
-      SELECT u.id, u.first_name, u.last_name, fp.title, fp.bio, fp.hourly_rate, fp.location, fp.skills, fp.avatar_url, fp.rating, fp.completed_jobs
+      SELECT u.id, u.first_name, u.last_name, fp.title, fp.bio, fp.hourly_rate, fp.location, fp.skills, fp.avatar_url, fp.rating, 
+      (SELECT COUNT(*)::int FROM contracts c WHERE c.freelancer_id = u.id AND c.status = 'completed') AS completed_jobs
       FROM users u
       LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
       ${where}
@@ -181,7 +182,8 @@ const getFreelancerById = async (req, res) => {
   try {
     const { id } = req.params;
     const r = await pool.query(`
-      SELECT u.id, u.first_name, u.last_name, u.username, u.email, u.phone, fp.title, fp.bio, fp.hourly_rate, fp.location, fp.skills, COALESCE(fp.avatar_url, u.avatar_url) as avatar_url, fp.rating, fp.completed_jobs
+      SELECT u.id, u.first_name, u.last_name, u.username, u.email, u.phone, fp.title, fp.bio, fp.hourly_rate, fp.location, fp.skills, COALESCE(fp.avatar_url, u.avatar_url) as avatar_url, fp.rating, 
+      (SELECT COUNT(*)::int FROM contracts c WHERE c.freelancer_id = u.id AND c.status = 'completed') AS completed_jobs
       FROM users u
       LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
       WHERE u.id = $1 AND u.role = 'freelancer' LIMIT 1
@@ -219,7 +221,7 @@ const getSavedFreelancers = async (req, res) => {
         COALESCE(fp.avatar_url, u.avatar_url) as avatar_url, 
         fp.rating,
         fp.hourly_rate,
-        fp.completed_jobs,
+        (SELECT COUNT(*)::int FROM contracts c WHERE c.freelancer_id = u.id AND c.status = 'completed') AS completed_jobs,
         fp.location
       FROM saved_items s
       JOIN users u ON u.id = s.item_id

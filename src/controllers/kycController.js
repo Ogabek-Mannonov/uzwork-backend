@@ -258,7 +258,8 @@ const serveMobilePage = async (req, res) => {
 
   function show(name) {
     document.querySelectorAll('[id^="screen-"]').forEach(el => el.classList.remove('active'));
-    document.getElementById('screen-' + name).classList.add('active');
+    const target = document.getElementById('screen-' + name);
+    if (target) target.classList.add('active');
   }
 
   async function startCamera() {
@@ -272,83 +273,74 @@ const serveMobilePage = async (req, res) => {
       video.srcObject = stream;
       video.play().catch(() => {});
     } catch(e) {
-      alert('Kamera ochilmadi: ' + e.message + '. Iltimos Safari brauzeri sozlamalaridan kameraga ruxsat bering.');
-      showError('Kamera ruxsati rad etildi yoki ochilmadi.');
+      alert('Kamera ochilmadi: ' + e.message + '. Iltimos Safari brauzeri sozlamalaridan kameraga ruxsat bering yoki pastdagi "Tizim kamerasi" tugmasini ishlating.');
+      show('ready');
     }
-  }
-
-
-  function stopCamera() {
-    if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
-    show('ready');
-  }
-
-  function takeSelfie() {
-    const video = document.getElementById('video');
-    const canvas = document.getElementById('canvas');
-    canvas.width = video.videoWidth || 640;
-    canvas.height = video.videoHeight || 480;
-    const ctx = canvas.getContext('2d');
-    ctx.save(); ctx.scale(-1, 1);
-    ctx.drawImage(video, -canvas.width, 0, canvas.width, canvas.height);
-    ctx.restore();
-    canvas.toBlob(blob => {
-      capturedBlob = blob;
-      document.getElementById('preview-img').src = URL.createObjectURL(blob);
-      if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
-      show('preview');
-    }, 'image/jpeg', 0.85);
-  }
-
-  function retake() {
-    capturedBlob = null;
-    startCamera();
-  }
-
-  async function submitSelfie() {
-    if (!capturedBlob) return;
-    show('uploading');
-    try {
-      // 1. Upload image (Public endpoint)
-      const fd = new FormData();
-      fd.append('image', capturedBlob, 'selfie.jpg');
-      const upRes = await fetch(BACKEND + '/kyc/face/' + TOKEN + '/upload', { method: 'POST', body: fd });
-      const upData = await upRes.json();
-      const imageUrl = upData?.data?.url || upData?.url;
-      if (!imageUrl) throw new Error('Rasm yuklanmadi.');
-
-      // 2. Submit to KYC session
-      const subRes = await fetch(BACKEND + '/kyc/face/' + TOKEN + '/submit', {
-
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ selfie_url: imageUrl })
-      });
-      const subData = await subRes.json();
-      if (subData.success) {
-        show('success');
-      } else {
-        throw new Error(subData.message || 'Xato yuz berdi.');
-      }
-    } catch(e) {
-      alert('Yuborishda xato: ' + e.message);
-      showError(e.message);
-    }
-  }
-
-  function showError(msg) {
-
-    document.getElementById('error-msg').textContent = msg;
-    show('error');
   }
 
   function handleNativeCapture(e) {
     const file = e.target.files[0];
     if (!file) return;
+    
+    // Foydalanuvchiga rasm qabul qilinganini ko'rsatamiz
     capturedBlob = file;
-    document.getElementById('preview-img').src = URL.createObjectURL(file);
-    if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; }
-    show('preview');
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      document.getElementById('preview-img').src = event.target.result;
+      show('preview');
+      // Avtomatik yuborishni taklif qilamiz yoki darhol yuboramiz
+      console.log('Rasm yuklandi, preview ko\'rsatildi');
+    };
+    reader.readAsDataURL(file);
+  }
+
+  async function submitSelfie() {
+    if (!capturedBlob) {
+      alert('Rasm tanlanmagan!');
+      return;
+    }
+    
+    show('uploading');
+    try {
+      const fd = new FormData();
+      fd.append('image', capturedBlob, 'selfie.jpg');
+      
+      console.log('Yuklash boshlandi:', BACKEND + '/kyc/face/' + TOKEN + '/upload');
+      
+      const upRes = await fetch(BACKEND + '/kyc/face/' + TOKEN + '/upload', { 
+        method: 'POST', 
+        body: fd 
+      });
+      
+      if (!upRes.ok) throw new Error('Server rasmni qabul qilmadi (Status: ' + upRes.status + ')');
+      
+      const upData = await upRes.json();
+      const imageUrl = upData?.data?.url || upData?.url;
+      
+      if (!imageUrl) throw new Error('Rasm yuklandi, lekin URL qaytmadi.');
+
+      const subRes = await fetch(BACKEND + '/kyc/face/' + TOKEN + '/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ selfie_url: imageUrl })
+      });
+      
+      const subData = await subRes.json();
+      if (subData.success) {
+        show('success');
+      } else {
+        throw new Error(subData.message || 'Tasdiqlashda xato.');
+      }
+    } catch(e) {
+      alert('Xatolik: ' + e.message);
+      show('ready');
+    }
+  }
+
+  function showError(msg) {
+    alert('Xato: ' + msg);
+    document.getElementById('error-msg').textContent = msg;
+    show('error');
   }
 
 </script>
