@@ -131,12 +131,13 @@ const getMyProfile = async (req, res) => {
     );
     inProgressJobs = ip.rows[0]?.count ?? 0;
 
-    // 2. Completed Jobs
+    // 2. Completed Jobs & Total Earned
     const cj = await pool.query(
-      `SELECT COUNT(*)::int AS count FROM contracts WHERE ${activeField} = $1 AND status = 'completed'`,
+      `SELECT COUNT(*)::int AS count, COALESCE(SUM(total_amount), 0)::float AS total_earned FROM contracts WHERE ${activeField} = $1 AND status = 'completed'`,
       [userId]
     );
     completedJobs = cj.rows[0]?.count ?? 0;
+    const totalEarned = cj.rows[0]?.total_earned ?? 0;
 
     // 3. Reviews from ratings table
     const r = await pool.query(
@@ -173,6 +174,7 @@ const getMyProfile = async (req, res) => {
         total_reviews: totalReviews,
         in_progress_jobs: inProgressJobs,
         completed_jobs: completedJobs,
+        total_earned: totalEarned,
       },
     });
   } catch (error) {
@@ -250,12 +252,13 @@ const getUserProfile = async (req, res) => {
     );
     inProgressJobs = ip.rows[0]?.count ?? 0;
 
-    // 2. Completed Jobs
+    // 2. Completed Jobs & Total Earned
     const cj = await pool.query(
-      `SELECT COUNT(*)::int AS count FROM contracts WHERE ${activeField} = $1 AND status = 'completed'`,
+      `SELECT COUNT(*)::int AS count, COALESCE(SUM(total_amount), 0)::float AS total_earned FROM contracts WHERE ${activeField} = $1 AND status = 'completed'`,
       [userId]
     );
     completedJobs = cj.rows[0]?.count ?? 0;
+    const totalEarned = cj.rows[0]?.total_earned ?? 0;
 
     // 3. Reviews from ratings table
     const r = await pool.query(
@@ -292,6 +295,7 @@ const getUserProfile = async (req, res) => {
         total_reviews: totalReviews,
         in_progress_jobs: inProgressJobs,
         completed_jobs: completedJobs,
+        total_earned: totalEarned,
       },
     });
   } catch (error) {
