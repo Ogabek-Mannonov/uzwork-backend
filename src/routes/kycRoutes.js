@@ -31,7 +31,10 @@ router.get('/face/:token', serveMobilePage);
 // GET /kyc/face/:token/check → JSON polling (frontend React uchun)
 router.get('/face/:token/check', checkFaceToken);
 // POST /kyc/face/:token/upload → Selfie rasmni yuklash (Public)
-router.post('/face/:token/upload', upload.single('image'), uploadImage);
+router.post('/face/:token/upload', (req, res, next) => {
+  console.log('Upload request received for token:', req.params.token);
+  next();
+}, upload.single('image'), uploadImage);
 // POST /kyc/face/:token/submit → Selfie yuborish va yakunlash
 router.post('/face/:token/submit', submitFaceSelfie);
 

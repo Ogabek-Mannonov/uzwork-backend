@@ -132,6 +132,12 @@ const uploadGeneralFile = async (req, res) => {
 // Image Upload Controller (with specific sizing)
 const uploadImage = async (req, res) => {
   try {
+    console.log("uploadImage endpoint hit. File received:", req.file ? {
+      filename: req.file.filename,
+      size: req.file.size,
+      path: req.file.path
+    } : "undefined");
+
     if (!req.file) {
       return res.status(400).json({ success: false, message: "Rasm yuklanmadi." });
     }

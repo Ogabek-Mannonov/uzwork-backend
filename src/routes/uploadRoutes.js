@@ -9,7 +9,7 @@ const { upload, uploadGeneralFile, uploadVoice, uploadImage } = require("../cont
 router.post("/voice", authenticate, upload.single("voice"), uploadVoice);
 
 // ✅ Image upload (Avatar, Cover)
-router.post("/image", authenticate, upload.single("file"), uploadImage);
+router.post("/image", authenticate, upload.single("image"), uploadImage);
 
 // ✅ General file upload (CV, etc.)
 // field name: "file"

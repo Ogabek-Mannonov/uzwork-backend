@@ -3,16 +3,46 @@ const pool = require('../db/pool');
 const { createNotification } = require('./notificationController');
 const crypto = require('crypto');
 
-// ─── In-memory face sessions (MVP) ───────────────────────────────────────────
-// Production da Redis ishlatiladi
-const faceSessions = new Map();
+const fs = require('fs');
+const path = require('path');
+const sessionsFilePath = path.join(process.cwd(), 'uploads', 'face_sessions.json');
 
-// Har 5 daqiqada muddati o'tgan sessionlarni tozalash
+// Helper to load sessions
+const loadSessions = () => {
+  try {
+    if (fs.existsSync(sessionsFilePath)) {
+      const data = fs.readFileSync(sessionsFilePath, 'utf8');
+      return new Map(JSON.parse(data));
+    }
+  } catch (error) {
+    console.error('Error loading face sessions:', error);
+  }
+  return new Map();
+};
+
+// Helper to save sessions
+const saveSessions = (sessions) => {
+  try {
+    const data = JSON.stringify(Array.from(sessions.entries()));
+    fs.writeFileSync(sessionsFilePath, data, 'utf8');
+  } catch (error) {
+    console.error('Error saving face sessions:', error);
+  }
+};
+
+const faceSessions = loadSessions();
+
+// Clear expired sessions every 5 minutes
 setInterval(() => {
   const now = Date.now();
+  let changed = false;
   for (const [token, session] of faceSessions.entries()) {
-    if (now > session.expiresAt) faceSessions.delete(token);
+    if (now > session.expiresAt) {
+      faceSessions.delete(token);
+      changed = true;
+    }
   }
+  if (changed) saveSessions(faceSessions);
 }, 5 * 60 * 1000);
 
 /**
@@ -41,9 +71,11 @@ const createFaceSession = async (req, res) => {
       : `http://${localIp}:${process.env.PORT || 3000}`;
 
     const mobileUrl = `${backendUrl}/kyc/face/${token}`;
+    console.log('Mobile URL for KYC:', mobileUrl);
 
 
     faceSessions.set(token, { userId, status: 'pending', expiresAt, selfie_url: null });
+    saveSessions(faceSessions);
 
     // QR kodni backend da generate qilish (qrcode paketi kerak)
     let qrDataUrl = null;
@@ -82,6 +114,7 @@ const getFaceSessionStatus = async (req, res) => {
     }
     if (Date.now() > session.expiresAt) {
       faceSessions.delete(token);
+      saveSessions(faceSessions);
       return res.status(410).json({ success: false, message: 'Session muddati tugagan.' });
     }
 
@@ -278,18 +311,53 @@ const serveMobilePage = async (req, res) => {
     }
   }
 
+  function stopCamera() {
+    if (stream) {
+      stream.getTracks().forEach(track => track.stop());
+      stream = null;
+    }
+    show('ready');
+  }
+
+  function takeSelfie() {
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const context = canvas.getContext('2d');
+    
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    
+    context.drawImage(video, 0, 0, canvas.width, canvas.height);
+    
+    canvas.toBlob((blob) => {
+      capturedBlob = blob;
+      const url = URL.createObjectURL(blob);
+      document.getElementById('preview-img').src = url;
+      show('preview');
+      
+      if (stream) {
+        stream.getTracks().forEach(track => track.stop());
+        stream = null;
+      }
+    }, 'image/jpeg', 0.9);
+  }
+
+  function retake() {
+    capturedBlob = null;
+    document.getElementById('preview-img').src = '';
+    startCamera();
+  }
+
   function handleNativeCapture(e) {
     const file = e.target.files[0];
     if (!file) return;
     
-    // Foydalanuvchiga rasm qabul qilinganini ko'rsatamiz
     capturedBlob = file;
     const reader = new FileReader();
     reader.onload = (event) => {
       document.getElementById('preview-img').src = event.target.result;
       show('preview');
-      // Avtomatik yuborishni taklif qilamiz yoki darhol yuboramiz
-      console.log('Rasm yuklandi, preview ko\'rsatildi');
+      console.log("Rasm yuklandi, preview ko'rsatildi");
     };
     reader.readAsDataURL(file);
   }
@@ -303,25 +371,36 @@ const serveMobilePage = async (req, res) => {
     show('uploading');
     try {
       const fd = new FormData();
-      fd.append('image', capturedBlob, 'selfie.jpg');
+      // 'image' kaliti upload.single('image') bilan mos bo'lishi shart
+      fd.append('image', capturedBlob, 'selfie.jpg'); 
       
       console.log('Yuklash boshlandi:', BACKEND + '/kyc/face/' + TOKEN + '/upload');
       
       const upRes = await fetch(BACKEND + '/kyc/face/' + TOKEN + '/upload', { 
         method: 'POST', 
+        headers: { 'ngrok-skip-browser-warning': 'true' },
         body: fd 
       });
       
       if (!upRes.ok) throw new Error('Server rasmni qabul qilmadi (Status: ' + upRes.status + ')');
       
       const upData = await upRes.json();
-      const imageUrl = upData?.data?.url || upData?.url;
       
-      if (!imageUrl) throw new Error('Rasm yuklandi, lekin URL qaytmadi.');
+      // DIQQAT: uploadController nima qaytarayotganiga qarab quyidagilarni tekshiramiz:
+      const imageUrl = upData?.data?.url || upData?.url || upData?.file?.url || upData?.filePath;
+      
+      if (!imageUrl) {
+        console.log('Server response:', upData);
+        throw new Error('Rasm yuklandi, lekin serverdan URL manzili olinmadi.');
+      }
 
+      // Tasdiqlash bosqichi
       const subRes = await fetch(BACKEND + '/kyc/face/' + TOKEN + '/submit', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'ngrok-skip-browser-warning': 'true'
+        },
         body: JSON.stringify({ selfie_url: imageUrl })
       });
       
@@ -329,11 +408,12 @@ const serveMobilePage = async (req, res) => {
       if (subData.success) {
         show('success');
       } else {
-        throw new Error(subData.message || 'Tasdiqlashda xato.');
+        throw new Error(subData.message || 'Tasdiqlashda xato yuz berdi.');
       }
     } catch(e) {
-      alert('Xatolik: ' + e.message);
-      show('ready');
+      console.error(e);
+      alert('Xato yuz berdi: ' + e.message);
+      showError(e.message);
     }
   }
 
@@ -386,30 +466,40 @@ const submitFaceSelfie = async (req, res) => {
     }
     if (Date.now() > session.expiresAt) {
       faceSessions.delete(token);
+      saveSessions(faceSessions);
       return res.status(410).json({ success: false, message: 'Session muddati tugagan. QR kodni yangilang.' });
     }
     if (session.status === 'completed') {
       return res.status(400).json({ success: false, message: 'Bu session allaqachon yakunlangan.' });
     }
 
-    // Agar kyc_submissions da pending submission bo'lsa selfie URL ni yangilash
+    // 1. Bazada pending KYC so'rovi borligini tekshiramiz va yangilaymiz
     try {
-      await pool.query(
+      const updateResult = await pool.query(
         `UPDATE kyc_submissions
          SET selfie_url = $1, updated_at = NOW()
-         WHERE user_id = $2 AND status = 'pending'
-         ORDER BY submitted_at DESC
-         LIMIT 1`,
+         WHERE id IN (
+           SELECT id FROM kyc_submissions
+           WHERE user_id = $2 AND status = 'pending'
+           ORDER BY submitted_at DESC
+           LIMIT 1
+         ) RETURNING id`,
         [selfie_url, session.userId]
       );
-    } catch { /* submission yo'q bo'lsa ham ishlaydi */ }
 
-    // Session ni yangilash
+      console.log(`KYC submission updated for user ${session.userId}. Rows affected: ${updateResult.rowCount}`);
+    } catch (err) {
+      console.error('KYC database update error (Selfie yozishda):', err);
+    }
+
+    // 2. Xotiradagi (Map) session holatini yangilash
     faceSessions.set(token, { ...session, status: 'completed', selfie_url });
+    saveSessions(faceSessions);
 
-    // Socket.io orqali desktopga xabar yuborish
+    // 3. Socket.io orqali desktopga xabar yuborish
     const io = req.app.get('io');
     if (io) {
+      console.log(`Emitting kyc_face_completed to room: user_${session.userId}`);
       io.to(`user_${session.userId}`).emit('kyc_face_completed', {
         token,
         selfie_url,
@@ -446,10 +536,10 @@ const submitKyc = async (req, res) => {
       country,
     } = req.body;
 
-    if (!document_type || !document_front_url) {
+    if (!document_type || !document_front_url || !selfie_url) {
       return res.status(400).json({
         success: false,
-        message: "document_type va document_front_url majburiy.",
+        message: "Hujjat turi, old tomoni va selfie rasmi majburiy.",
       });
     }
 
