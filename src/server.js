@@ -300,7 +300,7 @@ app.use(
   cors({
     origin: allowedOrigins,
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: ["Content-Type", "Authorization", "ngrok-skip-browser-warning"],
     credentials: true,
     optionsSuccessStatus: 200,
   })
@@ -312,6 +312,7 @@ app.use(morgan("dev"));
 
 app.use(
   helmet({
+    contentSecurityPolicy: false,
     crossOriginResourcePolicy: { policy: "cross-origin" },
     crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
   })
