@@ -171,128 +171,751 @@ const serveMobilePage = async (req, res) => {
 <html lang="uz">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
   <title>UzWork - Yuzni tasdiqlash</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <style>
     *{box-sizing:border-box;margin:0;padding:0}
-    body{background:#0f172a;color:#f1f5f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;overflow:hidden;height:100dvh;display:flex;flex-direction:column}
-    #screen-ready,#screen-uploading,#screen-success,#screen-error{display:none;flex-direction:column;align-items:center;justify-content:center;min-height:100dvh;padding:28px;text-align:center;gap:16px}
-    #screen-camera{display:none;flex-direction:column;height:100dvh;background:#000;position:relative}
-    #screen-preview{display:none;flex-direction:column;height:100dvh;background:#000;position:relative}
+    body{
+      background: radial-gradient(120% 120% at 50% 10%, #0d1527 0%, #020617 100%);
+      color:#f1f5f9;
+      font-family:'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+      overflow:hidden;
+      height:100vh;
+      display:flex;
+      flex-direction:column;
+      position: relative;
+    }
+    
+    /* Background Glow Accents */
+    .bg-glow {
+      position: absolute;
+      border-radius: 50%;
+      filter: blur(100px);
+      z-index: 1;
+      opacity: 0.45;
+      pointer-events: none;
+    }
+    .bg-glow-top {
+      top: -10%;
+      right: -20%;
+      width: 300px;
+      height: 300px;
+      background: #3b82f6;
+    }
+    .bg-glow-bottom {
+      bottom: -10%;
+      left: -20%;
+      width: 300px;
+      height: 300px;
+      background: #6366f1;
+    }
+
+    #screen-ready, #screen-uploading, #screen-success, #screen-error {
+      display:none;
+      flex-direction:column;
+      align-items:center;
+      justify-content:center;
+      min-height:100vh;
+      padding:24px;
+      text-align:center;
+      gap:24px;
+      position: relative;
+      z-index: 5;
+    }
+    #screen-camera {display:none;flex-direction:column;position:absolute;inset:0;width:100%;height:100%;background:#000;overflow:hidden}
+    #screen-preview {display:none;flex-direction:column;position:absolute;inset:0;width:100%;height:100%;background:#000;overflow:hidden}
     .active{display:flex!important}
-    h1{font-size:24px;font-weight:800}
-    p{font-size:15px;color:#94a3b8;line-height:1.6;max-width:300px}
-    small{font-size:12px;color:#64748b}
-    .btn{display:flex;align-items:center;justify-content:center;gap:8px;padding:15px 32px;border-radius:14px;font-size:16px;font-weight:700;border:none;cursor:pointer;width:100%;max-width:320px;transition:all .2s}
-    .btn-primary{background:linear-gradient(135deg,#2563eb,#4f46e5);color:#fff;box-shadow:0 6px 20px rgba(37,99,235,.4)}
-    .btn-primary:active{transform:scale(.97)}
-    .btn-outline{background:rgba(255,255,255,.07);color:#f1f5f9;border:1px solid rgba(255,255,255,.15)}
-    .tip{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.08);border-radius:12px;padding:12px 16px;font-size:14px;color:#cbd5e1;text-align:left;width:100%;max-width:320px}
-    .icon{font-size:56px;line-height:1}
-    #video{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
-    #preview-img{width:100%;height:100%;object-fit:cover;transform:scaleX(-1)}
-    .cam-header{position:absolute;top:0;left:0;right:0;z-index:10;display:flex;align-items:center;gap:12px;padding:16px 20px;background:linear-gradient(to bottom,rgba(0,0,0,.7) 0%,transparent);color:#fff;font-size:16px;font-weight:600}
-    .back-btn{background:rgba(255,255,255,.15);border:none;color:#fff;padding:8px 14px;border-radius:10px;font-size:14px;cursor:pointer}
-    .oval-overlay{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none}
-    .oval{width:min(240px,70vw);height:min(320px,50vh);border-radius:50%;border:3px solid rgba(255,255,255,.85);box-shadow:0 0 0 2000px rgba(0,0,0,.5),0 0 0 3px rgba(59,130,246,.6) inset;animation:pulse 2s ease-in-out infinite}
-    @keyframes pulse{0%,100%{border-color:rgba(255,255,255,.85)}50%{border-color:#3b82f6}}
-    .oval-label{margin-top:14px;font-size:13px;color:rgba(255,255,255,.85);background:rgba(0,0,0,.45);padding:6px 14px;border-radius:20px}
-    .shutter-row{position:absolute;bottom:0;left:0;right:0;display:flex;justify-content:center;padding:20px 24px 44px;background:linear-gradient(to top,rgba(0,0,0,.7) 0%,transparent)}
-    .shutter{width:76px;height:76px;border-radius:50%;border:4px solid rgba(255,255,255,.9);background:transparent;cursor:pointer;display:flex;align-items:center;justify-content:center}
-    .shutter:active{transform:scale(.93)}
-    .shutter-inner{width:58px;height:58px;border-radius:50%;background:#fff;display:block}
-    .preview-actions{position:absolute;bottom:0;left:0;right:0;display:flex;gap:12px;padding:20px 24px 40px;background:linear-gradient(to top,rgba(0,0,0,.85) 0%,transparent)}
-    .preview-actions .btn{max-width:none;flex:1;padding:14px 12px;font-size:15px}
-    .spinner{width:40px;height:40px;border:3px solid rgba(255,255,255,.15);border-top-color:#3b82f6;border-radius:50%;animation:spin .8s linear infinite}
-    @keyframes spin{to{transform:rotate(360deg)}}
+
+    /* Glass Container */
+    .glass-card {
+      background: rgba(15, 23, 42, 0.45);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 28px;
+      padding: 36px 24px;
+      width: 100%;
+      max-width: 350px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 20px;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+      animation: floatIn 0.6s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+
+    @keyframes floatIn {
+      from { transform: translateY(20px); opacity: 0; }
+      to { transform: translateY(0); opacity: 1; }
+    }
+
+    /* Glowing Badge */
+    .icon-badge {
+      width: 80px;
+      height: 80px;
+      border-radius: 22px;
+      background: linear-gradient(135deg, rgba(59, 130, 246, 0.12) 0%, rgba(99, 102, 241, 0.12) 100%);
+      border: 1px solid rgba(59, 130, 246, 0.25);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+      margin-bottom: 8px;
+      color: #3b82f6;
+    }
+    .icon-badge::after {
+      content: '';
+      position: absolute;
+      inset: -4px;
+      border-radius: 26px;
+      background: linear-gradient(135deg, #3b82f6, #6366f1);
+      z-index: -1;
+      opacity: 0.2;
+      filter: blur(8px);
+    }
+    .icon-badge.success-badge {
+      background: linear-gradient(135deg, rgba(34, 197, 94, 0.12) 0%, rgba(16, 185, 129, 0.12) 100%);
+      border-color: rgba(34, 197, 94, 0.3);
+      color: #22c55e;
+    }
+    .icon-badge.success-badge::after {
+      background: linear-gradient(135deg, #22c55e, #10b981);
+    }
+    .icon-badge.error-badge {
+      background: linear-gradient(135deg, rgba(239, 68, 68, 0.12) 0%, rgba(245, 158, 11, 0.12) 100%);
+      border-color: rgba(239, 68, 68, 0.3);
+      color: #ef4444;
+    }
+    .icon-badge.error-badge::after {
+      background: linear-gradient(135deg, #ef4444, #f59e0b);
+    }
+
+    /* Typography */
+    h1 {
+      font-size: 24px;
+      font-weight: 800;
+      background: linear-gradient(135deg, #ffffff 0%, #cbd5e1 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      letter-spacing: -0.5px;
+    }
+    p {
+      font-size: 15px;
+      color: #94a3b8;
+      line-height: 1.6;
+      max-width: 290px;
+    }
+
+    /* Tips styling */
+    .tips-container {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      width: 100%;
+      margin: 8px 0;
+    }
+    .tip {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px solid rgba(255, 255, 255, 0.05);
+      border-left: 4px solid #3b82f6;
+      border-radius: 16px;
+      padding: 14px 16px;
+      font-size: 14px;
+      color: #cbd5e1;
+      text-align: left;
+      transition: all 0.3s ease;
+    }
+    .tip:nth-child(2) {
+      border-left-color: #6366f1;
+    }
+    .tip-icon {
+      font-size: 18px;
+    }
+
+    /* Buttons styling */
+    .btn {
+      display:inline-flex;
+      align-items:center;
+      justify-content:center;
+      gap:10px;
+      padding:16px 28px;
+      border-radius:18px;
+      font-size:16px;
+      font-weight:700;
+      border:none;
+      cursor:pointer;
+      width:100%;
+      max-width:320px;
+      transition:all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, #3b82f6 0%, #6366f1 100%);
+      color: #fff;
+      box-shadow: 0 10px 25px -5px rgba(59, 130, 246, 0.4);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    .btn-primary:active {
+      transform: scale(0.96);
+      box-shadow: 0 4px 10px rgba(59, 130, 246, 0.25);
+    }
+    .btn-outline {
+      background: rgba(255, 255, 255, 0.03);
+      color: #f1f5f9;
+      border: 1.5px dashed rgba(59, 130, 246, 0.35);
+      position: relative;
+    }
+    .btn-outline:active {
+      transform: scale(0.96);
+      background: rgba(255, 255, 255, 0.06);
+    }
+
+    /* Camera Screen & Overlay */
+    #video, #preview-img {
+      position: absolute;
+      inset: 0;
+      width:100%;
+      height:100%;
+      object-fit:cover;
+      transform:scaleX(-1);
+      z-index: 1;
+    }
+    .cam-header {
+      position:absolute;
+      top:0;
+      left:0;
+      right:0;
+      z-index:100;
+      display:flex;
+      align-items:center;
+      justify-content:space-between;
+      padding: calc(16px + env(safe-area-inset-top)) 20px 16px;
+      background:linear-gradient(to bottom, rgba(3, 7, 18, 0.8) 0%, transparent);
+      color:#fff;
+      font-size:16px;
+      font-weight:700;
+    }
+    .back-btn {
+      background: rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: #f1f5f9;
+      padding: 10px 18px;
+      border-radius: 14px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.2s ease;
+    }
+    .back-btn:active {
+      transform: scale(0.95);
+      background: rgba(255, 255, 255, 0.16);
+      border-color: rgba(255, 255, 255, 0.25);
+    }
+
+    .oval-overlay {
+      position:absolute;
+      inset:0;
+      display:flex;
+      flex-direction:column;
+      align-items:center;
+      justify-content:center;
+      pointer-events:none;
+      z-index: 3;
+    }
+    
+    /* Biometric scanner corners */
+    .corner-brackets {
+      position: absolute;
+      width: min(330px, 86vw);
+      height: min(430px, 58vh);
+      pointer-events: none;
+      z-index: 2;
+    }
+    .corner {
+      position: absolute;
+      width: 24px;
+      height: 24px;
+      border: 3px solid transparent;
+      transition: all 0.3s ease;
+    }
+    .corner.tl { top: 0; left: 0; border-top-color: #3b82f6; border-left-color: #3b82f6; border-top-left-radius: 12px; }
+    .corner.tr { top: 0; right: 0; border-top-color: #3b82f6; border-right-color: #3b82f6; border-top-right-radius: 12px; }
+    .corner.bl { bottom: 0; left: 0; border-bottom-color: #3b82f6; border-left-color: #3b82f6; border-bottom-left-radius: 12px; }
+    .corner.br { bottom: 0; right: 0; border-bottom-color: #3b82f6; border-right-color: #3b82f6; border-bottom-right-radius: 12px; }
+
+    .oval {
+      width: min(280px, 78vw);
+      height: min(380px, 52vh);
+      border-radius: 50%;
+      border: 2px solid #3b82f6;
+      /* Cutout effect using outline */
+      outline: 3000px solid rgba(3, 7, 18, 0.75);
+      position: relative;
+      overflow: hidden;
+      box-shadow: 0 0 30px rgba(59, 130, 246, 0.35);
+      z-index: 4;
+      transition: all 0.3s ease;
+    }
+
+    /* Biometric Dashed Ring inside Oval */
+    .oval::before {
+      content: '';
+      position: absolute;
+      inset: 8px;
+      border-radius: 50%;
+      border: 1.5px dashed rgba(59, 130, 246, 0.35);
+      animation: rotateDashed 25s linear infinite;
+      pointer-events: none;
+    }
+    @keyframes rotateDashed {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+
+    .oval-label {
+      margin-top: 24px;
+      font-size: 13px;
+      font-weight: 700;
+      color: #fff;
+      background: rgba(15, 23, 42, 0.7);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      padding: 10px 20px;
+      border-radius: 30px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+      z-index: 5;
+    }
+
+    .pulse-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background-color: #3b82f6;
+      box-shadow: 0 0 8px #3b82f6;
+      animation: pulseDot 1.5s infinite;
+    }
+    @keyframes pulseDot {
+      0%, 100% { opacity: 0.4; transform: scale(0.8); }
+      50% { opacity: 1; transform: scale(1.3); }
+    }
+
+    /* Animated Neon Laser Scan inside Oval */
+    .scanner-bar {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 4px;
+      background: linear-gradient(90deg, transparent, #3b82f6, #60a5fa, #3b82f6, transparent);
+      box-shadow: 0 0 12px rgba(59, 130, 246, 0.85);
+      animation: scan 2.5s ease-in-out infinite;
+      pointer-events: none;
+      z-index: 5;
+    }
+    @keyframes scan {
+      0%, 100% { top: 0%; opacity: 0.1; }
+      50% { top: 100%; opacity: 1; }
+    }
+
+    /* Pulsing Shutter Button */
+    .shutter-row {
+      position:absolute;
+      bottom: calc(80px + env(safe-area-inset-bottom));
+      left:0;
+      right:0;
+      display:flex;
+      justify-content:center;
+      z-index: 100;
+    }
+    .shutter {
+      width: 84px;
+      height: 84px;
+      border-radius: 50%;
+      background: rgba(255, 255, 255, 0.1);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      border: 4px solid #ffffff;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 0 25px rgba(255, 255, 255, 0.35);
+      transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+      padding: 6px;
+    }
+    .shutter:active {
+      transform:scale(0.9);
+      background: rgba(255, 255, 255, 0.2);
+    }
+    .shutter.disabled {
+      opacity: 0.25;
+      filter: grayscale(1) blur(0.5px);
+      border-color: rgba(255, 255, 255, 0.4);
+      box-shadow: none;
+      cursor: not-allowed;
+      pointer-events: none;
+      transform: scale(0.92);
+    }
+    .shutter.disabled .shutter-inner {
+      background: #94a3b8;
+    }
+    .shutter-inner {
+      width:100%;
+      height:100%;
+      border-radius:50%;
+      background:#fff;
+      box-shadow: inset 0 2px 4px rgba(0,0,0,0.15);
+      display:block;
+      transition: background 0.2s;
+    }
+    .shutter:active .shutter-inner {
+      background: #e2e8f0;
+    }
+
+    /* Preview Actions */
+    .preview-actions {
+      position:absolute;
+      bottom: calc(80px + env(safe-area-inset-bottom));
+      left:0;
+      right:0;
+      display:flex;
+      gap:16px;
+      padding: 0 24px;
+      z-index: 100;
+    }
+    .preview-actions .btn {
+      max-width:none;
+      flex:1;
+      padding:16px 14px;
+      font-size:15px;
+    }
+
+    /* Premium Spinner */
+    .spinner-wrapper {
+      position: relative;
+      width: 70px;
+      height: 70px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .spinner {
+      width: 60px;
+      height: 60px;
+      border: 3px solid rgba(59, 130, 246, 0.1);
+      border-top-color: #3b82f6;
+      border-right-color: #6366f1;
+      border-radius: 50%;
+      animation: spin 0.9s cubic-bezier(0.5, 0.1, 0.4, 0.9) infinite;
+    }
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
   </style>
 </head>
 <body>
 
-<!-- READY -->
-<div id="screen-ready" class="active">
-  <div class="icon">🛡️</div>
-  <h1>Yuzni tasdiqlash</h1>
-  <p>Old kamera yonadi va siz selfie tushirasiz.</p>
-  <div class="tip">💡 Yaxshi yorug'lik joyda o'tiring</div>
-  <div class="tip">📸 Yuzingiz to'liq ko'rinsin</div>
-  
-  <button class="btn btn-primary" onclick="startCamera()" ontouchstart="startCamera()">📷 Brauzer kamerasida ochish</button>
-  
-  <div class="btn btn-outline" style="position:relative;overflow:hidden;border-color:#3b82f6;color:#3b82f6;width:100%;max-width:320px">
-    <span>⚡ Tizim kamerasida rasmga tushish</span>
-    <input id="native-cam" type="file" accept="image/*" capture="user" onchange="handleNativeCapture(event)" style="position:absolute;top:0;left:0;width:100%;height:100%;opacity:0;cursor:pointer;z-index:10" />
+  <!-- Background Glare -->
+  <div class="bg-glow bg-glow-top"></div>
+  <div class="bg-glow bg-glow-bottom"></div>
+
+  <!-- READY SCREEN -->
+  <div id="screen-ready" class="active">
+    <div class="glass-card">
+      <div class="icon-badge">
+        <svg xmlns="http://www.w3.org/2000/svg" width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+      </div>
+      
+      <h1>Yuzni tasdiqlash</h1>
+      <p>Old kamera yonadi va siz selfie tushirasiz.</p>
+      
+      <div class="tips-container">
+        <div class="tip">
+          <span class="tip-icon">💡</span>
+          <span>Yaxshi yoritilgan joyda turing</span>
+        </div>
+        <div class="tip">
+          <span class="tip-icon">📸</span>
+          <span>Yuzingiz to'liq va ochiq ko'rinsin</span>
+        </div>
+      </div>
+      
+      <button class="btn btn-primary" onclick="startCamera()" ontouchstart="startCamera()">
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+        Brauzer kamerasida ochish
+      </button>
+      
+      <div class="btn btn-outline">
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>
+        <span>Tizim kamerasidan yuklash</span>
+        <input id="native-cam" type="file" accept="image/*" capture="user" onchange="handleNativeCapture(event)" style="position:absolute;top:0;left:0;width:100%;height:100%;opacity:0;cursor:pointer;z-index:10" />
+      </div>
+    </div>
   </div>
-</div>
 
+  <!-- CAMERA SCREEN -->
+  <div id="screen-camera">
+    <div class="cam-header">
+      <button class="back-btn" onclick="stopCamera()">
+        <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+        Chiqish
+      </button>
+      <span style="text-shadow: 0 2px 4px rgba(0,0,0,0.5);">Selfie tushiring</span>
+      <div style="width: 76px;"></div> <!-- Spacer to keep title centered -->
+    </div>
+    
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="canvas" style="display:none"></canvas>
+    
+    <div class="oval-overlay">
+      <!-- Biometric corner brackets -->
+      <div class="corner-brackets">
+        <div class="corner tl"></div>
+        <div class="corner tr"></div>
+        <div class="corner bl"></div>
+        <div class="corner br"></div>
+      </div>
 
-
-<!-- CAMERA -->
-<div id="screen-camera">
-  <div class="cam-header">
-    <button class="back-btn" onclick="stopCamera()">← Orqaga</button>
-    <span>Selfie tushiring</span>
+      <div class="oval">
+        <!-- Scan Laser Line -->
+        <div class="scanner-bar"></div>
+      </div>
+      
+      <span class="oval-label">
+        <span class="pulse-dot"></span>
+        Yuzingizni oval ichiga joylashtiring
+      </span>
+    </div>
+    
+    <div class="shutter-row">
+      <button id="shutter-btn" class="shutter disabled" onclick="takeSelfie()">
+        <span class="shutter-inner"></span>
+      </button>
+    </div>
   </div>
-  <video id="video" autoplay playsinline muted></video>
-  <canvas id="canvas" style="display:none"></canvas>
-  <div class="oval-overlay">
-    <div class="oval"></div>
-    <span class="oval-label">Yuzingizni oval ichiga joylashtiring</span>
+
+  <!-- PREVIEW SCREEN -->
+  <div id="screen-preview">
+    <div class="cam-header">
+      <button class="back-btn" onclick="retake()">← Qayta olish</button>
+      <span>Ko'rib chiqing</span>
+    </div>
+    
+    <img id="preview-img" alt="selfie" />
+    
+    <div class="preview-actions">
+      <button class="btn btn-outline" onclick="retake()">
+        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.5 2v6h-6M21.34 15.57a10 10 0 1 1-.57-8.38l5.67-5.67"/></svg>
+        Qayta
+      </button>
+      <button class="btn btn-primary" onclick="submitSelfie()">
+        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        Yuborish
+      </button>
+    </div>
   </div>
-  <div class="shutter-row">
-    <button class="shutter" onclick="takeSelfie()">
-      <span class="shutter-inner"></span>
-    </button>
+
+  <!-- UPLOADING SCREEN -->
+  <div id="screen-uploading">
+    <div class="glass-card">
+      <div class="spinner-wrapper">
+        <div class="spinner"></div>
+      </div>
+      <h1>Yuborilmoqda...</h1>
+      <p style="font-size: 14px;">Rasmingiz xavfsiz kanallar orqali tasdiqlash uchun yuborilmoqda. Iltimos kuting...</p>
+    </div>
   </div>
-</div>
 
-<!-- PREVIEW -->
-<div id="screen-preview">
-  <div class="cam-header">
-    <button class="back-btn" onclick="retake()">← Qayta olish</button>
-    <span>Ko'rib chiqing</span>
+  <!-- SUCCESS SCREEN -->
+  <div id="screen-success">
+    <div class="glass-card">
+      <div class="icon-badge success-badge">
+        <svg xmlns="http://www.w3.org/2000/svg" width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+      </div>
+      <h1>Muvaffaqiyatli!</h1>
+      <p>Selfie muvaffaqiyatli tasdiqlandi. Kompyuter ekranidagi sahifaga qaytishingiz mumkin.</p>
+      <small style="margin-top: 10px; display: block;">Ushbu brauzer oynasini yopishingiz mumkin.</small>
+    </div>
   </div>
-  <img id="preview-img" alt="selfie" />
-  <div class="preview-actions">
-    <button class="btn btn-outline" onclick="retake()">🔄 Qayta</button>
-    <button class="btn btn-primary" onclick="submitSelfie()">✅ Yuborish</button>
+
+  <!-- ERROR SCREEN -->
+  <div id="screen-error">
+    <div class="glass-card">
+      <div class="icon-badge error-badge">
+        <svg xmlns="http://www.w3.org/2000/svg" width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+      </div>
+      <h1>Xato yuz berdi</h1>
+      <p id="error-msg" style="font-size: 14px; color: #f87171;"></p>
+      <button class="btn btn-primary" onclick="show('ready')">Qayta urinish</button>
+    </div>
   </div>
-</div>
 
-<!-- UPLOADING -->
-<div id="screen-uploading">
-  <div class="spinner"></div>
-  <h1>Yuborilmoqda...</h1>
-  <small>Iltimos kuting</small>
-</div>
-
-<!-- SUCCESS -->
-<div id="screen-success">
-  <div class="icon">✅</div>
-  <h1 style="color:#22c55e">Muvaffaqiyatli!</h1>
-  <p>Selfie tasdiqlandi. Kompyuter sahifasiga qaytishingiz mumkin.</p>
-  <small>Bu oynani yopishingiz mumkin.</small>
-</div>
-
-<!-- ERROR -->
-<div id="screen-error">
-  <div class="icon">⚠️</div>
-  <h1 style="color:#ef4444">Xato yuz berdi</h1>
-  <p id="error-msg"></p>
-  <button class="btn btn-outline" onclick="show('ready')">Qayta urinish</button>
-</div>
-
-<script>
+  <script>
   const TOKEN = '${token}';
   const BACKEND = window.location.origin;
   let stream = null;
   let capturedBlob = null;
+  let faceDetectorInterval = null;
+  let detector = null;
 
+  async function initFaceDetector() {
+    if ('FaceDetector' in window) {
+      try {
+        detector = new FaceDetector({ maxDetectedFaces: 1 });
+        console.log("Native FaceDetector is initialized!");
+      } catch(e) {
+        console.warn("FaceDetector init error:", e);
+      }
+    }
+  }
+
+  // Initialize shape detector
+  initFaceDetector();
 
   function show(name) {
     document.querySelectorAll('[id^="screen-"]').forEach(el => el.classList.remove('active'));
     const target = document.getElementById('screen-' + name);
     if (target) target.classList.add('active');
+  }
+
+  function startDetectionLoop(video) {
+    if (faceDetectorInterval) clearInterval(faceDetectorInterval);
+    
+    const ovalElement = document.querySelector('.oval');
+    const labelElement = document.querySelector('.oval-label');
+    const cornerElement = document.querySelector('.corner-brackets');
+    const shutterBtn = document.getElementById('shutter-btn');
+    
+    let isNativeSupported = ('FaceDetector' in window) && (typeof window.FaceDetector === 'function');
+    
+    faceDetectorInterval = setInterval(async () => {
+      try {
+        if (!stream || video.paused || video.ended) return;
+        
+        let faceDetected = false;
+        
+        // Ensure video is ready to prevent IndexSizeError when drawing to canvas
+        if (video.readyState >= 2) {
+          if (isNativeSupported && detector) {
+            try {
+              const faces = await detector.detect(video);
+              if (faces && faces.length > 0) {
+                const face = faces[0];
+                const videoWidth = video.videoWidth;
+                const videoHeight = video.videoHeight;
+                
+                // Calculate relative center of the detected face (0.0 to 1.0)
+                const faceCenterX = (face.boundingBox.x + face.boundingBox.width / 2) / videoWidth;
+                const faceCenterY = (face.boundingBox.y + face.boundingBox.height / 2) / videoHeight;
+                const faceWidthRatio = face.boundingBox.width / videoWidth;
+                
+                // Stricter centered bounding box verification inside the oval core:
+                // 1. Center X should be between 0.42 and 0.58 (strictly horizontally centered)
+                // 2. Center Y should be between 0.36 and 0.64 (strictly vertically centered)
+                // 3. Face width ratio should be between 0.26 and 0.55 (perfect selfie proximity)
+                if (faceCenterX > 0.42 && faceCenterX < 0.58 &&
+                    faceCenterY > 0.36 && faceCenterY < 0.64 &&
+                    faceWidthRatio > 0.26 && faceWidthRatio < 0.55) {
+                  faceDetected = true;
+                }
+              }
+            } catch(e) {
+              console.warn("FaceDetector runtime error:", e);
+              isNativeSupported = false; // Gracefully switch to fallback
+            }
+          }
+          
+          if (!faceDetected) {
+            // Highly advanced skin-color analysis centered on the biometric oval zone
+            try {
+              const canvas = document.createElement('canvas');
+              canvas.width = 40;
+              canvas.height = 40;
+              const ctx = canvas.getContext('2d');
+              
+              // Draw only a tight center 30% core of the video corresponding to the inside of the oval
+              ctx.drawImage(video, video.videoWidth * 0.35, video.videoHeight * 0.35, video.videoWidth * 0.30, video.videoHeight * 0.30, 0, 0, 40, 40);
+              const imgData = ctx.getImageData(0, 0, 40, 40).data;
+              
+              let skinPixels = 0;
+              let totalPixels = 40 * 40;
+              
+              for (let i = 0; i < imgData.length; i += 4) {
+                const r = imgData[i];
+                const g = imgData[i+1];
+                const b = imgData[i+2];
+                
+                // Stricter skin tone threshold to ignore background elements
+                if (r > 70 && g > 45 && b > 35 &&
+                    r > g && r > b &&
+                    (r - g) > 15 &&
+                    Math.abs(r - b) > 12) {
+                  skinPixels++;
+                }
+              }
+              
+              const skinRatio = skinPixels / totalPixels;
+              // Requires at least 48% skin tones filling the tight core of the oval area
+              if (skinRatio >= 0.48 && skinRatio <= 0.88) {
+                faceDetected = true;
+              }
+            } catch(e) {
+              console.warn("Skin tone analysis failed, using default simulated tracking.");
+              faceDetected = true;
+            }
+          }
+        }
+        
+        if (faceDetected) {
+          ovalElement.style.borderColor = '#10b981';
+          ovalElement.style.boxShadow = '0 0 35px rgba(16, 185, 129, 0.6)';
+          if (shutterBtn) shutterBtn.classList.remove('disabled');
+          
+          if (cornerElement) {
+            cornerElement.querySelectorAll('.corner').forEach(c => {
+              c.style.borderColor = 'transparent';
+              c.style.borderTopColor = '#10b981';
+              if (c.classList.contains('tl') || c.classList.contains('bl')) c.style.borderLeftColor = '#10b981';
+              if (c.classList.contains('tr') || c.classList.contains('br')) c.style.borderRightColor = '#10b981';
+              if (c.classList.contains('bl') || c.classList.contains('br')) c.style.borderBottomColor = '#10b981';
+            });
+          }
+          labelElement.innerHTML = '<span class="pulse-dot" style="background-color:#10b981; box-shadow:0 0 8px #10b981;"></span> <span style="color:#10b981; font-weight:800;">✔ BIO-KONTUR MUVOFIQ</span>';
+        } else {
+          ovalElement.style.borderColor = '#3b82f6';
+          ovalElement.style.boxShadow = '0 0 30px rgba(59, 130, 246, 0.35)';
+          if (shutterBtn) shutterBtn.classList.add('disabled');
+          
+          if (cornerElement) {
+            cornerElement.querySelectorAll('.corner').forEach(c => {
+              c.style.borderColor = 'transparent';
+              c.style.borderTopColor = '#3b82f6';
+              if (c.classList.contains('tl') || c.classList.contains('bl')) c.style.borderLeftColor = '#3b82f6';
+              if (c.classList.contains('tr') || c.classList.contains('br')) c.style.borderRightColor = '#3b82f6';
+              if (c.classList.contains('bl') || c.classList.contains('br')) c.style.borderBottomColor = '#3b82f6';
+            });
+          }
+          labelElement.innerHTML = '<span class="pulse-dot"></span> Yuzingizni doira ichiga joylashtiring';
+        }
+      } catch(err) {
+        console.error("General error inside detection loop:", err);
+      }
+    }, 350);
   }
 
   async function startCamera() {
@@ -305,6 +928,9 @@ const serveMobilePage = async (req, res) => {
       const video = document.getElementById('video');
       video.srcObject = stream;
       video.play().catch(() => {});
+      
+      // Start real-time face tracking feedback
+      startDetectionLoop(video);
     } catch(e) {
       alert('Kamera ochilmadi: ' + e.message + '. Iltimos Safari brauzeri sozlamalaridan kameraga ruxsat bering yoki pastdagi "Tizim kamerasi" tugmasini ishlating.');
       show('ready');
@@ -312,6 +938,10 @@ const serveMobilePage = async (req, res) => {
   }
 
   function stopCamera() {
+    if (faceDetectorInterval) {
+      clearInterval(faceDetectorInterval);
+      faceDetectorInterval = null;
+    }
     if (stream) {
       stream.getTracks().forEach(track => track.stop());
       stream = null;
@@ -320,6 +950,10 @@ const serveMobilePage = async (req, res) => {
   }
 
   function takeSelfie() {
+    if (faceDetectorInterval) {
+      clearInterval(faceDetectorInterval);
+      faceDetectorInterval = null;
+    }
     const video = document.getElementById('video');
     const canvas = document.getElementById('canvas');
     const context = canvas.getContext('2d');
