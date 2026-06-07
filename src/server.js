@@ -59,7 +59,9 @@ const allowedOrigins = [
   "http://localhost:3000",
   "http://localhost:5173",
   "http://localhost:5174",
-  "https://uzwork.uz", "https://theuzwork.uz", "https://www.theuzwork.uz",
+  "https://uzwork.uz",
+  "https://theuzwork.uz",
+  "https://www.theuzwork.uz",
   "https://uzwork-admin-panel.vercel.app",
   process.env.FRONTEND_URL,
 ].filter(Boolean);
