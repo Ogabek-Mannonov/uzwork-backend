@@ -113,11 +113,11 @@ const signup = async (req, res) => {
 
     const signupToken = jwt.sign(payload, process.env.JWT_SECRET || process.env.ACCESS_TOKEN_SECRET || "fallback_secret", { expiresIn: '15m' });
 
+    console.log(`\n==========================================`);
+    console.log(`🔐 RO'YXATDAN O'TISH KODI (${identifier}):`, otp);
+    console.log(`==========================================\n`);
+
     if (email) {
-      console.log(`\n==========================================`);
-      console.log(`🔐 YAGI RO'YXATDAN O'TISH KODI (${email}):`, otp);
-      console.log(`==========================================\n`);
-      
       sendEmail({
         to: email,
         subject: "Hisobni tasdiqlash kodi",
@@ -132,10 +132,10 @@ const signup = async (req, res) => {
       }).catch(err => console.error("Signup email error:", err));
     }
 
-    return res.status(201).json({
+    return res.status(200).json({
       success: true,
       needs_verification: true,
-      message: "Tasdiqlash kodi elektron pochtangizga yuborildi.",
+      message: "Tasdiqlash kodi yuborildi.",
       data: {
         userId: signupToken
       }
