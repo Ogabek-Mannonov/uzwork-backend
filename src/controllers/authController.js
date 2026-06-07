@@ -114,6 +114,10 @@ const signup = async (req, res) => {
     const signupToken = jwt.sign(payload, process.env.JWT_SECRET || process.env.ACCESS_TOKEN_SECRET || "fallback_secret", { expiresIn: '15m' });
 
     if (email) {
+      console.log(`\n==========================================`);
+      console.log(`🔐 YAGI RO'YXATDAN O'TISH KODI (${email}):`, otp);
+      console.log(`==========================================\n`);
+      
       sendEmail({
         to: email,
         subject: "Hisobni tasdiqlash kodi",
