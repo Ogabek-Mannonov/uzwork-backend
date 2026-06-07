@@ -62,6 +62,7 @@ const allowedOrigins = [
   "https://uzwork.uz",
   "https://theuzwork.uz",
   "https://www.theuzwork.uz",
+  "https://adminpanel.theuzwork.uz",
   "https://uzwork-admin-panel.vercel.app",
   process.env.FRONTEND_URL,
 ].filter(Boolean);

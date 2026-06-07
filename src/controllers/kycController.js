@@ -55,24 +55,9 @@ const createFaceSession = async (req, res) => {
     const token = crypto.randomUUID();
     const expiresAt = Date.now() + 12 * 60 * 1000; // 12 daqiqa
 
-    // Mobile URL — avtomatik ravishda Wi-Fi tarmog'idagi IP (192.168.X.X) ni aniqlaymiz
-    let localIp = 'localhost';
-    const nets = require('os').networkInterfaces();
-    for (const name of Object.keys(nets)) {
-      for (const net of nets[name]) {
-        if (net.family === 'IPv4' && !net.internal && net.address.startsWith('192.168.')) {
-          localIp = net.address;
-          break;
-        }
-      }
-    }
-    const backendUrl = process.env.BACKEND_TUNNEL_URL && !process.env.BACKEND_TUNNEL_URL.includes('loca.lt')
-      ? process.env.BACKEND_TUNNEL_URL
-      : `http://${localIp}:${process.env.PORT || 3000}`;
-
-    const mobileUrl = `${backendUrl}/kyc/face/${token}`;
+    const backendUrl = process.env.BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
+    const mobileUrl = `${backendUrl.replace(/\/$/, "")}/kyc/face/${token}`;
     console.log('Mobile URL for KYC:', mobileUrl);
-
 
     faceSessions.set(token, { userId, status: 'pending', expiresAt, selfie_url: null });
     saveSessions(faceSessions);
@@ -135,19 +120,7 @@ const serveMobilePage = async (req, res) => {
   const { token } = req.params;
   const session = faceSessions.get(token);
 
-  let localIp = 'localhost';
-  const nets = require('os').networkInterfaces();
-  for (const name of Object.keys(nets)) {
-    for (const net of nets[name]) {
-      if (net.family === 'IPv4' && !net.internal && net.address.startsWith('192.168.')) {
-        localIp = net.address;
-        break;
-      }
-    }
-  }
-  const backendUrl = process.env.BACKEND_TUNNEL_URL && !process.env.BACKEND_TUNNEL_URL.includes('loca.lt')
-    ? process.env.BACKEND_TUNNEL_URL
-    : `http://${localIp}:${process.env.PORT || 3000}`;
+  const backendUrl = process.env.BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
 
 
   if (!session || Date.now() > session.expiresAt) {
