@@ -2,6 +2,7 @@
 const pool = require("../db/pool");
 const { createNotification } = require("./notificationController");
 const crypto = require("crypto");
+const jwt = require("jsonwebtoken");
 const { OAuth2Client } = require("google-auth-library");
 const { hashPassword, comparePassword } = require("../utils/hashPassword");
 const {
@@ -41,7 +42,7 @@ const signup = async (req, res) => {
   const client = await pool.connect();
   try {
     const {
-      identifier, // combination of email or phone
+      identifier,
       password,
       role,
       first_name,
@@ -82,111 +83,60 @@ const signup = async (req, res) => {
       });
     }
 
-    await client.query("BEGIN");
-
     const existing = await client.query(
-      "SELECT id FROM users WHERE (email = $1 OR phone = $2) AND deleted_at IS NULL",
-      [email || null, phone || null]
+      "SELECT id FROM users WHERE (email = $1 OR phone = $2 OR username = $3) AND deleted_at IS NULL",
+      [email || null, phone || null, username]
     );
 
     if (existing.rowCount > 0) {
-      await client.query("ROLLBACK");
       return res.status(409).json({
         success: false,
-        message: "Bu email yoki telefon raqam allaqachon band.",
+        message: "Bu email, telefon yoki username allaqachon band.",
       });
     }
 
     const passwordHash = await hashPassword(password);
     const otp = genOtp6();
     const otpHash = sha256(otp);
-    const expiresAt = addMinutes(new Date(), 10);
 
-    const ins = await client.query(
-      `INSERT INTO users
-        (username, email, phone, password_hash, role, first_name, last_name, display_name, is_verified, avatar_url, reset_code_hash, reset_expires_at, reset_sent_at)
-       VALUES
-        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-       RETURNING id, username, email, phone, role, first_name, last_name, display_name, is_verified, avatar_url, created_at`,
-      [
-        username,
-        email,
-        phone,
-        passwordHash,
-        role,
-        first_name,
-        last_name,
-        display_name || null,
-        false,
-        null,
-        otpHash,
-        expiresAt,
-        new Date()
-      ]
-    );
+    const payload = {
+      username,
+      email,
+      phone,
+      passwordHash,
+      role,
+      first_name,
+      last_name,
+      display_name: display_name || null,
+      otpHash,
+    };
 
-    const user = ins.rows[0];
-
-    // profiles
-    if (role === "freelancer") {
-      await client.query(
-        `INSERT INTO freelancer_profiles (user_id)
-         VALUES ($1) ON CONFLICT (user_id) DO NOTHING`,
-        [user.id]
-      );
-    } else {
-      await client.query(
-        `INSERT INTO client_profiles (user_id)
-         VALUES ($1) ON CONFLICT (user_id) DO NOTHING`,
-        [user.id]
-      );
-    }
-
-    // balances
-    await client.query(
-      `INSERT INTO user_balances (user_id, available_balance, reserved_balance, escrow_balance, total_earned, total_spent)
-       VALUES ($1, 0, 0, 0, 0, 0)
-       ON CONFLICT (user_id) DO NOTHING`,
-      [user.id]
-    );
-
-    await client.query("COMMIT");
+    const signupToken = jwt.sign(payload, process.env.JWT_SECRET || process.env.ACCESS_TOKEN_SECRET || "fallback_secret", { expiresIn: '15m' });
 
     if (email) {
-      // Don't wait for email to send before responding to the user, or at least release client first
-      const emailPromise = sendEmail({
+      sendEmail({
         to: email,
         subject: "Hisobni tasdiqlash kodi",
         html: `
           <h2>Salom, ${first_name}!</h2>
           <p>Sizning hisobingizni tasdiqlash uchun maxfiy kodingiz:</p>
           <h1 style="color: #4CAF50; letter-spacing: 5px;">${otp}</h1>
-          <p>Ushbu kod 10 daqiqa davomida amal qiladi.</p>
+          <p>Ushbu kod 15 daqiqa davomida amal qiladi.</p>
           <br />
           <p>Hurmat bilan,<br/><b>UzWork Platformasi</b></p>
         `,
       }).catch(err => console.error("Signup email error:", err));
     }
 
-    // Instead of giving access straight away, require verification
     return res.status(201).json({
       success: true,
       needs_verification: true,
       message: "Tasdiqlash kodi elektron pochtangizga yuborildi.",
       data: {
-        userId: user.id
+        userId: signupToken
       }
     });
   } catch (error) {
-    try {
-      await client.query("ROLLBACK");
-    } catch (e) {}
-    if (error.code === "23505") {
-      return res.status(409).json({
-        success: false,
-        message: "Unique conflict (email/phone/username).",
-      });
-    }
     return res.status(500).json({
       success: false,
       message: "Signup xato.",
@@ -429,61 +379,74 @@ const refresh = async (req, res) => {
 };
 
 const verifySignup = async (req, res) => {
+  const client = await pool.connect();
   try {
-    const { userId, code } = req.body;
-    if (!userId || !code) {
-      return res.status(400).json({ success: false, message: "Code va user ID majburiy." });
+    const { userId: signupToken, code } = req.body;
+    if (!signupToken || !code) {
+      return res.status(400).json({ success: false, message: "Code va token majburiy." });
     }
 
-    const q = await pool.query(
-      "SELECT id, reset_code_hash, reset_expires_at FROM users WHERE id = $1 AND deleted_at IS NULL",
-      [userId]
-    );
-
-    if (q.rowCount === 0) {
-      return res.status(404).json({ success: false, message: "User topilmadi." });
-    }
-
-    const user = q.rows[0];
-
-    if (!user.reset_code_hash || !user.reset_expires_at) {
-      return res.status(400).json({ success: false, message: "Tasdiqlash kodi mavjud emas." });
-    }
-
-    if (new Date(user.reset_expires_at) < new Date()) {
-      return res.status(400).json({ success: false, message: "Kod eskirgan." });
+    let decoded;
+    try {
+      decoded = jwt.verify(signupToken, process.env.JWT_SECRET || process.env.ACCESS_TOKEN_SECRET || "fallback_secret");
+    } catch (err) {
+      return res.status(400).json({ success: false, message: "Token xato yoki muddati o'tgan." });
     }
 
     const codeHash = sha256(code);
-    if (codeHash !== user.reset_code_hash) {
+    if (codeHash !== decoded.otpHash) {
       return res.status(400).json({ success: false, message: "Kiritilgan kod noto'g'ri." });
     }
 
-    await pool.query(
-      `UPDATE users 
-       SET is_verified = TRUE, reset_code_hash = NULL, reset_expires_at = NULL 
-       WHERE id = $1`,
-      [userId]
+    await client.query("BEGIN");
+
+    // Race condition tekshiruvi
+    const existing = await client.query(
+      "SELECT id FROM users WHERE (email = $1 OR phone = $2 OR username = $3) AND deleted_at IS NULL",
+      [decoded.email || null, decoded.phone || null, decoded.username]
     );
 
-    const updatedUserQ = await pool.query(
-      `SELECT u.id, u.username, u.email, u.phone, u.role, u.first_name, u.last_name, u.display_name, u.is_verified, 
-              COALESCE(u.avatar_url, fp.avatar_url, cp.avatar_url) as avatar_url
-       FROM users u
-       LEFT JOIN freelancer_profiles fp ON fp.user_id = u.id
-       LEFT JOIN client_profiles cp ON cp.user_id = u.id
-       WHERE u.id = $1`,
-      [userId]
+    if (existing.rowCount > 0) {
+      await client.query("ROLLBACK");
+      return res.status(409).json({ success: false, message: "Bu foydalanuvchi allaqachon ro'yxatdan o'tgan." });
+    }
+
+    const ins = await client.query(
+      `INSERT INTO users
+        (username, email, phone, password_hash, role, first_name, last_name, display_name, is_verified, avatar_url, created_at)
+       VALUES
+        ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+       RETURNING id, username, email, phone, role, first_name, last_name, display_name, is_verified, avatar_url, created_at`,
+      [
+        decoded.username, decoded.email, decoded.phone, decoded.passwordHash, decoded.role,
+        decoded.first_name, decoded.last_name, decoded.display_name, true, null, new Date()
+      ]
     );
-    const userRow = updatedUserQ.rows[0];
+
+    const userRow = ins.rows[0];
+
+    // profiles
+    if (decoded.role === "freelancer") {
+      await client.query(`INSERT INTO freelancer_profiles (user_id) VALUES ($1)`, [userRow.id]);
+    } else {
+      await client.query(`INSERT INTO client_profiles (user_id) VALUES ($1)`, [userRow.id]);
+    }
+
+    // balances
+    await client.query(
+      `INSERT INTO user_balances (user_id, available_balance, reserved_balance, escrow_balance, total_earned, total_spent)
+       VALUES ($1, 0, 0, 0, 0, 0)`,
+      [userRow.id]
+    );
+
+    await client.query("COMMIT");
 
     const accessToken = generateAccessToken(userRow);
     const refreshToken = generateRefreshToken(userRow);
     const expiresAt = getTokenExpiryDate(refreshToken);
 
     await pool.query(
-      `INSERT INTO refresh_tokens (user_id, token, expires_at)
-       VALUES ($1, $2, $3)`,
+      `INSERT INTO refresh_tokens (user_id, token, expires_at) VALUES ($1, $2, $3)`,
       [userRow.id, refreshToken, expiresAt || new Date(Date.now() + 7 * 24 * 3600 * 1000)]
     );
 
@@ -508,7 +471,10 @@ const verifySignup = async (req, res) => {
       }
     });
   } catch (error) {
+    try { await client.query("ROLLBACK"); } catch (e) {}
     return res.status(500).json({ success: false, message: "Verify xatolik yuz berdi." });
+  } finally {
+    client.release();
   }
 };
 
