@@ -61,16 +61,9 @@ const createFaceSession = async (req, res) => {
     const backendUrl = process.env.BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
     const mobileUrl = `${backendUrl.replace(/\/$/, "")}/kyc/face/${token}`;
     console.log('Mobile URL for KYC:', mobileUrl);
-
-<<<<<<< Updated upstream
-    faceSessions.set(token, { userId, status: 'pending', expiresAt, selfie_url: null });
-    saveSessions(faceSessions);
-=======
-
     const sessions = loadSessions();
     sessions.set(token, { userId, status: 'pending', expiresAt, selfie_url: null });
     saveSessions(sessions);
->>>>>>> Stashed changes
 
     // QR kodni backend da generate qilish (qrcode paketi kerak)
     let qrDataUrl = null;
