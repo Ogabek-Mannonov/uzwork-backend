@@ -30,19 +30,22 @@ const saveSessions = (sessions) => {
   }
 };
 
-const faceSessions = loadSessions();
-
 // Clear expired sessions every 5 minutes
 setInterval(() => {
-  const now = Date.now();
-  let changed = false;
-  for (const [token, session] of faceSessions.entries()) {
-    if (now > session.expiresAt) {
-      faceSessions.delete(token);
-      changed = true;
+  try {
+    const sessions = loadSessions();
+    const now = Date.now();
+    let changed = false;
+    for (const [token, session] of sessions.entries()) {
+      if (now > session.expiresAt) {
+        sessions.delete(token);
+        changed = true;
+      }
     }
+    if (changed) saveSessions(sessions);
+  } catch (error) {
+    console.error('Error clearing expired face sessions:', error);
   }
-  if (changed) saveSessions(faceSessions);
 }, 5 * 60 * 1000);
 
 /**
@@ -59,8 +62,15 @@ const createFaceSession = async (req, res) => {
     const mobileUrl = `${backendUrl.replace(/\/$/, "")}/kyc/face/${token}`;
     console.log('Mobile URL for KYC:', mobileUrl);
 
+<<<<<<< Updated upstream
     faceSessions.set(token, { userId, status: 'pending', expiresAt, selfie_url: null });
     saveSessions(faceSessions);
+=======
+
+    const sessions = loadSessions();
+    sessions.set(token, { userId, status: 'pending', expiresAt, selfie_url: null });
+    saveSessions(sessions);
+>>>>>>> Stashed changes
 
     // QR kodni backend da generate qilish (qrcode paketi kerak)
     let qrDataUrl = null;
@@ -92,14 +102,15 @@ const createFaceSession = async (req, res) => {
 const getFaceSessionStatus = async (req, res) => {
   try {
     const { token } = req.params;
-    const session = faceSessions.get(token);
+    const sessions = loadSessions();
+    const session = sessions.get(token);
 
     if (!session) {
       return res.status(404).json({ success: false, message: 'Session topilmadi yoki muddati o\'tgan.' });
     }
     if (Date.now() > session.expiresAt) {
-      faceSessions.delete(token);
-      saveSessions(faceSessions);
+      sessions.delete(token);
+      saveSessions(sessions);
       return res.status(410).json({ success: false, message: 'Session muddati tugagan.' });
     }
 
@@ -118,17 +129,50 @@ const getFaceSessionStatus = async (req, res) => {
  */
 const serveMobilePage = async (req, res) => {
   const { token } = req.params;
-  const session = faceSessions.get(token);
+  const sessions = loadSessions();
+  const session = sessions.get(token);
+
+  console.log('--- Serve KYC Mobile Page Debug ---');
+  console.log('Token from URL:', token);
+  console.log('Session found in Map:', !!session);
+  if (session) {
+    console.log('Session UserID:', session.userId);
+    console.log('Session Status:', session.status);
+    console.log('Session ExpiresAt:', session.expiresAt);
+    console.log('Server Date.now():', Date.now());
+    console.log('Remaining duration (seconds):', Math.round((session.expiresAt - Date.now()) / 1000));
+  } else {
+    // Print all active tokens in faceSessions for debugging
+    console.log('Active tokens in Map:', Array.from(sessions.keys()));
+  }
+  console.log('------------------------------------');
 
   const backendUrl = process.env.BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
 
 
   if (!session || Date.now() > session.expiresAt) {
+    if (session) {
+      sessions.delete(token);
+      saveSessions(sessions);
+    }
+    
+    const debugInfo = `
+      <div style="margin-top: 30px; padding: 16px; background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); border-radius: 12px; text-align: left; font-size: 12px; color: #94a3b8; max-width: 320px; word-break: break-all; font-family: monospace;">
+        <div style="color: #3b82f6; font-weight: bold; margin-bottom: 8px; border-bottom: 1px solid rgba(255,255,255,0.1); padding-bottom: 4px;">🔧 DEBUG INFO (Tashxis ma'lumoti):</div>
+        <div><strong>Server vaqti:</strong> ${new Date().toLocaleString('uz-UZ')}</div>
+        <div><strong>Token:</strong> ${token}</div>
+        <div><strong>CWD:</strong> ${process.cwd()}</div>
+        <div><strong>Sessiya topildimi:</strong> ${!!session ? 'Ha' : "Yo'q"}</div>
+        <div><strong>Faol tokenlar:</strong> ${sessions.size} ta</div>
+        <div><strong>Platforma:</strong> ${process.platform}</div>
+      </div>
+    `;
+
     return res.send(`<!DOCTYPE html><html><head><meta charset="utf-8">
       <meta name="viewport" content="width=device-width,initial-scale=1">
       <title>KYC - Muddati tugagan</title>
       <style>body{background:#0f172a;color:#f1f5f9;font-family:system-ui;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;text-align:center;padding:24px}h2{color:#f59e0b;margin-bottom:12px}p{color:#94a3b8}</style>
-      </head><body><div><h2>⏱ Muddat tugagan</h2><p>Kompyuterda yangi QR kod yarating va qayta urinib ko'ring.</p></div></body></html>`);
+      </head><body><div style="display:flex;flex-direction:column;align-items:center;"><h2>⏱ Muddat tugagan</h2><p>Kompyuterda yangi QR kod yarating va qayta urinib ko'ring.</p>${debugInfo}</div></body></html>`);
   }
 
   if (session.status === 'completed') {
@@ -1041,8 +1085,13 @@ const serveMobilePage = async (req, res) => {
 const checkFaceToken = async (req, res) => {
   try {
     const { token } = req.params;
-    const session = faceSessions.get(token);
+    const sessions = loadSessions();
+    const session = sessions.get(token);
     if (!session || Date.now() > session.expiresAt) {
+      if (session) {
+        sessions.delete(token);
+        saveSessions(sessions);
+      }
       return res.status(404).json({ success: false, message: 'Token yaroqsiz yoki muddati o\'tgan.' });
     }
     if (session.status === 'completed') {
@@ -1067,13 +1116,14 @@ const submitFaceSelfie = async (req, res) => {
       return res.status(400).json({ success: false, message: 'selfie_url majburiy.' });
     }
 
-    const session = faceSessions.get(token);
+    const sessions = loadSessions();
+    const session = sessions.get(token);
     if (!session) {
       return res.status(404).json({ success: false, message: 'Session topilmadi.' });
     }
     if (Date.now() > session.expiresAt) {
-      faceSessions.delete(token);
-      saveSessions(faceSessions);
+      sessions.delete(token);
+      saveSessions(sessions);
       return res.status(410).json({ success: false, message: 'Session muddati tugagan. QR kodni yangilang.' });
     }
     if (session.status === 'completed') {
@@ -1100,8 +1150,8 @@ const submitFaceSelfie = async (req, res) => {
     }
 
     // 2. Xotiradagi (Map) session holatini yangilash
-    faceSessions.set(token, { ...session, status: 'completed', selfie_url });
-    saveSessions(faceSessions);
+    sessions.set(token, { ...session, status: 'completed', selfie_url });
+    saveSessions(sessions);
 
     // 3. Socket.io orqali desktopga xabar yuborish
     const io = req.app.get('io');
